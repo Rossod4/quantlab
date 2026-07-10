@@ -1,6 +1,7 @@
-# caches & generated output
-data/
-reports/
+# caches & generated output (anchored to repo root: these are the runtime
+# cache/report dirs from configs/platform.yaml, NOT src/quantlab/data/ etc.)
+/data/
+/reports/
 .pytest_cache/
 .ruff_cache/
 __pycache__/

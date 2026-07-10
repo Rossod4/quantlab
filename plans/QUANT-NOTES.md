@@ -16,3 +16,13 @@ its items (developer: implement or justify; quant-gate: verify closure).
   6/15). Engine must handle explicitly (drop terminal partial period or document).
 - **→ M04:** `prev_trading_day` is strict for session inputs — do not repurpose for
   inclusive PIT as-of alignment.
+
+## From M01 verdict (plans/state/M01/VERDICT.md)
+- **→ M02:** the delisted-ticker "known empty range" cache metadata cannot distinguish
+  a real delisting from a one-time truncated vendor response — a transient truncation
+  gets frozen as "complete" and later data is permanently masked. Cannot inject future
+  into past (coverage-only risk), but survivorship.py must surface such masked ranges
+  in the coverage gap, and the M09 data-refresh path should offer a metadata-invalidate.
+- **→ M02 (reinforces existing note):** adj_close must be gated out of signal-visible
+  paths in PITDataContext, and tests/canaries must include a canary asserting signal
+  code cannot receive adj_close.

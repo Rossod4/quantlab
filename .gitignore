@@ -1,0 +1,14 @@
+# caches & generated output
+data/
+reports/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+.venv/
+.coverage
+htmlcov/
+
+# secrets — NEVER commit broker keys
+.env
+*.secret.*

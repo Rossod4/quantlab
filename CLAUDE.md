@@ -3,6 +3,7 @@
 Bias-free EOD systematic trading research platform. US equities. Research + paper trading only — no live money. **Never propose chart-pattern/technical-pattern analysis.**
 
 ## Commands
+- If `uv` is not on PATH in your shell, use `python -m uv` (identical behavior).
 - Env/deps: `uv sync` (Python 3.12+; dev group includes pytest/ruff)
 - Tests: `uv run pytest` (offline by default; network tier: `uv run pytest -m network`)
 - Lint: `uv run ruff check` and `uv run ruff format --check`

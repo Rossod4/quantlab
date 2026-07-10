@@ -1,0 +1,8 @@
+cache_dir: data/cache
+reports_dir: reports
+providers:
+  prices: yfinance
+  constituents: sp500_community
+  fundamentals: edgar
+calendar: XNYS
+benchmark: SPY

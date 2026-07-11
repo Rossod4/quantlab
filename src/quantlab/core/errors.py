@@ -10,6 +10,13 @@ class LookaheadError(QuantLabError):
     after its asof date."""
 
 
+class UndeclaredDataError(QuantLabError):
+    """Raised when a strategy accesses data it never declared needing via
+    its `DataRequirements` (an undeclared fundamental field, more price
+    lookback than declared, or a universe() call with membership not
+    requested)."""
+
+
 class DataQualityError(QuantLabError):
     """Raised when input data fails a quality/integrity check."""
 

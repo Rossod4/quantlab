@@ -23,17 +23,32 @@ into typed errors rather than silently tolerated:
   fundamentals fields, more price lookback than declared, or a `universe()`
   call when membership access wasn't requested at all.
 
-THE CENTRAL DESIGN DECISION OF THIS MILESTONE - adj_close exposure - is
-implemented here as `prices()` vs `prices_for_returns()`. See the M02
-handoff (plans/state/M02/HANDOFF.md) for the full reasoning; in short:
-`prices()` (the decision/signal path) never includes `adj_close` or any
-adjusted price - it returns raw OHLCV only, which is zero-look-ahead-risk
-by construction but NOT split/dividend-adjusted (a documented limitation).
+THE CENTRAL DESIGN DECISION OF THIS MILESTONE (M02) - adj_close exposure -
+was implemented as `prices()` vs `prices_for_returns()`; see the M02
+handoff (plans/state/M02/HANDOFF.md) for the original reasoning.
 `prices_for_returns()` (the accounting path, for equity-curve/backtest
-bookkeeping only - never for strategy signal logic) exposes yfinance's
-`adj_close`, clearly documented as reflecting ALL splits/dividends through
-TODAY (not just through `asof`) - safe only for computing returns over
-already-elapsed historical periods, never for ranking/decision-making.
+bookkeeping only - never for strategy signal logic) still exposes
+yfinance's `adj_close`, clearly documented as reflecting ALL splits/
+dividends through TODAY (not just through `asof`) - safe only for
+computing returns over already-elapsed historical periods, never for
+ranking/decision-making. `prices()` is UNCHANGED in that respect (never
+adj_close).
+
+M02b (the HARD, gate-mandated follow-on packet recorded in
+plans/state/M02/VERDICT.md's carried item 1 and plans/QUANT-NOTES.md)
+changed `prices()` itself: its `close` column is now an AS-OF ADJUSTMENT
+REPLAY - raw close multiplied by a cumulative factor computed ONLY from
+corporate-action events with ex-date <= asof (data/adjustment.py) - not
+raw close. The original raw value is still available under the explicit
+`raw_close` column. This closes the M02 verdict's -90%-momentum hazard
+(a 10:1 split reading as a spurious return collapse) without letting any
+future corporate action leak into a decision made before it was
+announced: `adjustment_factors`/`apply_asof_adjustment` re-gate to
+`ex_date <= asof` internally, and `prices()` additionally hard-slices the
+actions it fetches before handing them off, mirroring the existing
+hard-slice-then-assert pattern used for prices/actions everywhere else in
+this module. Only `close` is as-of adjusted - `open`/`high`/`low`/`volume`
+remain raw (documented limitation, out of scope for M02b).
 """
 
 from __future__ import annotations
@@ -45,6 +60,7 @@ import pandas as pd
 from quantlab.core.calendar import is_trading_day, prev_trading_day, trading_days
 from quantlab.core.errors import LookaheadError, UndeclaredDataError
 from quantlab.core.types import normalize_timestamp
+from quantlab.data.adjustment import apply_asof_adjustment
 from quantlab.data.interfaces import (
     ConstituentsProvider,
     CorporateActionsProvider,
@@ -53,7 +69,10 @@ from quantlab.data.interfaces import (
 )
 from quantlab.data.requirements import DataRequirements
 
-_PRICE_DECISION_COLUMNS = ["ticker", "open", "high", "low", "close", "volume"]
+# "close" here is the M02b as-of adjustment replay (data/adjustment.py),
+# not the provider's raw value - see module docstring. "raw_close" carries
+# the original, untouched raw close alongside it.
+_PRICE_DECISION_COLUMNS = ["ticker", "open", "high", "low", "close", "raw_close", "volume"]
 _PRICE_RETURNS_COLUMNS = ["ticker", "open", "high", "low", "close", "adj_close", "volume"]
 
 # actions()/prices() need "everything up to asof", not a bounded lookback -
@@ -120,12 +139,35 @@ class PITDataContext:
     # -- prices -----------------------------------------------------------
 
     def prices(self, tickers: list[str], lookback_days: int) -> pd.DataFrame:
-        """Decision-path OHLCV: raw, unadjusted, NEVER includes adj_close.
-        See module docstring for why. Rows hard-sliced to <= asof; at most
-        `lookback_days` distinct trading sessions ending at the last
-        session <= asof."""
+        """Decision-path OHLCV: NEVER includes adj_close. `close` is the
+        as-of adjustment replay (data/adjustment.py) - raw close x
+        cumulative factor from corporate-action events with ex-date <=
+        asof; the untouched raw value is under `raw_close`. Rows hard-
+        sliced to <= asof; at most `lookback_days` distinct trading
+        sessions ending at the last session <= asof. See module docstring
+        for the full M02b contract."""
         panel = self._sliced_price_panel(tickers, lookback_days)
-        return panel[_PRICE_DECISION_COLUMNS].copy()
+        actions_by_ticker = self._gated_actions_by_ticker(tickers)
+        adjusted = apply_asof_adjustment(panel, actions_by_ticker, self._asof)
+        return adjusted[_PRICE_DECISION_COLUMNS].copy()
+
+    def _gated_actions_by_ticker(self, tickers: list[str]) -> dict[str, pd.DataFrame]:
+        """Fetch each ticker's corporate actions and hard-slice to ex-date
+        <= asof - independent of `DataRequirements.needs_actions` (the
+        adjustment replay in `prices()` is unconditional, not an
+        opt-in accessor) and independent of whether the provider itself
+        honored the requested `end` bound. Mirrors the hard-slice-then-
+        assert pattern `actions()` uses below; `adjustment.py` re-gates
+        internally too, so this is defense-in-depth, not the sole guard."""
+        gated: dict[str, pd.DataFrame] = {}
+        for ticker in tickers:
+            raw = self._corporate_actions_provider.get_actions(ticker, _EPOCH, self._asof)
+            sliced = raw.loc[raw.index <= self._asof]
+            _assert_no_future_dates(
+                sliced.index, self._asof, context=f"PITDataContext.prices actions[{ticker}]"
+            )
+            gated[ticker] = sliced
+        return gated
 
     def prices_for_returns(self, tickers: list[str], lookback_days: int) -> pd.DataFrame:
         """Accounting-path OHLCV, including yfinance's globally-adjusted

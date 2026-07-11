@@ -18,6 +18,8 @@ Bias-free EOD systematic trading research platform. US equities. Research + pape
 6. Bias canaries in `tests/canaries/` must always pass; extend them when adding data paths.
 
 ## Build process (agent loop)
+**Resuming this project? Read `plans/ORCHESTRATOR-HANDOFF.md` first — it has the
+current milestone state and exact next action.**
 The platform is built milestone-by-milestone via subagent loops — see `plans/PROTOCOL.md`. Work packets are `plans/M0X-*.md`; loop artifacts go in `plans/state/M0X/`. Agents: `.claude/agents/{developer,code-reviewer,quant-gate}.md`. Do not implement milestone code in the main session; dispatch the loop.
 
 ## Conventions

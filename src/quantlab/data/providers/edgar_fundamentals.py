@@ -34,7 +34,13 @@ now returns `PointInTimeFundamentals` via a dataclass -> dict wrapper
 `FundamentalsProvider`; and `get_company_facts`'s JSON-flattening logic was
 extracted into `_flatten_company_facts` (same operations, just factored out
 so the parity fixture test can flatten a raw companyfacts JSON directly
-without needing a live cache file on disk).
+without needing a live cache file on disk). M03b adds two ADDITIVE
+provenance fields to `PointInTimeFundamentals` -
+`shares_outstanding_filed`/`ttm_eps_filed` - via two new helper functions
+(`_most_recent_instant_with_filed`, `_ttm_duration_with_latest_filed`) that
+mirror the frozen ones step for step and are guaranteed to compute the
+byte-identical `value`; see `PointInTimeFundamentals`'s docstring and
+data/pit.py for why (restating per-share figures into as-of share terms).
 """
 
 from __future__ import annotations
@@ -261,6 +267,30 @@ def _most_recent_instant(
     return value
 
 
+def _most_recent_instant_with_filed(
+    facts: pd.DataFrame, tag_candidates: list[str], as_of_date: pd.Timestamp
+) -> tuple[float | None, pd.Timestamp | None]:
+    """ADDITIVE M03b provenance helper (plans/M03b-share-terms.md): identical
+    subset/sort/selection as `_most_recent_instant_with_end` above (same
+    tag pooling, same `facts["start"].isna() & (facts["filed"] <= as_of_date)`
+    gate, same `sort_values(["end", "filed"]).iloc[-1]` winner) - guaranteeing
+    a byte-identical `value` to what `_most_recent_instant`/
+    `_most_recent_instant_with_end` already return - but returns the
+    winning row's `filed` date instead of its `end` date. Needed so
+    `PITDataContext.fundamentals()` (data/pit.py) can restate a per-share
+    instant fact (shares outstanding) into as-of share terms using only
+    splits after the date this fact was actually filed. Neither
+    `_most_recent_instant` nor `_most_recent_instant_with_end` is modified,
+    so every pre-M03b parity fixture pinned against them is unaffected."""
+    subset = facts[
+        facts["tag"].isin(tag_candidates) & facts["start"].isna() & (facts["filed"] <= as_of_date)
+    ]
+    if subset.empty:
+        return None, None
+    row = subset.sort_values(["end", "filed"]).iloc[-1]
+    return float(row["val"]), row["filed"]
+
+
 def _duration_facts(
     facts: pd.DataFrame, tag_candidates: list[str], as_of_date: pd.Timestamp
 ) -> pd.DataFrame:
@@ -320,6 +350,43 @@ def _ttm_duration(
         return float(annual.iloc[-1]["val"])
 
     return None
+
+
+def _ttm_duration_with_latest_filed(
+    facts: pd.DataFrame, tag_candidates: list[str], as_of_date: pd.Timestamp
+) -> tuple[float | None, pd.Timestamp | None]:
+    """ADDITIVE M03b provenance helper (plans/M03b-share-terms.md): mirrors
+    `_ttm_duration` above step for step (same quarter-vs-annual duration-day
+    windows, same restated-quarter dedup by latest `filed`, same four-quarter
+    sum / annual fallback) so the returned `value` is byte-identical to what
+    `_ttm_duration` already computes - but also returns the LATEST `filed`
+    date among the component fact(s) actually summed. That is the date after
+    which none of those components can have been restated by a later filing
+    (a restated quarter would already have won the `drop_duplicates(...,
+    keep="last")` dedup above), so it is the correct "as of when was this
+    TTM figure knowable in its final form" date for the M03b share-terms
+    restatement in `PITDataContext.fundamentals()` (data/pit.py).
+    `_ttm_duration` itself is not modified, so every pre-M03b parity fixture
+    pinned against it is unaffected."""
+    subset = _duration_facts(facts, tag_candidates, as_of_date)
+    if subset.empty:
+        return None, None
+
+    quarterly = subset[(subset["duration_days"] >= 80) & (subset["duration_days"] <= 100)]
+    if not quarterly.empty:
+        quarterly = quarterly.sort_values("filed").drop_duplicates(subset="end", keep="last")
+        quarterly = quarterly.sort_values("end", ascending=False)
+        last_four = quarterly.head(4)
+        if len(last_four) == 4:
+            return float(last_four["val"].sum()), last_four["filed"].max()
+
+    annual = subset[(subset["duration_days"] >= 350) & (subset["duration_days"] <= 386)]
+    if not annual.empty:
+        annual = annual.sort_values(["end", "filed"])
+        row = annual.iloc[-1]
+        return float(row["val"]), row["filed"]
+
+    return None, None
 
 
 def _annual_growth(
@@ -406,6 +473,24 @@ class PointInTimeFundamentals:
     Every field except `total_debt` is Optional - a None means the filer
     simply didn't report that concept in a usable form as of this date, not
     that the value is zero.
+
+    `shares_outstanding_filed` / `ttm_eps_filed` (ADDITIVE, M03b,
+    plans/M03b-share-terms.md - provenance only, no change to any other
+    field's value): the `filed` date backing `shares_outstanding` /
+    `ttm_eps` respectively - None exactly when the corresponding value is
+    None. `shares_outstanding_filed` is the `filed` date of the single
+    instant fact `_most_recent_instant_with_filed` selected. `ttm_eps_filed`
+    is the LATEST `filed` date among the (up to four) component quarterly
+    facts, or the one annual fact, that `_ttm_duration_with_latest_filed`
+    summed - the date after which none of those components can have been
+    restated by a later filing (a restated quarter already wins the
+    dedup-by-latest-filed inside `_ttm_duration`/`_ttm_duration_with_latest_
+    filed`, so nothing older can silently still be in force after this
+    date). `PITDataContext.fundamentals()` (data/pit.py) uses these two
+    dates, together with corporate-action history, to restate both figures
+    into the share terms in force at its own `asof` - see that module for
+    the ASC 260 argument for why the relevant window is (filed, asof], not
+    (period_end, asof].
     """
 
     shares_outstanding: float | None
@@ -415,6 +500,8 @@ class PointInTimeFundamentals:
     total_debt: float
     cash: float | None
     annual_eps_growth: float | None
+    shares_outstanding_filed: pd.Timestamp | None
+    ttm_eps_filed: pd.Timestamp | None
 
 
 def get_point_in_time_fundamentals(facts: pd.DataFrame, as_of_date) -> PointInTimeFundamentals:
@@ -424,7 +511,7 @@ def get_point_in_time_fundamentals(facts: pd.DataFrame, as_of_date) -> PointInTi
     """
     as_of_date = pd.Timestamp(as_of_date)
 
-    shares_outstanding = _most_recent_instant(
+    shares_outstanding, shares_outstanding_filed = _most_recent_instant_with_filed(
         facts, ["EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"], as_of_date
     )
     stockholders_equity = _most_recent_instant(facts, ["StockholdersEquity"], as_of_date)
@@ -436,9 +523,13 @@ def get_point_in_time_fundamentals(facts: pd.DataFrame, as_of_date) -> PointInTi
     # filer picks between over time) - so they must NOT be pooled together.
     # Diluted is preferred wholesale, falling back to basic wholesale only
     # if this filer has zero diluted EPS data anywhere in its history.
-    ttm_eps = _ttm_duration(facts, ["EarningsPerShareDiluted"], as_of_date)
+    ttm_eps, ttm_eps_filed = _ttm_duration_with_latest_filed(
+        facts, ["EarningsPerShareDiluted"], as_of_date
+    )
     if ttm_eps is None:
-        ttm_eps = _ttm_duration(facts, ["EarningsPerShareBasic"], as_of_date)
+        ttm_eps, ttm_eps_filed = _ttm_duration_with_latest_filed(
+            facts, ["EarningsPerShareBasic"], as_of_date
+        )
 
     operating_income = _ttm_duration(facts, ["OperatingIncomeLoss"], as_of_date)
     d_and_a = _ttm_duration(
@@ -462,6 +553,8 @@ def get_point_in_time_fundamentals(facts: pd.DataFrame, as_of_date) -> PointInTi
         total_debt=total_debt,
         cash=cash,
         annual_eps_growth=annual_eps_growth,
+        shares_outstanding_filed=shares_outstanding_filed,
+        ttm_eps_filed=ttm_eps_filed,
     )
 
 
@@ -473,6 +566,8 @@ _EMPTY_FUNDAMENTALS = PointInTimeFundamentals(
     total_debt=0.0,
     cash=None,
     annual_eps_growth=None,
+    shares_outstanding_filed=None,
+    ttm_eps_filed=None,
 )
 
 

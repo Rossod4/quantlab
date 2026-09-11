@@ -118,7 +118,16 @@ remain OPEN against their own milestones. Original text retained for the record:
 
 ## From M03 verdict (plans/state/M03/VERDICT.md)
 
-- **→ M04 (engine), MATERIAL:** per-share fundamentals go stale across a split
+- **→ CLOSED at M03b (ACCEPT, plans/state/M03b/VERDICT.md §1.1/§3).** `PITDataContext.
+  fundamentals()` now restates `shares_outstanding` (`*= factor`) and `ttm_eps`
+  (`/= factor`) into as-of share terms using splits with `filed < ex_date <= asof`,
+  from the same gated actions path `prices()` uses. Re-measured at the gate on the
+  ORIGINAL M03 fixture: SPLT's P/E 6.25 → 25.0 and P/B 0.417 → 1.667 (both within
+  1e-9 of truth), its composite rank 1-of-4 → 4-of-4, and it is now EXCLUDED from the
+  book instead of selected into it. Frozen EDGAR numerics verified byte-identical over
+  4,000 randomised differential trials. One narrower residual survives — see "From M03b
+  verdict" item 1 (TTM EPS mixed-share-terms sum). Original finding, for the record:**
+  per-share fundamentals go stale across a split
   between the filing date and the decision date. `market_cap = raw_close(asof) *
   shares_outstanding` and `pe = raw_close(asof) / ttm_eps` pair a post-split price
   with pre-split share terms; the error is the full split ratio. Measured at the
@@ -168,7 +177,14 @@ remain OPEN against their own milestones. Original text retained for the record:
   that over-reaches its own footprint raises `UndeclaredDataError` standalone but NOT
   inside a blend, so acceptance criterion 3's guard does not survive composition.
   Engine should construct a per-child ctx from that child's own `requires()`.
-- **→ M06 (trials registry):** the blend's `strategy_id` hashes the children's RAW
+- **→ CLOSED at M03b (ACCEPT, plans/state/M03b/VERDICT.md §1.6/§3).**
+  `BlendStrategy.strategy_id` now hashes a sorted list of `(child.strategy_id, weight)`
+  pairs plus the blend's own non-`children` params. Gate-verified: child-order swap and
+  omitted child defaults give the SAME id; a weight change, a child param change,
+  swapping the two weights BETWEEN children, and nesting a blend as a child all still
+  give different ids. See "From M03b verdict" item 4 for the separate registry-keying
+  gap this exposed. Original item, for the record:** the blend's `strategy_id` hashes
+  the children's RAW
   config dicts, not their `strategy_id`s. Verified at the gate: swapping child order
   gives a different id for an identical portfolio, and omitting a child's default
   param gives a different id though the child ids are identical. Over-counting trials
@@ -176,7 +192,11 @@ remain OPEN against their own milestones. Original text retained for the record:
   but the registry cannot recognise a repeat of the same blend, which is part of its
   job. Canonicalise the blend id as an order-insensitive function of the children's
   own `strategy_id`s and weights.
-- **→ M04 (docs, must-fix, no code change):** two stale claims shipped in M03.
+- **→ CLOSED at M03b (gate-verified in the working tree).** Both wordings fixed:
+  `fundamentals()`'s docstring now reads "identical ... for a session `asof` ... and
+  strictly narrower - never wider - for a non-session `asof`", and
+  `configs/strategies/value_composite.yaml` now says the lag IS enforced. Original
+  item, for the record:** two stale claims shipped in M03.
   (a) HANDOFF.md and `PITDataContext.fundamentals()`'s docstring say
   `filing_lag_sessions=0` is "byte-identical" to the pre-extension gate — true for a
   SESSION asof, but for a non-session asof the old code gated at `filed <= asof` and
@@ -187,3 +207,64 @@ remain OPEN against their own milestones. Original text retained for the record:
   unenforceable - see ... the escalation"; the escalation was resolved in the same
   milestone and the parameter IS enforced. Delete or rewrite — a comment claiming a
   live bias guard is inert is wrong in the worst direction.
+
+## From M03b verdict (plans/state/M03b/VERDICT.md)
+
+- **→ M04, or a follow-on data-layer packet:** TTM EPS can still be a MIXED-share-terms
+  sum. `ttm_eps_filed` is the LATEST filed date among the summed components, which is
+  the right date only when every component is stated in the terms in force on it. True
+  once a later filing's restated comparatives are in the facts (the dedup then makes the
+  answer exact, gate-verified), and on the annual-fallback path. NOT true in the window
+  between a split and the filing that restates the comparatives, when the TTM comes from
+  four standalone quarters. Measured at the gate: a 4:1 split between the 2nd and 3rd
+  component filings leaves `ttm_eps` at 10.0 against a correct 4.0 (2.50x overstated),
+  so P/E is understated by the same factor and the name looks CHEAP — the same adverse
+  direction as the original M03 hazard. Bounded, and much smaller than M03's:
+  `shares_outstanding` is never affected, so market cap, P/B and EV/EBITDA stay exact;
+  only the P/E leg (and the growth-adjusted leg derived from it) moves. On the gate's
+  own fixture it shifted the composite 0.917 → 0.750 without changing the rank or the
+  selection. Correct fix = restate EACH component by the splits after ITS OWN filed date
+  then sum, which needs per-component data out of the provider (data-layer change, not
+  engine work). Until then an M04 value result must carry this caveat for names that
+  split during the window.
+- **→ M04 (test, must-fix):** the window's LOWER bound `filed <` is untested.
+  Mutation-confirmed at the gate: changing `_split_factor_since_filed`'s
+  `splits.index > filed` to `>= filed` leaves the full suite green at 226 dots. This is
+  the mirror of the blocker code review caught on the UPPER bound and it survived both
+  review iterations because both mutations aimed at the right edge. Add a test pinning a
+  split ex-dated exactly ON the filed date (factor 1.0). Decide it deliberately: the two
+  readings fail in OPPOSITE directions — shipped `<` leaves a non-restated figure stale
+  and the name looks cheap (spurious BUY); `<=` double-restates a compliant filer's
+  figure and the name looks expensive (missed name). Shipped side is correct on ASC 260
+  (a same-day split precedes intraday issuance) but is the side whose failure mode is a
+  spurious buy. Related nuance for the same test: for `shares_outstanding` the governing
+  date is the cover page's "latest practicable date", which PRECEDES the filing date, so
+  keying that field on `filed` is slightly too late and errs the same adverse way —
+  worth a docstring sentence even if the code keeps using `filed`.
+- **→ M04 (engine):** `fundamentals()` now depends on the corporate-actions path.
+  Gate-verified: with a raising actions provider and `needs_actions=False`,
+  `fundamentals()` propagates the failure. `_gated_actions_by_ticker` is deliberately
+  independent of `DataRequirements.needs_actions` (already true for `prices()`), but
+  this is NEW for `fundamentals()`, so a stale or unfetchable actions cache now blocks
+  the VALUE leg too, for a strategy that declares no actions need. Correct — silently
+  skipping the restatement would reintroduce the hazard — but M04 needs ONE policy
+  covering both paths, and dropping the offending ticker must be counted in the coverage
+  gap (CLAUDE.md invariant #2). Reinforces the open M02b item on a blocked ticker at a
+  rebalance.
+- **→ M06 (trials registry):** `strategy_id` does not encode DATA SEMANTICS, so a
+  config's id is stable across a change that alters its results.
+  `value_composite-b6fdfec048` is byte-identical before and after M03b even though the
+  strategy's output on a split-spanning universe changed materially (momentum ids are
+  unchanged too, correctly, since nothing about them moved). The registry keys on
+  `strategy_id`, so pre- and post-M03b runs of the same YAML would record as the SAME
+  trial and a genuine change in results would read as noise. Key the registry on
+  `strategy_id` PLUS a platform/data-semantics version, and record M03b as the first
+  boundary.
+- **→ M04 (minor, perf):** repeated per-ticker fetches compound. `fundamentals()` fetches
+  the ticker's full actions history on every call and `value.py`'s `_asof_raw_price`
+  already fetches the same history again via its per-ticker `ctx.prices([t], 1)` — two
+  full action fetches per ticker per rebalance, inside a Python loop over the universe.
+  Separately `BlendStrategy.strategy_id` reconstructs every child through
+  `load_strategy` on each access and `generate_targets` reconstructs them again.
+  Correctness unaffected; reinforces M03 REVIEW.md minor 3. Worth one batching pass when
+  M04 wires in a real provider.

@@ -346,3 +346,65 @@ def test_canary_increasing_filing_lag_only_ever_narrows_visible_filings():
     ]
 
     assert visible_by_lag == [300.0, 200.0, 100.0, None]
+
+
+# -- (h) a split ex-dated after asof must have zero effect on the M03b -----
+# -- share-terms restatement -------------------------------------------------
+
+
+def test_canary_future_dated_split_has_zero_effect_on_fundamentals_share_terms():
+    """M03b (plans/M03b-share-terms.md): `fundamentals()` restates
+    `shares_outstanding`/`ttm_eps` into as-of share terms using only split
+    actions with ex-date in `(filed, asof]` (data/pit.py's
+    `_split_factor_since_filed`, fed by `_gated_actions_by_ticker` - the
+    SAME gated-to-asof actions `prices()` uses for canary (f), never a
+    second raw provider call). A hostile CorporateActionsProvider ignores
+    the requested window and returns a 4:1 split dated one day AFTER asof;
+    `fundamentals()` must produce a byte-identical dict whether or not that
+    split exists in the provider.
+
+    Mutation-check performed manually during development (plans/state/M03b/
+    HANDOFF.md records the result): widening `_gated_actions_by_ticker`'s
+    hard-slice bound from `<= self._asof` to `<= self._asof + one day`
+    makes this canary fail, confirming it has real power against a
+    regression in the shared gate this restatement depends on."""
+    filed = pd.Timestamp("2021-01-15")
+    asof = pd.Timestamp("2021-03-01")
+    facts = pd.DataFrame(
+        [
+            {
+                "tag": "EntityCommonStockSharesOutstanding",
+                "start": pd.NaT,
+                "end": pd.Timestamp("2020-12-31"),
+                "filed": filed,
+                "val": 100.0,
+            }
+        ]
+    )
+    requirements = DataRequirements(fundamental_fields=frozenset({"shares_outstanding"}))
+    future_split = pd.DataFrame(
+        {"ticker": ["AAA"], "action_type": ["split"], "value": [4.0]},
+        index=pd.DatetimeIndex([asof + pd.Timedelta(days=1)], name="date"),
+    )
+
+    ctx_with_future_split = _minimal_context(
+        asof,
+        requirements,
+        price_provider=_AlwaysReturnsFullPanelPriceProvider(pd.DataFrame()),
+        fundamentals_provider=_FactsBackedFundamentalsProvider(facts),
+        corporate_actions_provider=_AlwaysReturnsFullActionsProvider(future_split),
+    )
+    ctx_without = _minimal_context(
+        asof,
+        requirements,
+        price_provider=_AlwaysReturnsFullPanelPriceProvider(pd.DataFrame()),
+        fundamentals_provider=_FactsBackedFundamentalsProvider(facts),
+        corporate_actions_provider=_EmptyCorporateActionsProvider(),
+    )
+
+    with_split = ctx_with_future_split.fundamentals("AAA")
+    without_split = ctx_without.fundamentals("AAA")
+
+    assert with_split == without_split
+    assert with_split["shares_outstanding"] == 100.0
+    assert with_split["shares_outstanding_split_factor"] == 1.0

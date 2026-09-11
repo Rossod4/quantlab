@@ -187,3 +187,26 @@ hard-coded), so the test is a true cross-implementation check.
    M03b before M04's value/blend configs are run for real; M04 does not need to address
    it but must not quote a value or blend result without the M03b caveat if M03b has
    not merged.
+
+## Carried from the M03b verdict (binding — see plans/QUANT-NOTES.md "From M03b verdict")
+8. **One data-failure policy for both paths.** `fundamentals()` now depends on the
+   corporate-actions path, so `StaleActionsCacheError`/`ActionsFetchError` can surface
+   from the value leg as well as `prices()`. The engine's per-ticker failure handling
+   (item "Per-ticker data failure" above) must cover BOTH accessors with one policy and
+   one counter feeding the coverage report. Test with a hostile actions provider that
+   fails for one ticker during a value-strategy rebalance.
+9. **Per-context actions memoisation (perf, required for the real run).** Within one
+   `PITDataContext` the gated actions frame for a ticker is fetched once and reused by
+   `prices()` and `fundamentals()` (today each call re-reads). Also cache the blend's
+   child construction so `strategy_id` access is not O(children) reconstruction. Both
+   are additive; no semantic change; prove by a call-count test on a fake provider.
+10. **Caveat to carry into every value/blend result:** TTM EPS can be a mixed-share-terms
+    sum when a split falls between component filings and restated comparatives are not
+    yet filed (bounded to the P/E leg; adverse direction, measured 2.5x on a contrived
+    fixture). `BacktestResult.provenance` must carry a `known_caveats: list[str]` and the
+    engine appends this text for any strategy that declares `ttm_eps`. The proper fix is
+    a data-layer follow-on (per-component share terms) scheduled after M06.
+11. **Semantics version (for M06):** `BacktestResult.provenance` must record a
+    `data_semantics_version` string (start at "m03b") so the M06 trials registry can key
+    on strategy_id + semantics version. Define the constant in core/ and bump it whenever
+    a merged milestone changes what a strategy sees.

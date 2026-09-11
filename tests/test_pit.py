@@ -247,14 +247,30 @@ def test_fundamentals_undeclared_raises_undeclared_data_error():
 
 
 def test_fundamentals_returns_only_declared_fields():
+    """M03b (plans/M03b-share-terms.md): declaring `ttm_eps` also returns
+    a per-field provenance key, `ttm_eps_split_factor`, plus
+    `share_terms_asof` - see data/pit.py's `fundamentals()` docstring.
+    `cash` alone would NOT add them; declaring it alongside `ttm_eps` here
+    does. `shares_outstanding` was NOT declared, so no
+    `shares_outstanding_split_factor` key appears (M03b REVIEW.md finding
+    2: each provenance key is gated on its OWN field, not on "either field
+    declared")."""
     requirements = DataRequirements(fundamental_fields=frozenset({"ttm_eps", "cash"}))
     ctx = _context("2020-01-15", requirements)
 
     result = ctx.fundamentals("AAA")
 
-    assert set(result.keys()) == {"ttm_eps", "cash"}
+    assert set(result.keys()) == {
+        "ttm_eps",
+        "cash",
+        "ttm_eps_split_factor",
+        "share_terms_asof",
+    }
     assert result["ttm_eps"] == 1.5
     assert result["cash"] == 20.0
+    # FUNDAMENTALS_FIXED carries no *_filed provenance, so nothing to
+    # restate against - factor is the documented no-op default.
+    assert result["ttm_eps_split_factor"] == 1.0
 
 
 # -- universe() ---------------------------------------------------------------

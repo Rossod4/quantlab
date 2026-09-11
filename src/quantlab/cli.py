@@ -7,10 +7,15 @@ the real implementations.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from quantlab import __version__
+
+if TYPE_CHECKING:
+    from quantlab.backtest.result import QualityFlags
+    from quantlab.validation.metrics import MetricsSummary
 
 app = typer.Typer(
     name="quantlab",
@@ -105,9 +110,68 @@ def backtest(
 
 
 @app.command()
-def validate() -> None:
-    """Run validation checks on a backtest result."""
-    _not_implemented("M0X")
+def validate(
+    result: Path = typer.Option(
+        ..., "--result", exists=True, file_okay=False, help="Directory of a saved BacktestResult."
+    ),
+    out: Path = typer.Option(..., "--out", help="Directory to write the validation report to."),
+    benchmark: Path | None = typer.Option(
+        None,
+        "--benchmark",
+        exists=True,
+        file_okay=False,
+        help="Directory of a saved benchmark BacktestResult (overrides the embedded benchmark).",
+    ),
+    config: Path = typer.Option(
+        Path("configs/validation.yaml"), "--config", help="Path to validation.yaml."
+    ),
+) -> None:
+    """Run basic-tier validation (metrics, rolling, sub-periods, flags) on a
+    saved `BacktestResult` and write the report to `--out`.
+
+    Walk-forward and parameter-sensitivity checks are not run by this
+    command (they need inputs beyond one saved result - see
+    `validation/basic.py`'s module docstring); it covers the "basic" tier
+    only (`plans/M05-validation-1.md`)."""
+    import json
+
+    from quantlab.backtest.result import BacktestResult
+    from quantlab.validation.basic import load_validation_config, validate_basic
+
+    bt_result = BacktestResult.load(result)
+    bench_result = BacktestResult.load(benchmark) if benchmark is not None else None
+    validation_config = load_validation_config(config)
+
+    basic = validate_basic(bt_result, bench_result, validation_config)
+
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "validation_basic.json").write_text(json.dumps(basic.to_json(), sort_keys=True))
+
+    typer.echo(_validate_one_liner(basic.metrics, bt_result.quality_flags))
+    for flag in basic.flags:
+        typer.echo(f"  - {flag}")
+
+
+def _validate_one_liner(metrics: MetricsSummary, quality_flags: QualityFlags) -> str:
+    """The `validate` command's one-line summary. Quant-gate VERDICT.md
+    finding 4 (carried M04 verdict item 2, binding): a nonzero
+    extreme-return count must appear in this one-liner, with the
+    long/short breakdown - M04's `backtest` one-liner (above) prints only
+    the combined count, and may run in a different session from whoever
+    later runs `validate` on the saved result, so it does not discharge
+    this for `validate`'s own output."""
+    m = metrics
+    line = (
+        f"net CAGR={m.net_cagr:.2%}  Sharpe={m.net_sharpe:.2f}  Sortino={m.net_sortino:.2f}  "
+        f"Calmar={m.net_calmar:.2f}  maxDD={m.net_max_drawdown:.2%}  hit_rate={m.hit_rate:.1%}"
+    )
+    qf = quality_flags
+    if qf.extreme_returns_long or qf.extreme_returns_short:
+        line += (
+            f"  extreme_returns_long={qf.extreme_returns_long} "
+            f"extreme_returns_short={qf.extreme_returns_short}"
+        )
+    return line
 
 
 @app.command()

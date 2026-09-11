@@ -27,8 +27,11 @@ carries both the real last-bar date and the metadata-claimed end so
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pandas as pd
+
+from quantlab.data.cache import price_cache_path, price_meta_path, read_cache, read_json_meta
 
 
 @dataclass(frozen=True)
@@ -87,25 +90,43 @@ def coverage_gap(
     price_availability: dict[str, PriceAvailability],
     start: object,
     end: object,
+    sample_dates: pd.DatetimeIndex | None = None,
 ) -> CoverageReport:
     """Per-year % of point-in-time constituents lacking price data, plus an
     overall conservative bound.
 
-    For each calendar year in [start, end], membership is taken as-of that
-    year's end (clamped to `end`), and the % lacking coverage is
+    For each calendar year in [start, end], membership is taken as-of a
+    reference date (clamped to `end`), and the % lacking coverage is
     `|lacking| / |members|` where a member is "lacking" if it has no cached
     price data at all, OR its cache is masked-truncated (see
     `PriceAvailability.masked_end`) before that year's reference date while
     still being a constituent then. A year with zero point-in-time members
     (e.g. `asof` precedes all membership data) reports 0%, not an error.
+
+    `sample_dates` (additive, M04 work packet - plans/QUANT-NOTES.md's M02
+    carried item): when given, each year's reference date is the LATEST
+    `sample_dates` entry falling in that calendar year (e.g. the backtest
+    engine's own rebalance dates), rather than that year's Dec 31 - sampling
+    membership/coverage at the dates a strategy actually acts on, rather
+    than an arbitrary calendar boundary the backtest may never touch. A year
+    with no `sample_dates` entry falls back to the Dec-31-or-`end` behavior
+    (unchanged from before this parameter existed). `sample_dates=None`
+    (default) is byte-identical to the pre-existing Dec-31-every-year
+    behavior - every caller and test written before this parameter existed
+    is unaffected.
     """
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
+    sample_index = pd.DatetimeIndex(sample_dates) if sample_dates is not None else None
 
     by_year: dict[int, float] = {}
     masked_tickers: dict[int, list[str]] = {}
 
     for year in range(start_ts.year, end_ts.year + 1):
         year_end = min(pd.Timestamp(year=year, month=12, day=31), end_ts)
+        if sample_index is not None:
+            in_year = sample_index[sample_index.year == year]
+            if len(in_year) > 0:
+                year_end = min(in_year.max(), end_ts)
         if year_end < start_ts:
             continue
 
@@ -138,3 +159,41 @@ def coverage_gap(
     return CoverageReport(
         by_year=by_year_series, overall_bound=overall_bound, masked_tickers=masked_tickers
     )
+
+
+def price_availability_from_cache(
+    tickers: list[str], cache_dir: Path
+) -> dict[str, PriceAvailability]:
+    """Build `coverage_gap`'s `price_availability` argument directly from the
+    on-disk price cache (M04 work packet / plans/QUANT-NOTES.md's M02
+    carried item 3(ii)) - without this, `PriceAvailability.masked_end` is
+    never populated and `coverage_gap` can never surface a masked-truncation
+    (see this module's docstring's "masked truncation" hazard).
+
+    For each ticker: `has_data=False` if there is no cached price file at
+    all; else `last_bar_date` = the cache's most recent bar, and
+    `masked_end` = the cache's sidecar-recorded `requested_end` (data/cache.py's
+    `write_price_cache_meta`) IF that is later than `last_bar_date` (a
+    request that reached further than the data actually goes - the signature
+    of a frozen truncation), else `None` (no metadata, or the metadata
+    doesn't exceed the real last bar - nothing masked).
+    """
+    result: dict[str, PriceAvailability] = {}
+    for ticker in tickers:
+        cached = read_cache(price_cache_path(ticker, cache_dir))
+        if cached is None or cached.empty:
+            result[ticker] = PriceAvailability(has_data=False)
+            continue
+
+        last_bar_date = pd.Timestamp(cached.index.max())
+        masked_end: pd.Timestamp | None = None
+        meta = read_json_meta(price_meta_path(ticker, cache_dir))
+        if meta is not None and "requested_end" in meta:
+            requested_end = pd.Timestamp(meta["requested_end"])
+            if requested_end > last_bar_date:
+                masked_end = requested_end
+
+        result[ticker] = PriceAvailability(
+            has_data=True, last_bar_date=last_bar_date, masked_end=masked_end
+        )
+    return result

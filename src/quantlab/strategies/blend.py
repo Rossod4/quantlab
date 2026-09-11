@@ -23,11 +23,34 @@ generalized from the old repo's fixed two-way `w` / `(1 - w)` split to N
 children whose weights are validated to sum to 1.0 (the N=2,
 weights-sum-to-1 case is exactly the old formula).
 
-Every child strategy is called against the SAME `ctx` this strategy
-receives - `Blend.requires()` declares the union of every child's
-`DataRequirements`, which is a superset of (never narrower than) what each
-child individually declared, so no child's own `ctx` calls can raise
-`UndeclaredDataError` because of the union.
+`Blend.requires()` declares the union of every child's `DataRequirements` -
+a superset of (never narrower than) what each child individually declared -
+which is what THIS strategy's own `ctx` (as handed to `generate_targets` by
+a caller that builds exactly one context per strategy, e.g. a bare
+`BlendStrategy` used directly in a test) is built from.
+
+## Per-child context factory (M04 engine, carried from the M03 verdict -
+plans/QUANT-NOTES.md "From M03 verdict": "a blend hands every child the SAME
+ctx, built from the blend's UNION of DataRequirements ... a child that
+over-reaches its own footprint raises UndeclaredDataError standalone but NOT
+inside a blend")
+
+Handing every child the SAME union-built `ctx` means a child that asks for
+MORE than its OWN `requires()` declared - but no more than the union - never
+raises `UndeclaredDataError`, silently defeating that guard under
+composition (acceptance criterion 3 in the M03 packet no longer "survives"
+being wrapped in a blend). `set_context_factory` below is the intentional,
+additive M04 fix: the ENGINE (backtest/engine.py) calls it once per run with
+a callable `DataRequirements -> PITDataContext` bound to the current
+rebalance date, and `generate_targets`, when a factory has been set, builds
+each child a FRESH context from that child's OWN `requires()` instead of
+reusing the `ctx` argument at all - so a child's declaration is enforced
+exactly as strictly composed as standalone. `ctx` is still accepted (and
+used verbatim, matching the pre-M04 behavior) when no factory has been set,
+so a bare `BlendStrategy` used directly (as in tests/test_blend.py) needs no
+changes. A nested blend (a blend-of-blends) is propagated the SAME factory
+via `set_context_factory` before its own `generate_targets` runs, so the
+guard survives arbitrarily deep composition, not just one level.
 
 ## Canonical `strategy_id` (M03b, closing plans/state/M03/VERDICT.md item
 4.8, carried to M06)
@@ -51,6 +74,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
@@ -96,9 +120,34 @@ class BlendStrategy(Strategy):
     """Weighted linear combination of child strategies' target weights -
     see module docstring."""
 
+    def __init__(self, params: dict[str, Any] | None = None):
+        super().__init__(params)
+        # Set by the engine via `set_context_factory` - see module
+        # docstring's "Per-child context factory" section. None means "no
+        # factory bound yet": `generate_targets` falls back to handing every
+        # child the SAME `ctx` it was itself called with (the pre-M04,
+        # standalone-blend behavior every existing test relies on).
+        self._context_factory: Callable[[DataRequirements], PITDataContext] | None = None
+        # Lazily populated by `_children()` - params are frozen at
+        # construction (base.py), so the child list never changes for a
+        # given instance; caching it avoids reconstructing every child
+        # (including recursively loading nested blends) on every
+        # `_children()` call (M03b verdict carried item 9, perf-only, no
+        # semantic change).
+        self._children_cache: list[tuple[Strategy, float]] | None = None
+
     @classmethod
     def params_model(cls) -> type[BaseModel]:
         return BlendParams
+
+    def set_context_factory(self, factory: Callable[[DataRequirements], PITDataContext]) -> None:
+        """Bind the per-child context factory - see module docstring. The
+        engine calls this once per run before the first `generate_targets`
+        call; `factory` is expected to build a context bound to whatever
+        rebalance date the engine is currently deciding for a given
+        `DataRequirements`, via closure (backtest/engine.py's
+        `context_factory`, not a change to this class's own signature)."""
+        self._context_factory = factory
 
     @property
     def strategy_id(self) -> str:
@@ -116,16 +165,18 @@ class BlendStrategy(Strategy):
         return f"{self.name}-{digest}"
 
     def _children(self) -> list[tuple[Strategy, float]]:
-        # Imported lazily to avoid a module-level import cycle with
-        # quantlab.strategies.registry (which this package's __init__
-        # populates by importing momentum/value/blend eagerly).
-        from quantlab.strategies.registry import load_strategy
+        if self._children_cache is None:
+            # Imported lazily to avoid a module-level import cycle with
+            # quantlab.strategies.registry (which this package's __init__
+            # populates by importing momentum/value/blend eagerly).
+            from quantlab.strategies.registry import load_strategy
 
-        p: BlendParams = self._params
-        return [
-            (load_strategy({"strategy": c.strategy, "params": c.params}), c.weight)
-            for c in p.children
-        ]
+            p: BlendParams = self._params
+            self._children_cache = [
+                (load_strategy({"strategy": c.strategy, "params": c.params}), c.weight)
+                for c in p.children
+            ]
+        return self._children_cache
 
     def requires(self) -> DataRequirements:
         children = self._children()
@@ -145,7 +196,13 @@ class BlendStrategy(Strategy):
         date = normalize_timestamp(date)
         blended: dict[str, float] = {}
         for child, weight in self._children():
-            child_targets = child.generate_targets(ctx, date)
+            if self._context_factory is not None:
+                child_ctx = self._context_factory(child.requires())
+                if isinstance(child, BlendStrategy):
+                    child.set_context_factory(self._context_factory)
+            else:
+                child_ctx = ctx
+            child_targets = child.generate_targets(child_ctx, date)
             for ticker, w in child_targets.weights.items():
                 blended[ticker] = blended.get(ticker, 0.0) + weight * w
 

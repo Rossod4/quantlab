@@ -181,3 +181,37 @@ def test_undersized_context_raises_undeclared_data_error():
 
     with pytest.raises(UndeclaredDataError):
         strat.generate_targets(ctx, ASOF)
+
+
+# -- month contiguity (M04 engine fix, carried from the M03 verdict) --------
+
+
+def test_deleting_one_month_produces_an_all_nan_row_not_a_silent_13_month_lookback():
+    """QUANT-NOTES.md's M03-verdict-carried item: `_month_end_prices` used
+    to pivot on calendar months PRESENT in the panel, so deleting one
+    month's rows silently shifted a 12-month-back lookup to 13 real months
+    back for every ticker at once, rather than raising or producing a
+    missing/NaN score. Deleting one interior month from the fixture must
+    now leave that calendar month as an all-NaN row (old repo's
+    `resample("ME").last()` semantics) so the signal for the deleted
+    month's lookback offset is excluded, not silently mis-dated."""
+    from quantlab.strategies.momentum import _month_end_prices
+
+    strat = MomentumStrategy({"book": "long_only", "n_long": 1})
+    requirements = strat.requires()
+    sessions = _sessions(requirements.price_lookback_days)
+    panel = _stepped_panel(sessions, rates={"WINNER": 1.05, "LOSER": 0.96})
+
+    deleted_month = pd.PeriodIndex(sessions, freq="M").unique().sort_values()[3]
+    keep_mask = pd.PeriodIndex(panel.index, freq="M") != deleted_month
+    gapped_panel = panel.loc[keep_mask]
+
+    wide = _month_end_prices(gapped_panel)
+
+    deleted_month_end = deleted_month.to_timestamp(how="end").normalize()
+    assert deleted_month_end in wide.index
+    assert wide.loc[deleted_month_end].isna().all()
+    # The index must be perfectly contiguous month-to-month around the gap -
+    # no month silently vanishes.
+    months = pd.PeriodIndex(wide.index, freq="M")
+    assert list(months) == list(pd.period_range(months.min(), months.max(), freq="M"))

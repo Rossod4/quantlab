@@ -268,3 +268,227 @@ remain OPEN against their own milestones. Original text retained for the record:
   `load_strategy` on each access and `generate_targets` reconstructs them again.
   Correctness unaffected; reinforces M03 REVIEW.md minor 3. Worth one batching pass when
   M04 wires in a real provider.
+
+## Closure status of every M04-addressed item, at the M04 gate cycle 1 (plans/state/M04/VERDICT.md)
+
+Recorded here as a block rather than as inline edits so the original wording of each
+item above stays intact for the record. Verdict: REJECT — items 3 and 6 below are the
+only ones that do not close.
+
+1. **M00, spurious terminal rebalance — CLOSED.** `_drop_terminal_partial_period` +
+   `_is_genuine_period_boundary` in `backtest/engine.py`, with a test at a non-boundary
+   end date (2020-06-15 → last kept date 2020-05-29) and a companion test that a genuine
+   final boundary is kept.
+2. **M00, `prev_trading_day` not repurposed — CLOSED.** Gate-verified by grep: it is not
+   referenced anywhere in `src/quantlab/backtest/`.
+3. **M02, coverage bound at rebalance dates + `masked_end` populated — REMAINS OPEN.**
+   Both mechanisms shipped and are tested (`coverage_gap(sample_dates=)`;
+   `price_availability_from_cache` against a real cache dir), but the engine feeds
+   `price_availability_from_cache` the set of names the strategy HELD rather than the
+   universe, so `overall_bound` measures "fraction of the index not bought" and the
+   masked-truncation path is never reached for a name the strategy stopped holding. See
+   VERDICT.md finding 1, with a reproduction (10-name fully-cached universe, top-3
+   strategy, bound reads 70.0 against a truth of 0.0).
+4. **M02, forced exit triggers on "price series ends" not solely `infer_delisting` —
+   CLOSED.** The engine checks only the superset condition; `infer_delisting` is not
+   called in the hot path and no `legacy_drop`/drop-from-average fallback exists in
+   `src/quantlab/backtest/`. (The RETURN booked on that path is wrong for a separate
+   reason — VERDICT.md finding 3 — but the trigger itself is right.)
+5. **M02b, raw OHL reachable only via `prices_for_returns` — CLOSED as documented.** No
+   plugin calls it. See the new M05/M09 item below on the accessor being reachable from a
+   strategy's own decision context.
+6. **M02b/M03b, one per-ticker data-failure policy covering `prices()` and
+   `fundamentals()`, counted rather than swallowed — CLOSED on the policy, deliberately
+   divergent on the counter.** `_FilteringConstituentsProvider` probes the shared
+   corporate-actions fetch at context-construction time, so one policy and one counter
+   serve both accessors; the >5% abort path and a literal `ValueStrategy` hostile-actions
+   case are both tested. The drops land in `quality_flags.dropped_tickers_by_date`, NOT
+   in `coverage_report`, which is a documented divergence from the packet's literal
+   wording; the reasoning (a per-rebalance, often non-price event cannot be expressed in
+   a per-ticker, per-year price-availability model without overstating the year's gap) is
+   accepted at this gate as it was at code review. See the new M06/M07 item below.
+7. **M02b, paper/live runner actions-cache refresh policy — NOT M04.** Paper trading is
+   explicitly out of the M04 packet's scope. Carries forward unchanged.
+8. **M03, blend costs netted vs per-sleeve — CLOSED.** Netted by construction (the engine
+   diffs consecutive already-blended `TargetWeights`), per the orchestrator's decision,
+   documented in `configs/backtests/blend_50_50_2012_2026.yaml` and in `engine.py`, with a
+   magnitude test (0.30 per-sleeve turnover vs 0.0 netted on the offsetting fixture).
+9. **M03, month contiguity — CLOSED.** `momentum._month_end_prices` reindexes to the full
+   contiguous month range; the test deletes a month and asserts an all-NaN row rather
+   than a silent 13-month lookback.
+10. **M03, value-leg silent drops surfaced — CLOSED into `quality_flags.unscored_by_date`.**
+    Generalised to any strategy (declared universe minus weights keys). Same deliberate
+    divergence as item 6 on where it is counted.
+11. **M03, formation-month semantics — CLOSED as documented** (developer's call, which the
+    packet explicitly allowed): mid-month `asof` is documented as unsupported in
+    `momentum.py`'s module docstring rather than enforced by raising.
+12. **M03, unscoreable-date policy — CLOSED.** `abort_on_unscoreable` defaults True;
+    abort and record-and-hold-prior are both tested, and a forced-exited name's freed
+    weight goes to cash rather than being redistributed.
+13. **M03, per-child context for blends — CLOSED.** `set_context_factory` on the blend,
+    wired by the engine, with a bug-reproduction pair (an overreaching child does not
+    raise without the factory, does raise with it), a spy proving each child gets its own
+    `requires()`, and a nested blend-of-blends propagation test.
+14. **M03b, TTM EPS mixed-share-terms caveat — CLOSED.** `provenance.known_caveats` is
+    populated whenever the strategy declares `ttm_eps`; gate-verified present and
+    JSON-round-tripping.
+15. **M03b, the `filed <` LOWER bound is untested — CLOSED.**
+    `tests/test_share_terms.py::test_split_exactly_on_the_filing_date_has_zero_effect`
+    pins the boundary and `test_split_one_day_after_the_filing_date_is_applied` pins the
+    other side.
+16. **M03b, per-context actions memoisation — CLOSED.** `PITDataContext` caches each
+    ticker's gated actions frame per instance and returns a copy; three call-count tests
+    cover the shared fetch, per-ticker independence, and no leakage across instances.
+    Blend child construction is cached separately.
+17. **Packet item 11, semantics version — CLOSED.** `core/semantics.py` defines
+    `DATA_SEMANTICS_VERSION = "m03b"`; gate-verified in `provenance`.
+
+## From M04 verdict (plans/state/M04/VERDICT.md)
+
+- **→ M05 (metrics):** never compute metrics from `BacktestResult.snapshots`. The ledger
+  track runs on raw prices and never credits dividends, so it diverges from
+  `net_equity` by roughly the cumulative dividend yield — on the order of 30% over the
+  shipped 2012–2026 window at 2%/yr, not the `cost * gross` cross term `engine.py`'s
+  module docstring claims. Gate-verified: on a $5-dividend fixture the return series moved
+  +5.2632% while the ledger stayed exactly flat. Metrics belong on
+  `net_returns`/`net_equity`; `snapshots` is for position inspection only. The docstring's
+  "agree to first order" sentence should be corrected when M04 is re-cut.
+- **→ M05 (metrics) / M06 (validation):** `quality_flags.extreme_returns` counts a
+  RIGHT-TAIL-ONLY truncation of the return distribution. Excluding a genuine large winner
+  lowers the measured mean (conservative) but also makes the series look more left-skewed
+  and thinner-tailed on the right than reality, and skewness and kurtosis are direct PSR
+  and DSR inputs. Any run with a nonzero count must surface it in the one-line summary and
+  beside any PSR/DSR figure, not only inside the result object.
+- **→ M05 / M07 (reporting):** `quality_flags.missing_forward_prices` is assigned the
+  `forced_exits` counter itself (`engine.py:782`), not an independent measurement. Do not
+  report it as a second, corroborating number.
+- **→ M06 (trials registry):** `provenance.quantlab_git_sha` carries no dirty-tree flag.
+  M04 itself ran from an uncommitted working tree, so the recorded sha names a commit that
+  does not contain the code that produced the result. Record a `dirty: bool` (or the
+  emptiness of `git status --porcelain`) alongside the sha, or the registry keys a trial
+  to the wrong code. Compounds the existing M03b item about keying on `strategy_id` plus a
+  semantics version.
+- **→ M06 / M07:** `coverage_report.overall_bound` and
+  `quality_flags.unscored_by_date`/`dropped_tickers_by_date` are, by the accepted
+  divergence in item 6 above, deliberately separate measurements of two different selection
+  effects. Any headline "how much of this book can I not trust" figure must combine both;
+  reporting the bound alone understates. Once VERDICT.md finding 1 is fixed, the bound
+  means: the worst single calendar year's percentage of that year's point-in-time index
+  members — sampled at the last rebalance date in that year — with no cached price history
+  at all or a cache metadata-masked before that date. It is a ceiling on names invisible to
+  the strategy, never a return impact.
+- **→ M07 (reporting):** whatever resolution ships for VERDICT.md finding 5, the report must
+  state which price the entry is measured at. Today `next_open` mode fills the ledger at the
+  next session's open while measuring returns close-to-close over the same dates, so the two
+  tracks disagree about when the position started.
+- **→ M09 (data refresh), reinforcing the open M02b item:** `refresh_actions_cache()` still
+  has no operational caller, and M04 has now shipped a `quantlab backtest` CLI — so a stale
+  actions cache is a user-visible run failure with still no in-product recovery path. Wire
+  it into the data-refresh command alongside the M01 metadata-invalidate note.
+- **→ M05 / M09 (canaries):** a strategy can call `ctx.prices_for_returns()` on its OWN
+  decision context and receive `adj_close` plus raw OHL — gate-verified directly. This is
+  inherited from M02/M03, not introduced by M04, and canary (i) is honest that it only
+  asserts the engine never hands over a separate accounting-path context. The
+  adj_close-out-of-signals guard is therefore convention plus per-plugin canaries, not
+  construction. Consider a canary asserting no registered strategy's source calls
+  `prices_for_returns`, so the M02b escalation trigger fires on the way in rather than at a
+  later gate.
+
+## Orchestrator decisions (recorded for the gate; Alex delegated these)
+- **M04 finding 4 (extreme guard on shorts), 2026-09-11:** the old repo's
+  `long_short_engine.py` (lines 280-291) applied the SAME upside-only glitch guard to the
+  bottom (short) basket, with per-book counts. The engine's trigger is therefore inherited
+  parity under CLAUDE.md invariant #4, not a new defect. Decision: keep the trigger as
+  `extreme_return_policy=exclude_legacy` (default; parity), count per book
+  (`extreme_returns_long` / `extreme_returns_short`), emit a `known_caveats` entry when the
+  short book had exclusions ("short book flattered"), and offer `flag_only` (count, never
+  exclude). The sign-aware trigger the M04 verdict proposed is NOT adopted for the parity
+  default because it would change frozen numerics; it may be added as a third policy in a
+  later packet if a long-short strategy is ever promoted. Long-only strategies are
+  unaffected. Gate may REJECT this reasoning; if so the decision escalates to Alex.
+- **M03 filing lag, M03 fundamentals() restrict-only extension, M03b (filed, asof] window,
+  M04 netted-book blend costing, M04 unscoreable-date policy, M04 accounting=True gate:**
+  recorded in the respective packets' "Carried from" sections and handoffs.
+
+## M04 gate cycle 2 — ACCEPT (plans/state/M04/VERDICT.2.md)
+
+M04 is **ACCEPTED**. Dispositions below supersede the cycle-1 block above where they
+conflict. Verified by re-running the cycle-1 reproductions unchanged against the
+iteration-3 tree, not by re-reading the handoff.
+
+- **M04 item 3 (coverage bound over the universe) — NOW CLOSED**, reversing the cycle-1
+  "REMAINS OPEN". `all_universe_tickers` accumulates the union of `ctx.universe()` across
+  rebalances, separate from the held set, and their union feeds
+  `price_availability_from_cache`. The gate's own fixture (10-name fully-cached universe,
+  top-3 strategy) now reads `overall_bound == 0.0`, against 70.0 at cycle 1; an
+  independent fixture with a never-held masked name reads 10.0, ruling out a false-clean
+  zero. The bound now means what the cycle-1 verdict defined it to mean.
+- **M04 verdict findings 1, 2, 3, 5 — CLOSED.** Haircut reaches the reported series
+  (`net_equity` 1.00/0.75/0.50 at haircuts 0.0/0.5/1.0, matching the ledger exactly);
+  forced exits use the total-return basis (the reverse-split-then-delist fixture books
+  0.0000, against +450% at cycle 1) and are now covered by the extreme-return guard on
+  that consistent basis; `next_open` measures open-to-open (confirmed on a panel whose
+  open and close move by different amounts: reads +0.200000, the open-to-open truth, not
+  the close-to-close +0.300000). Parity tests unmodified, 9 passing.
+- **M04 verdict finding 4 — ACCEPTED as inherited parity, not fixed. The cycle-1 verdict's
+  framing of the provenance was WRONG and is corrected here.** The gate read the old repo
+  directly: `MomentumValueStrategy/src/backtest/long_short_engine.py:268-291` applies the
+  same upside-only guard to the SHORT basket with per-book counts, and its own comment
+  anticipates this exact hazard ("a >300% underlying gain, if REAL, would be a
+  catastrophic loss to a short seller, and this guard would hide it — is exactly why the
+  exclusions are counted per book"). The trigger is therefore frozen numerics under
+  CLAUDE.md invariant #4 and changing it would have been the violation. The orchestrator
+  decision recorded above is sound as stated. Accepted on four gate-verified conditions:
+  counted per book (`extreme_returns_long`/`extreme_returns_short`, surviving
+  `save`/`load`); a `known_caveats` entry naming the short book fires under the default
+  policy and not under `flag_only`; `flag_only` returns the truth; and no shipped backtest
+  config is exposed (all four resolve to long-only; `momentum_130_30.yaml` and
+  `momentum_ls.yaml` are referenced by no backtest config). Measured magnitude on the
+  gate's dollar-neutral fixture: `exclude_legacy` reports +0.0000 for a period whose truth
+  is −2.5000, so the hidden amount is 250% of capital. Strictly better than the old repo,
+  which had the same trigger and no opt-out.
+- **M04 verdict finding 4, degenerate-book edge — CLOSED.** `_weighted_return_excluding`
+  returns the affected book names and the engine records them in
+  `quality_flags.degenerate_excluded_book_dates`.
+- **Orchestrator-added item 6 (structural accounting gate) — CLOSED.**
+  `PITDataContext.__init__` takes `accounting: bool = False` and `prices_for_returns()`
+  raises `UndeclaredDataError` otherwise. Gate-probed with a hostile strategy calling it on
+  every rebalance in three positions — top-level, blend child, and nested blend grandchild
+  — 12 child invocations, all raising. The engine defines one `context_factory`, passes
+  that same closure to `set_context_factory`, and never sets `accounting`; only
+  `_accounting_context` passes `True` and it is never exposed to a strategy. Canary (j)
+  pins it and is mutation-confirmed.
+
+### Adjustments to "From M04 verdict" above
+
+- **The M05/M09 canary note is now SUPERSEDED by item 6.** The accessor is no longer
+  reachable from a decision context by any existing path, so the guard is structural
+  rather than convention plus per-plugin canaries. The residual is narrower and stays as a
+  note for M09: a strategy that deliberately does `object.__setattr__(ctx, "_accounting",
+  True)` can still reach it — gate-confirmed. No Python guard can prevent that and it
+  requires obviously-subversive code, so the structural default plus canary (j) is the
+  right level. A source-level canary asserting no registered strategy's source calls
+  `prices_for_returns` remains optional belt-and-braces, no longer a gap.
+- **The M05 note on `snapshots` is partly discharged.** `engine.py`'s module docstring no
+  longer claims the ledger and `net_equity` "agree to first order" and now states plainly
+  that M05+ must compute metrics from `net_returns`/`net_equity` only. The underlying fact
+  is unchanged and the note stands as a binding instruction to M05, not as a defect.
+- **The M05/M06 note on right-tail truncation now also covers the short book.** With
+  `exclude_legacy` the truncation is upside-only on price, which on a short book removes
+  the worst losses. Any long-short result must be read with `extreme_returns_short` and the
+  `known_caveats` entry beside it, and M05's one-line summary must surface both.
+- **The M06 dirty-tree-sha note and the M05/M07 `missing_forward_prices` note stand
+  unchanged** — deliberately left open at this gate, neither being one of the five numbered
+  findings.
+
+### New carried item
+
+- **→ whichever milestone first promotes a long-short strategy (not M05–M07 as currently
+  scoped):** before any long-short or 130/30 result is quoted, decide the extreme-return
+  trigger deliberately. The `exclude_legacy` default hides a short squeeze — the single
+  worst outcome a short book can have — and the gate measured 250% of capital hidden on a
+  contrived but not pathological fixture. The options are the sign-aware trigger the M04
+  verdict proposed (`w * r > bound * abs(w)`, which changes frozen numerics and so needs
+  its own parity decision), or `flag_only` as the default for long-short configs. Do not
+  ship a long-short config on `exclude_legacy` without stating the choice; a referee will
+  ask what the guard did to the short book's tail.

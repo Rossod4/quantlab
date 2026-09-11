@@ -39,9 +39,17 @@ plans/QUANT-NOTES.md "From M02b verdict" and plans/state/M02b/VERDICT.md):
    check) has no accessor for it. `ctx.prices_for_returns()` is the
    accounting path for equity-curve bookkeeping ONLY (see data/pit.py's
    module docstring); it is off-limits to strategy signal logic and no
-   plugin in this package calls it. A strategy that finds it needs
-   `prices_for_returns()`-only data must STOP and escalate rather than
-   reach for it - see plans/state/M03/HANDOFF.md for a worked example.
+   plugin in this package calls it. As of M04 (HANDOFF.3, following up on
+   quant-gate VERDICT.md cycle 1's non-blocking note) this is enforced
+   STRUCTURALLY, not merely by convention: `PITDataContext.__init__`'s
+   `accounting` parameter defaults to `False`, and every context a
+   strategy is ever handed - by `backtest/engine.py`'s decision-path
+   `context_factory`, including the one a blend passes to its children -
+   is built with that default, so calling `prices_for_returns()` on it
+   raises `UndeclaredDataError` unconditionally (tests/canaries/test_lookahead.py
+   canary (j)). A strategy that finds it needs `prices_for_returns()`-only
+   data must STOP and escalate rather than reach for it - see
+   plans/state/M03/HANDOFF.md for a worked example.
 5. `PITDataContext` is frozen as of M02/M02b and must not be casually
    extended by a strategy or by this package - if a strategy needs data
    the context cannot provide, that is an escalation (flagged in the

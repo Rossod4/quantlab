@@ -43,6 +43,18 @@ src = ["src", "tests"]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "NPY", "PD"]
 ignore = ["PD901"]  # generic df names are fine internally
 
+[tool.ruff.lint.flake8-bugbear]
+# B008 (function-call-in-default-argument) exempts parameters with an
+# immutable TYPE ANNOTATION regardless of the default expression (e.g. the
+# pre-existing `version: bool = typer.Option(...)`), but `pathlib.Path` -
+# used for every CLI file-path option in M04's `backtest` command - isn't in
+# ruff's built-in immutable-type list. `typer.Option`/`typer.Argument` are
+# the standard, deliberate typer idiom for CLI parameter defaults (each call
+# returns a fresh, immutable-in-effect OptionInfo/ArgumentInfo, not shared
+# mutable state), so both are declared safe here rather than restructuring
+# every CLI command to dodge the false positive.
+extend-immutable-calls = ["typer.Option", "typer.Argument", "pathlib.Path"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q -m 'not network'"

@@ -97,6 +97,7 @@ def _context(
     tickers: list[str] | None = None,
     fundamentals: dict | None = None,
     actions: pd.DataFrame | None = None,
+    accounting: bool = False,
 ) -> PITDataContext:
     if panel is None:
         panel = _price_panel(pd.bdate_range("2020-01-01", "2020-01-31"))
@@ -113,6 +114,7 @@ def _context(
         constituents_provider=_FakeConstituentsProvider(tickers),
         fundamentals_provider=_FakeFundamentalsProvider(fundamentals),
         corporate_actions_provider=_FakeCorporateActionsProvider(actions),
+        accounting=accounting,
     )
 
 
@@ -160,7 +162,9 @@ def test_prices_never_includes_adj_close():
 
 def test_prices_for_returns_includes_adj_close():
     panel = _price_panel(pd.bdate_range("2020-01-01", "2020-01-31"))
-    ctx = _context("2020-01-15", DataRequirements(price_lookback_days=5), panel=panel)
+    ctx = _context(
+        "2020-01-15", DataRequirements(price_lookback_days=5), panel=panel, accounting=True
+    )
 
     result = ctx.prices_for_returns(["AAA"], 5)
 
@@ -175,9 +179,38 @@ def test_prices_more_lookback_than_declared_raises_undeclared_data_error():
 
 
 def test_prices_for_returns_more_lookback_than_declared_raises():
-    ctx = _context("2020-01-15", DataRequirements(price_lookback_days=3))
+    ctx = _context("2020-01-15", DataRequirements(price_lookback_days=3), accounting=True)
     with pytest.raises(UndeclaredDataError):
         ctx.prices_for_returns(["AAA"], 5)
+
+
+# -- accounting=True gate (M04 HANDOFF.3 follow-up to quant-gate VERDICT.md,
+# cycle 1 non-blocking note) -------------------------------------------------
+
+
+def test_prices_for_returns_raises_on_a_non_accounting_context_by_default():
+    """The DECISION-path default (`accounting=False`) blocks
+    `prices_for_returns()` outright, by construction - previously any
+    context, including the one a strategy's own `generate_targets`
+    receives, could call this and get `adj_close` plus raw OHL with only
+    convention standing in the way."""
+    ctx = _context("2020-01-15", DataRequirements(price_lookback_days=5))
+    with pytest.raises(UndeclaredDataError):
+        ctx.prices_for_returns(["AAA"], 5)
+
+
+def test_prices_for_returns_succeeds_on_an_accounting_true_context():
+    ctx = _context("2020-01-15", DataRequirements(price_lookback_days=5), accounting=True)
+    result = ctx.prices_for_returns(["AAA"], 5)
+    assert "adj_close" in result.columns
+
+
+def test_prices_unaffected_by_the_accounting_flag():
+    """`prices()` (the decision path) must remain callable regardless of
+    `accounting` - the new gate is scoped to `prices_for_returns()` only."""
+    ctx = _context("2020-01-15", DataRequirements(price_lookback_days=5))
+    result = ctx.prices(["AAA"], 5)
+    assert "adj_close" not in result.columns
 
 
 def test_prices_zero_lookback_returns_empty_frame():
@@ -317,6 +350,104 @@ def test_actions_undeclared_raises_undeclared_data_error():
     ctx = _context("2020-01-15", DataRequirements(needs_actions=False))
     with pytest.raises(UndeclaredDataError):
         ctx.actions("AAA")
+
+
+# -- per-context actions memoisation (M03b verdict carried item 9) ----------
+
+
+class _CountingCorporateActionsProvider(CorporateActionsProvider):
+    """Records how many times `get_actions` was actually called - the
+    call-count fixture item 9 asks for."""
+
+    def __init__(self, actions: pd.DataFrame):
+        self._actions = actions
+        self.call_count = 0
+
+    def get_actions(self, ticker: str, start: object, end: object) -> pd.DataFrame:
+        self.call_count += 1
+        start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
+        return self._actions.loc[
+            (self._actions.index >= start_ts) & (self._actions.index <= end_ts)
+        ].copy()
+
+
+def test_gated_actions_are_memoised_within_one_context_and_reused_by_prices_and_fundamentals():
+    """M03b verdict carried item 9 (closed in M04, REVIEW.md finding 2):
+    within ONE `PITDataContext`, a ticker's gated actions frame is fetched
+    from the provider ONCE and reused by BOTH `prices()` and
+    `fundamentals()` - before this fix each call re-fetched independently,
+    doubling (at least) the actions-provider hit for every ticker on every
+    rebalance across the whole universe."""
+    provider = _CountingCorporateActionsProvider(_empty_actions())
+    requirements = DataRequirements(
+        price_lookback_days=5,
+        fundamental_fields=frozenset({"shares_outstanding", "ttm_eps"}),
+    )
+    ctx = PITDataContext(
+        asof="2020-01-15",
+        requirements=requirements,
+        price_provider=_FakePriceProvider(_price_panel(pd.bdate_range("2020-01-01", "2020-01-31"))),
+        constituents_provider=_FakeConstituentsProvider(["AAA"]),
+        fundamentals_provider=_FakeFundamentalsProvider(FUNDAMENTALS_FIXED),
+        corporate_actions_provider=provider,
+    )
+
+    ctx.prices(["AAA"], 5)
+    ctx.fundamentals("AAA")
+
+    assert provider.call_count == 1
+
+
+def test_gated_actions_memoisation_is_per_ticker_not_global():
+    """A SECOND, different ticker still gets its own fresh fetch - the
+    cache is keyed per ticker, not "has anything been fetched yet"."""
+    provider = _CountingCorporateActionsProvider(_empty_actions())
+    requirements = DataRequirements(price_lookback_days=5)
+    ctx = PITDataContext(
+        asof="2020-01-15",
+        requirements=requirements,
+        price_provider=_FakePriceProvider(
+            pd.concat(
+                [
+                    _price_panel(pd.bdate_range("2020-01-01", "2020-01-31"), ticker="AAA"),
+                    _price_panel(pd.bdate_range("2020-01-01", "2020-01-31"), ticker="BBB"),
+                ]
+            )
+        ),
+        constituents_provider=_FakeConstituentsProvider(["AAA", "BBB"]),
+        fundamentals_provider=_FakeFundamentalsProvider(FUNDAMENTALS_FIXED),
+        corporate_actions_provider=provider,
+    )
+
+    ctx.prices(["AAA"], 5)
+    ctx.prices(["AAA"], 5)  # repeat AAA - still cached
+    ctx.prices(["BBB"], 5)  # a new ticker - fresh fetch
+
+    assert provider.call_count == 2
+
+
+def test_gated_actions_cache_does_not_leak_across_context_instances():
+    """A FRESH `PITDataContext` (a new rebalance date, or a new per-child
+    context from the blend factory) gets its own empty cache - memoisation
+    is scoped to one instance's lifetime, never shared globally."""
+    provider = _CountingCorporateActionsProvider(_empty_actions())
+    requirements = DataRequirements(price_lookback_days=5)
+    panel = _price_panel(pd.bdate_range("2020-01-01", "2020-01-31"))
+
+    def _new_ctx() -> PITDataContext:
+        return PITDataContext(
+            asof="2020-01-15",
+            requirements=requirements,
+            price_provider=_FakePriceProvider(panel),
+            constituents_provider=_FakeConstituentsProvider(["AAA"]),
+            fundamentals_provider=_FakeFundamentalsProvider(FUNDAMENTALS_FIXED),
+            corporate_actions_provider=provider,
+        )
+
+    _new_ctx().prices(["AAA"], 5)
+    _new_ctx().prices(["AAA"], 5)
+
+    assert provider.call_count == 2
 
 
 # -- _assert_no_future_dates (internal LookaheadError guard) ------------------

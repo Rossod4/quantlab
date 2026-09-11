@@ -11,9 +11,14 @@ future-dated price row, a filing filed after asof, etc.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
+from pydantic import BaseModel, ConfigDict
 
 from quantlab.core.calendar import prev_trading_day
+from quantlab.core.errors import UndeclaredDataError
+from quantlab.core.types import TargetWeights
 from quantlab.data.interfaces import (
     ConstituentsProvider,
     CorporateActionsProvider,
@@ -24,6 +29,7 @@ from quantlab.data.pit import PITDataContext
 from quantlab.data.providers.edgar_fundamentals import get_point_in_time_fundamentals
 from quantlab.data.providers.sp500_constituents import _membership_from_table
 from quantlab.data.requirements import DataRequirements
+from quantlab.strategies.base import Strategy
 
 
 class _AlwaysReturnsFullPanelPriceProvider(PriceProvider):
@@ -408,3 +414,226 @@ def test_canary_future_dated_split_has_zero_effect_on_fundamentals_share_terms()
     assert with_split == without_split
     assert with_split["shares_outstanding"] == 100.0
     assert with_split["shares_outstanding_split_factor"] == 1.0
+
+
+# -- (i) the engine never hands the strategy a context bound after its own -
+# -- rebalance date, and never a prices_for_returns()-derived context ------
+#
+# M04 work packet acceptance criterion 9 labels this canary "(g)" in its own
+# text, written before M03/M03b's own (g)/(h) canaries above existed in this
+# file; it is "(i)" here to avoid colliding with them.
+
+
+class _SpyParams(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class _SpyStrategy(Strategy):
+    """Records every `(ctx.asof, date)` pair it is called with, plus
+    whatever `ctx.prices_for_returns(...)` returns it can reach - so the
+    canary below can assert on what the ENGINE actually handed the
+    strategy, not merely on `PITDataContext`'s own (already-covered-by-
+    canaries-a-h) internal guarantees."""
+
+    def __init__(self, params: dict | None = None):
+        super().__init__(params)
+        self.observed_asofs: list[pd.Timestamp] = []
+
+    @classmethod
+    def params_model(cls):
+        return _SpyParams
+
+    def requires(self):
+        return DataRequirements(price_lookback_days=1, needs_universe=True)
+
+    def generate_targets(self, ctx, date):
+        self.observed_asofs.append(ctx.asof)
+        tickers = ctx.universe()
+        weights = dict.fromkeys(tickers, 1.0 / len(tickers)) if tickers else {}
+        return TargetWeights(asof=date, weights=weights, strategy_id=self.strategy_id)
+
+
+def test_canary_engine_never_hands_the_strategy_a_context_bound_after_its_own_rebalance_date():
+    """The engine's OWN internal accounting/settlement fetches
+    (backtest/engine.py's `_accounting_context`, via `prices_for_returns()`)
+    are built at LATER dates than the decision date `t` (the period's
+    exit/fill date, needed to price the prior holding period) - this canary
+    asserts the DECISION-PATH context handed to `strategy.generate_targets`
+    is never one of those, i.e. its `asof` always equals exactly the
+    rebalance date being decided, never a later date.
+
+    Mutation-check performed manually during development (recorded in
+    plans/state/M04/HANDOFF.md): temporarily changing engine.py's decision
+    line to build the strategy's context at that period's LATER exit/fill
+    date instead of `t` (the same kind of date its own `prices_for_returns()`
+    accounting calls use) makes this canary fail, confirming it has real
+    power against exactly the regression the work packet's acceptance
+    criterion 9 names ("hand the strategy prices_for_returns()")."""
+    from quantlab.backtest.config import BacktestConfig
+    from quantlab.backtest.engine import BacktestProviders, run_backtest
+    from quantlab.core.calendar import rebalance_dates, trading_days
+
+    class _FixedConstituents(ConstituentsProvider):
+        """AAA is the only, permanent member - a benchmark ticker (BENCH)
+        is priced independently and never goes through `universe()`."""
+
+        def membership(self, asof):
+            return ["AAA"]
+
+        def membership_history(self, start, end):
+            return pd.DataFrame({"tickers": [["AAA"]]}, index=pd.DatetimeIndex([start]))
+
+    sessions = trading_days("2019-06-01", "2020-05-31")
+    panel = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * len(sessions) + ["BENCH"] * len(sessions),
+            "open": [10.0] * len(sessions) + [100.0] * len(sessions),
+            "high": [10.0] * len(sessions) + [100.0] * len(sessions),
+            "low": [10.0] * len(sessions) + [100.0] * len(sessions),
+            "close": [10.0] * len(sessions) + [100.0] * len(sessions),
+            "adj_close": [10.0] * len(sessions) + [100.0] * len(sessions),
+            "volume": [1000] * (2 * len(sessions)),
+        },
+        index=list(sessions) + list(sessions),
+    )
+    providers = BacktestProviders(
+        price=_AlwaysReturnsFullPanelPriceProvider(panel),
+        constituents=_FixedConstituents(),
+        fundamentals=_FactsBackedFundamentalsProvider(
+            pd.DataFrame(columns=["tag", "start", "end", "filed", "val"])
+        ),
+        corporate_actions=_EmptyCorporateActionsProvider(),
+        cache_dir=Path("__no_such_quantlab_canary_cache__"),
+    )
+
+    strategy = _SpyStrategy()
+    config = BacktestConfig(
+        start="2020-01-01",
+        end="2020-05-31",
+        strategy_config="unused.yaml",
+        rebalance_freq="month_end",
+        execution="close",
+        benchmark="BENCH",
+    )
+
+    run_backtest(strategy, config, providers)
+
+    expected_dates = list(rebalance_dates("2020-01-01", "2020-05-31", "month_end"))[:-1]
+    assert strategy.observed_asofs == expected_dates
+    for observed, expected in zip(strategy.observed_asofs, expected_dates, strict=True):
+        assert observed == expected, (
+            f"strategy was handed a context bound to {observed}, not the rebalance date "
+            f"{expected} it was deciding for"
+        )
+
+
+# -- (j) prices_for_returns() is now STRUCTURALLY unreachable from the -----
+# -- decision-path context the engine hands a strategy ---------------------
+#
+# Follow-up to canary (i) / quant-gate VERDICT.md cycle 1's non-blocking
+# note: before this, a strategy holding ANY context - including its own
+# ordinary decision-path one - could call `ctx.prices_for_returns(...)`
+# directly and receive `adj_close` plus raw OHL, with only convention
+# (never a construction-time guarantee) standing in the way. `PITDataContext.
+# __init__`'s `accounting: bool = False` (data/pit.py) closes this: only a
+# context built with `accounting=True` - never one a strategy is handed -
+# may call `prices_for_returns()`.
+
+
+class _AccountingReachStrategy(Strategy):
+    """Calls `ctx.prices_for_returns(...)` directly from `generate_targets`
+    (something a real strategy must never do - strategies/base.py's own
+    docs) and records whether it raised, so this canary asserts on what the
+    ENGINE's context actually permits, not on a strategy's good behavior."""
+
+    def __init__(self, params: dict | None = None):
+        super().__init__(params)
+        self.raised: list[bool] = []
+
+    @classmethod
+    def params_model(cls):
+        return _SpyParams
+
+    def requires(self):
+        return DataRequirements(price_lookback_days=1, needs_universe=True)
+
+    def generate_targets(self, ctx, date):
+        try:
+            ctx.prices_for_returns(["AAA"], 1)
+            self.raised.append(False)
+        except UndeclaredDataError:
+            self.raised.append(True)
+        tickers = ctx.universe()
+        weights = dict.fromkeys(tickers, 1.0 / len(tickers)) if tickers else {}
+        return TargetWeights(asof=date, weights=weights, strategy_id=self.strategy_id)
+
+
+def _accounting_reach_fixture():
+    """Shares the exact fixture shape canary (i) uses, factored out so the
+    mutation-check below can rebuild it without duplicating the panel."""
+    from quantlab.backtest.config import BacktestConfig
+    from quantlab.backtest.engine import BacktestProviders
+    from quantlab.core.calendar import trading_days
+
+    class _FixedConstituents(ConstituentsProvider):
+        def membership(self, asof):
+            return ["AAA"]
+
+        def membership_history(self, start, end):
+            return pd.DataFrame({"tickers": [["AAA"]]}, index=pd.DatetimeIndex([start]))
+
+    sessions = trading_days("2019-06-01", "2020-05-31")
+    panel = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * len(sessions) + ["BENCH"] * len(sessions),
+            "open": [10.0] * len(sessions) + [100.0] * len(sessions),
+            "high": [10.0] * len(sessions) + [100.0] * len(sessions),
+            "low": [10.0] * len(sessions) + [100.0] * len(sessions),
+            "close": [10.0] * len(sessions) + [100.0] * len(sessions),
+            "adj_close": [10.0] * len(sessions) + [100.0] * len(sessions),
+            "volume": [1000] * (2 * len(sessions)),
+        },
+        index=list(sessions) + list(sessions),
+    )
+    providers = BacktestProviders(
+        price=_AlwaysReturnsFullPanelPriceProvider(panel),
+        constituents=_FixedConstituents(),
+        fundamentals=_FactsBackedFundamentalsProvider(
+            pd.DataFrame(columns=["tag", "start", "end", "filed", "val"])
+        ),
+        corporate_actions=_EmptyCorporateActionsProvider(),
+        cache_dir=Path("__no_such_quantlab_canary_cache__"),
+    )
+    config = BacktestConfig(
+        start="2020-01-01",
+        end="2020-05-31",
+        strategy_config="unused.yaml",
+        rebalance_freq="month_end",
+        execution="close",
+        benchmark="BENCH",
+    )
+    return providers, config
+
+
+def test_canary_prices_for_returns_raises_on_the_context_the_engine_hands_the_strategy():
+    """A strategy that calls `ctx.prices_for_returns(...)` on the context
+    the engine actually handed it (via `strategy.generate_targets`) must
+    see `UndeclaredDataError` on EVERY rebalance, never a successful call.
+
+    Mutation-check performed manually during development (recorded in
+    plans/state/M04/HANDOFF.3.md): flipping `PITDataContext.__init__`'s
+    `accounting` default from `False` to `True` makes this canary fail
+    (every call succeeds instead of raising), confirming it has real power
+    against exactly the regression this parameter exists to close."""
+    from quantlab.backtest.engine import run_backtest
+
+    providers, config = _accounting_reach_fixture()
+    strategy = _AccountingReachStrategy()
+
+    run_backtest(strategy, config, providers)
+
+    assert len(strategy.raised) > 0
+    assert all(strategy.raised), (
+        "prices_for_returns() succeeded on a context the engine handed the strategy - "
+        "it must raise UndeclaredDataError unconditionally on the decision path"
+    )

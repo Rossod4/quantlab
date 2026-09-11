@@ -161,12 +161,29 @@ def _month_end_prices(daily_panel: pd.DataFrame) -> pd.DataFrame:
     """Wide (date x ticker) panel of each ticker's last available `close` in
     every calendar month present in `daily_panel` (a long panel as returned
     by `ctx.prices()`). See module docstring - this is new adapter code, not
-    part of the frozen signal math."""
+    part of the frozen signal math.
+
+    M04 engine fix (carried from the M03 verdict - plans/QUANT-NOTES.md
+    "From M03 verdict": pivoting on calendar months PRESENT in the panel
+    means a month with zero rows for every ticker (e.g. a data-source gap)
+    silently vanishes from the index instead of producing an all-NaN row,
+    so a 12-months-back lookup at `compute_momentum_signal` quietly reaches
+    13 calendar months back for every name at once). The month index is
+    reindexed to the FULL contiguous range between its first and last
+    calendar month before returning, so a missing month reappears as an
+    all-NaN row - `compute_momentum_signal` already treats a NaN price as
+    "no valid score for that ticker" (its own `.notna()` guard), so this
+    restores the old repo's `resample("ME").last()` semantics without
+    touching the frozen signal math itself.
+    """
     monthly = daily_panel.reset_index().rename(columns={"index": "date"})
     monthly["month"] = pd.PeriodIndex(monthly["date"], freq="M")
     wide = monthly.sort_values("date").pivot_table(
         index="month", columns="ticker", values="close", aggfunc="last"
     )
+    if not wide.empty:
+        full_months = pd.period_range(wide.index.min(), wide.index.max(), freq="M")
+        wide = wide.reindex(full_months)
     wide.index = wide.index.to_timestamp(how="end").normalize()
     return wide.sort_index()
 

@@ -54,16 +54,30 @@ def price_meta_path(ticker: str, cache_dir: Path) -> Path:
     return Path(cache_dir) / "prices" / f"{ticker}.meta.json"
 
 
+def read_json_meta(path: Path) -> dict | None:
+    """Generic JSON sidecar reader, or None if `path` doesn't exist. The one
+    mechanism behind every per-ticker cache sidecar in this platform - the
+    price cache's requested-range metadata below, and the actions cache's
+    fetch-time metadata (data/corporate_actions.py) - so there is a single
+    place that knows how a sidecar file is read, not one per cache."""
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def write_json_meta(path: Path, meta: dict) -> None:
+    """Generic JSON sidecar writer - see `read_json_meta`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(meta))
+
+
 def write_price_cache_meta(ticker: str, start: object, end: object, cache_dir: Path) -> None:
-    meta_path = price_meta_path(ticker, cache_dir)
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_text(
-        json.dumps(
-            {
-                "requested_start": str(pd.Timestamp(start).date()),
-                "requested_end": str(pd.Timestamp(end).date()),
-            }
-        )
+    write_json_meta(
+        price_meta_path(ticker, cache_dir),
+        {
+            "requested_start": str(pd.Timestamp(start).date()),
+            "requested_end": str(pd.Timestamp(end).date()),
+        },
     )
 
 
@@ -100,9 +114,8 @@ def has_sufficient_price_cache(
 
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
 
-    meta_path = price_meta_path(ticker, cache_dir)
-    if meta_path.exists():
-        meta = json.loads(meta_path.read_text())
+    meta = read_json_meta(price_meta_path(ticker, cache_dir))
+    if meta is not None:
         requested_covers = (
             pd.Timestamp(meta["requested_start"]) <= start_ts
             and pd.Timestamp(meta["requested_end"]) >= end_ts

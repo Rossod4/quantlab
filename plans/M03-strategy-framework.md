@@ -53,9 +53,19 @@ Backtest engine, costs, portfolio accounting (M04). Walk-forward/comparison swee
   (root: C:\Users\arwga\Developer\ClaudeProjects\Trading\MomentumValueStrategy)
 
 ## Interfaces to honor
-PITDataContext API exactly as merged in M02 (do not extend it; if a strategy needs
-something the context lacks, STOP and flag in handoff — that is an escalation, not a
-workaround). TargetWeights from core/types.py. DataRequirements from M02.
+PITDataContext API exactly as merged in M02/M02b (do not extend it; if a strategy
+needs something the context lacks, STOP and flag in handoff — that is an escalation,
+not a workaround). TargetWeights from core/types.py. DataRequirements from M02.
+Price signals MUST be computed on the as-of-adjusted `prices()` from M02b (never
+`prices_for_returns()`, never raw close across time).
+
+Per plans/QUANT-NOTES.md (M02 gate): day-granular `filed <= asof` hands same-day
+after-hours SEC filings to a same-day decision. The value strategy must apply a
+one-session lag on fundamentals availability (use filings with
+filed <= prev_trading_day(asof)) OR defend the same-day convention explicitly in the
+handoff with the quant gate as the audience. Note the old repo's convention when
+porting and preserve parity-test comparability (the parity fixture may pin asof dates
+where the lag is immaterial — document).
 
 ## Acceptance criteria
 1. `uv run pytest` green offline; `uv run ruff check` clean.

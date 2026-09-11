@@ -81,7 +81,25 @@ class FundamentalsProvider(ABC):
 
 class CorporateActionsProvider(ABC):
     """Splits/dividends/delistings. Signature only in M01; implemented in
-    M02 (`data/corporate_actions.py`)."""
+    M02 (`data/corporate_actions.py`).
+
+    Staleness contract (M02b, non-abstract - not enforced by this ABC or by
+    `data/pit.py`, which trusts whatever a concrete implementation returns):
+    `PITDataContext.prices()` uses `get_actions` to build an as-of
+    adjustment replay (`data/adjustment.py`), so an implementation that
+    caches actions must guarantee it is not blind to a corporate action
+    announced after the cache was populated - i.e. it must refuse (raise),
+    never silently return, actions for an `end` beyond what it can vouch
+    for as current. `YFinanceCorporateActionsProvider` is the only
+    implementation today and does this via a `fetched_at` cache sidecar and
+    `StaleActionsCacheError`/`ActionsFetchError` (see
+    `data/corporate_actions.py`'s module docstring for the full mechanism).
+    A caching implementation that skips this would silently reintroduce the
+    raw-discontinuity bug M02b exists to close, and neither this class nor
+    `pit.py` would notice - enforcement was deliberately kept out of this
+    ABC (it would force every test double implementing this interface to
+    implement a staleness check it has no use for), so a new implementation
+    must supply its own."""
 
     @abstractmethod
     def get_actions(self, ticker: str, start: object, end: object) -> pd.DataFrame:

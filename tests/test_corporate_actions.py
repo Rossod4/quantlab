@@ -6,13 +6,17 @@ import pandas as pd
 import pytest
 
 import quantlab.data.corporate_actions as corporate_actions_module
+from quantlab.core.errors import ActionsFetchError, StaleActionsCacheError
 from quantlab.core.types import DelistingReason
-from quantlab.data.cache import price_cache_path, write_cache
+from quantlab.data.cache import price_cache_path, write_cache, write_json_meta
 from quantlab.data.corporate_actions import (
     YFinanceCorporateActionsProvider,
     _actions_cache_path,
+    _actions_meta_path,
+    _empty_actions,
     _normalize_actions,
     infer_delisting,
+    refresh_actions_cache,
 )
 from quantlab.data.interfaces import ConstituentsProvider
 
@@ -75,12 +79,23 @@ def no_network(monkeypatch):
     monkeypatch.setattr(corporate_actions_module, "_download_actions", _fail)
 
 
+def _write_actions_cache_and_meta(
+    cache_dir: Path, ticker: str, cached: pd.DataFrame, fetched_at: str
+) -> None:
+    """Test helper: populate both the parquet cache and its fetched_at
+    sidecar directly, bypassing a real download - mirrors the shape
+    `YFinanceCorporateActionsProvider.get_actions` itself writes on a fresh
+    fetch (see corporate_actions.py's staleness section)."""
+    write_cache(cached, _actions_cache_path(ticker, cache_dir))
+    write_json_meta(_actions_meta_path(ticker, cache_dir), {"fetched_at": fetched_at})
+
+
 def test_get_actions_served_from_cache_without_network(tmp_path, no_network):
     cached = pd.DataFrame(
         {"ticker": ["AAA", "AAA"], "action_type": ["dividend", "split"], "value": [0.5, 2.0]},
         index=pd.DatetimeIndex(["2020-01-10", "2020-06-01"], name="date"),
     )
-    write_cache(cached, _actions_cache_path("AAA", tmp_path))
+    _write_actions_cache_and_meta(tmp_path, "AAA", cached, fetched_at="2020-12-31")
     provider = YFinanceCorporateActionsProvider(cache_dir=tmp_path)
 
     result = provider.get_actions("AAA", "2020-01-01", "2020-12-31")
@@ -93,7 +108,7 @@ def test_get_actions_filters_to_requested_window(tmp_path, no_network):
         {"ticker": ["AAA", "AAA"], "action_type": ["dividend", "split"], "value": [0.5, 2.0]},
         index=pd.DatetimeIndex(["2018-01-10", "2020-06-01"], name="date"),
     )
-    write_cache(cached, _actions_cache_path("AAA", tmp_path))
+    _write_actions_cache_and_meta(tmp_path, "AAA", cached, fetched_at="2020-12-31")
     provider = YFinanceCorporateActionsProvider(cache_dir=tmp_path)
 
     result = provider.get_actions("AAA", "2020-01-01", "2020-12-31")
@@ -120,12 +135,17 @@ def test_get_actions_fetches_and_caches_on_miss(tmp_path, monkeypatch):
     assert _actions_cache_path("AAA", tmp_path).exists()
 
 
-def test_get_actions_download_failure_is_not_cached_and_is_retried(tmp_path, monkeypatch):
-    """REVIEW.md finding 1 (blocker): a transient download failure must NOT
-    be frozen into the cache as "this ticker has no actions, ever" - the
-    frozen-truncation hazard from plans/QUANT-NOTES.md's M01 note. A failed
-    fetch returns empty WITHOUT writing a cache file, so the next call
-    re-attempts the download (and can then succeed and cache normally)."""
+def test_get_actions_download_failure_raises_is_not_cached_and_is_retried(tmp_path, monkeypatch):
+    """REVIEW.md finding 1 (blocker) established that a transient download
+    failure must NOT be frozen into the cache as "this ticker has no
+    actions, ever" - the frozen-truncation hazard from plans/QUANT-NOTES.md's
+    M01 note. VERDICT.md (M02b re-review) finding 2 tightened this further:
+    the failure must RAISE (`ActionsFetchError`), not silently return an
+    empty frame - after M02b, an empty actions result means "no adjustment",
+    so swallowing a transient failure would make prices() return the raw,
+    split-distorted series with no error at all. Nothing is cached on
+    failure, so the next call re-attempts the download (and can then
+    succeed and cache normally)."""
     attempts = []
 
     def _fail_once_then_succeed(ticker: str) -> pd.DataFrame:
@@ -140,9 +160,9 @@ def test_get_actions_download_failure_is_not_cached_and_is_retried(tmp_path, mon
     monkeypatch.setattr(corporate_actions_module, "_download_actions", _fail_once_then_succeed)
     provider = YFinanceCorporateActionsProvider(cache_dir=tmp_path)
 
-    first = provider.get_actions("AAA", "2020-01-01", "2020-12-31")
-    assert first.empty  # failure surfaced as empty result...
-    assert not _actions_cache_path("AAA", tmp_path).exists()  # ...but NOT cached
+    with pytest.raises(ActionsFetchError, match="AAA"):
+        provider.get_actions("AAA", "2020-01-01", "2020-12-31")
+    assert not _actions_cache_path("AAA", tmp_path).exists()  # NOT cached
 
     second = provider.get_actions("AAA", "2020-01-01", "2020-12-31")
     assert attempts == ["AAA", "AAA"]  # the second call re-attempted the fetch
@@ -163,6 +183,97 @@ def test_get_actions_unexpected_exception_propagates(tmp_path, monkeypatch):
 
     with pytest.raises(TypeError):
         provider.get_actions("AAA", "2020-01-01", "2020-12-31")
+
+
+# -- actions-cache staleness (M02b, VERDICT.md carried item 1) ----------------
+
+
+def test_get_actions_does_not_raise_when_asof_is_on_or_before_fetch_time(tmp_path, no_network):
+    """(a) asof <= fetched_at passes."""
+    cached = pd.DataFrame(
+        {"ticker": ["AAA"], "action_type": ["split"], "value": [2.0]},
+        index=pd.DatetimeIndex(["2020-06-01"], name="date"),
+    )
+    _write_actions_cache_and_meta(tmp_path, "AAA", cached, fetched_at="2024-01-01")
+    provider = YFinanceCorporateActionsProvider(cache_dir=tmp_path)
+
+    result = provider.get_actions("AAA", "2020-01-01", "2024-01-01")  # asof == fetched_at
+    assert len(result) == 1
+
+    result = provider.get_actions("AAA", "2020-01-01", "2023-06-01")  # asof < fetched_at
+    assert len(result) == 1
+
+
+def test_get_actions_raises_when_asof_is_after_fetch_time(tmp_path, no_network):
+    """(b) asof > fetched_at raises. A cache fetched at date T is blind to a
+    split announced after T - a request for actions through an asof LATER
+    than the recorded fetch date must refuse rather than silently omit an
+    as-yet-unknown action."""
+    cached = pd.DataFrame(
+        {"ticker": ["AAA"], "action_type": ["split"], "value": [2.0]},
+        index=pd.DatetimeIndex(["2020-06-01"], name="date"),
+    )
+    _write_actions_cache_and_meta(tmp_path, "AAA", cached, fetched_at="2024-01-01")
+    provider = YFinanceCorporateActionsProvider(cache_dir=tmp_path)
+
+    with pytest.raises(StaleActionsCacheError, match="AAA"):
+        provider.get_actions("AAA", "2020-01-01", "2024-06-01")
+
+
+def test_get_actions_raises_when_fetch_time_is_unknown(tmp_path, no_network):
+    """(c) missing fetched_at raises. A cache file written before this
+    sidecar existed has no `fetched_at` - per the module docstring, that is
+    treated the SAME as a known-stale cache, not silently trusted."""
+    cached = pd.DataFrame(
+        {"ticker": ["AAA"], "action_type": ["split"], "value": [2.0]},
+        index=pd.DatetimeIndex(["2020-06-01"], name="date"),
+    )
+    write_cache(cached, _actions_cache_path("AAA", tmp_path))
+    assert not _actions_meta_path("AAA", tmp_path).exists()
+    provider = YFinanceCorporateActionsProvider(cache_dir=tmp_path)
+
+    with pytest.raises(StaleActionsCacheError, match="AAA"):
+        provider.get_actions("AAA", "2020-01-01", "2020-12-31")
+
+
+def test_refresh_actions_cache_clears_staleness(tmp_path, monkeypatch):
+    """(d) after a refresh updates fetched_at, the same asof passes."""
+    fetches = []
+
+    def _fake_download(ticker: str) -> pd.DataFrame:
+        fetches.append(ticker)
+        return _empty_actions()
+
+    monkeypatch.setattr(corporate_actions_module, "_download_actions", _fake_download)
+    cached = pd.DataFrame(
+        {"ticker": ["AAA"], "action_type": ["split"], "value": [2.0]},
+        index=pd.DatetimeIndex(["2020-06-01"], name="date"),
+    )
+    _write_actions_cache_and_meta(tmp_path, "AAA", cached, fetched_at="2024-01-01")
+    provider = YFinanceCorporateActionsProvider(cache_dir=tmp_path)
+
+    with pytest.raises(StaleActionsCacheError):
+        provider.get_actions("AAA", "2020-01-01", "2024-06-01")
+
+    monkeypatch.setattr(corporate_actions_module, "_today", lambda: pd.Timestamp("2024-07-01"))
+    refresh_actions_cache("AAA", tmp_path)
+
+    result = provider.get_actions("AAA", "2020-01-01", "2024-06-01")  # no longer stale
+    assert result.empty  # the refreshed (fake) download returned no actions
+    assert fetches == ["AAA"]  # the refresh performed exactly one download
+
+
+def test_refresh_actions_cache_propagates_download_failure(tmp_path, monkeypatch):
+    """Unlike get_actions's opportunistic first fetch, an explicit refresh
+    request must surface a failure loudly rather than silently no-op."""
+
+    def _fail(ticker: str) -> pd.DataFrame:
+        raise ConnectionError("simulated transient network failure")
+
+    monkeypatch.setattr(corporate_actions_module, "_download_actions", _fail)
+
+    with pytest.raises(ConnectionError):
+        refresh_actions_cache("AAA", tmp_path)
 
 
 # -- infer_delisting -----------------------------------------------------------

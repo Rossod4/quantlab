@@ -28,7 +28,12 @@ its items (developer: implement or justify; quant-gate: verify closure).
   code cannot receive adj_close.
 
 ## From M02 verdict (plans/state/M02/VERDICT.md)
-- **→ HARD CONDITION, own packet BEFORE any M03 cross-time price signal:** as-of
+- **→ CLOSED at M02b cycle 2 (ACCEPT, plans/state/M02b/VERDICT.2.md). M03 momentum is
+  UNBLOCKED.** The as-of adjustment replay shipped in `data/adjustment.py`, wired into
+  `PITDataContext.prices()`, parity-fixtured, and canary-pinned; the actions-cache
+  staleness policy and its fetch-failure hole are both closed. Cross-time price
+  signals on `prices()` are now permitted — using `close`, never `raw_close` (see the
+  M02b carried items below). Original requirement, for the record:** as-of
   adjustment replay. `prices()` is raw/unadjusted; a 12-month momentum across a 10:1
   split reads -90% on a flat stock (verified at the gate). Required: adjusted decision
   prices = raw close × cumulative factor from corporate-action events with
@@ -52,3 +57,42 @@ its items (developer: implement or justify; quant-gate: verify closure).
   series ends before window end" itself, not solely on `infer_delisting()` events —
   the deliberately conservative inference under-detects when index removal precedes
   the final trade.
+
+## From M02b verdict (plans/state/M02b/VERDICT.md, confirmed at VERDICT.2.md)
+- **→ M03 (value leg):** `prices()['close']` is a total-return-comparable LEVEL, not
+  a traded price, for every row before the last gated ex-date — splits rescale it to
+  as-of share terms and dividends subtract accumulated distributions. Level metrics
+  (P/E, P/B, market cap, penny-price floors) must read the `asof` row, where the
+  factor is exactly 1.0 and the value is the true traded price, or else use
+  `raw_close`. A per-share figure from a pre-split filing NEVER reconciles with a
+  split-adjusted historical price; pairing raw price at t with the filing in force
+  at t is the consistent combination.
+- **→ M03 (Strategy ABC):** `raw_close` is strategy-visible in `prices()` and still
+  carries the full split discontinuity (the M02 verdict's -90%). The ABC docs must
+  state that cross-time price signals use `close` and never `raw_close`; consider a
+  canary asserting a momentum computed on `raw_close` is not what the engine feeds a
+  strategy.
+- **→ M03:** `volume` is the ONLY unadjusted column left in `prices()` — M02b cycle 2
+  applies the identical per-date factor to `open`/`high`/`low` as to `close`, so
+  `low <= close <= high` now survives a gated ex-date. A split multiplies share volume
+  by the ratio, which the replay does not model, so any dollar-volume or turnover
+  liquidity screen spanning a split is still discontinuous. Never multiply `volume` by
+  an adjusted price column across an ex-date.
+- **→ M03/M04:** raw `open`/`high`/`low` are no longer retained by `prices()` — only
+  `raw_close` is. A rule needing the true traded intraday range (a stop-loss level, a
+  gap or limit-price check) must take it from `prices_for_returns()`, which is the
+  accounting path and still carries raw OHLC.
+- **→ M04 (engine):** a stale or unfetchable actions history now BLOCKS `prices()` for
+  the whole call (`StaleActionsCacheError` / `ActionsFetchError`, uncaught). Correct
+  and deliberate — but the engine must decide what a rebalance does when one ticker in
+  the universe fails. Dropping the offender and continuing is a selection effect: it
+  must be counted in the coverage gap (CLAUDE.md invariant #2), not swallowed.
+- **→ M04 (paper/live runner):** actions-cache staleness is day-granular and
+  fetch-once. A run whose `asof` advances past the cache's `fetched_at` starts
+  raising `StaleActionsCacheError` mid-run. The runner needs an explicit refresh
+  policy, not an incidental one.
+- **→ M09 (data refresh):** `refresh_actions_cache()` has no operational caller — no
+  CLI subcommand, no network-tier path. It is the ONLY way to clear a
+  `StaleActionsCacheError`, and a pre-M02b actions cache raises on every `prices()`
+  call, so today there is no in-product recovery. Wire it into the data-refresh
+  command alongside the M01 metadata-invalidate note above.

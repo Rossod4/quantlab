@@ -81,12 +81,26 @@ class _EmptyCorporateActionsProvider(CorporateActionsProvider):
         return df
 
 
+class _AlwaysReturnsFullActionsProvider(CorporateActionsProvider):
+    """Deliberately misbehaves: ignores the requested [start, end] and
+    always hands back its full fixed action history, including a split
+    dated well beyond any reasonable asof - the adversarial fixture for
+    canary (f)."""
+
+    def __init__(self, actions: pd.DataFrame):
+        self._actions = actions
+
+    def get_actions(self, ticker: str, start: object, end: object) -> pd.DataFrame:
+        return self._actions[self._actions["ticker"] == ticker].copy()
+
+
 def _minimal_context(
     asof,
     requirements: DataRequirements,
     price_provider: PriceProvider,
     fundamentals_provider: FundamentalsProvider | None = None,
     constituents_provider: ConstituentsProvider | None = None,
+    corporate_actions_provider: CorporateActionsProvider | None = None,
 ) -> PITDataContext:
     return PITDataContext(
         asof=asof,
@@ -97,7 +111,7 @@ def _minimal_context(
         or _FactsBackedFundamentalsProvider(
             pd.DataFrame(columns=["tag", "start", "end", "filed", "val"])
         ),
-        corporate_actions_provider=_EmptyCorporateActionsProvider(),
+        corporate_actions_provider=corporate_actions_provider or _EmptyCorporateActionsProvider(),
     )
 
 
@@ -224,3 +238,52 @@ def test_canary_decision_path_prices_never_carry_adj_close():
 
     assert "adj_close" not in result.columns
     assert "adj_close" not in result.to_dict()
+
+
+# -- (f) action with ex-date AFTER asof must have zero effect on prices() ---
+
+
+def test_canary_future_dated_action_has_zero_effect_on_prices():
+    """M02b / VERDICT.md's actions-canary gap: a hostile
+    CorporateActionsProvider returns a split dated AFTER asof (ignoring the
+    requested window, like _AlwaysReturnsFullPanelPriceProvider does for
+    prices). prices() must produce a byte-identical panel whether or not
+    that future split exists in the provider - the as-of adjustment replay
+    (data/adjustment.py) must not know about a split the market hasn't
+    announced yet as of the decision date."""
+    panel = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA"],
+            "open": [1210.0, 1210.0],
+            "high": [1210.5, 1210.5],
+            "low": [1209.5, 1209.5],
+            "close": [1210.0, 1210.0],
+            "adj_close": [1210.0, 1210.0],
+            "volume": [100, 100],
+        },
+        index=pd.DatetimeIndex(["2024-06-05", "2024-06-06"], name="date"),
+    )
+    price_provider = _AlwaysReturnsFullPanelPriceProvider(panel)
+    future_split = pd.DataFrame(
+        {"ticker": ["AAA"], "action_type": ["split"], "value": [10.0]},
+        index=pd.DatetimeIndex(["2024-06-10"], name="date"),  # AFTER asof below
+    )
+    requirements = DataRequirements(price_lookback_days=2)
+
+    ctx_with_future_split = _minimal_context(
+        "2024-06-07",
+        requirements,
+        price_provider=price_provider,
+        corporate_actions_provider=_AlwaysReturnsFullActionsProvider(future_split),
+    )
+    ctx_without = _minimal_context(
+        "2024-06-07",
+        requirements,
+        price_provider=price_provider,
+        corporate_actions_provider=_EmptyCorporateActionsProvider(),
+    )
+
+    with_split = ctx_with_future_split.prices(["AAA"], 2)
+    without_split = ctx_without.prices(["AAA"], 2)
+
+    pd.testing.assert_frame_equal(with_split, without_split)

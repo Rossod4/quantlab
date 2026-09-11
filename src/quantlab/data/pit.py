@@ -36,19 +36,33 @@ adj_close).
 
 M02b (the HARD, gate-mandated follow-on packet recorded in
 plans/state/M02/VERDICT.md's carried item 1 and plans/QUANT-NOTES.md)
-changed `prices()` itself: its `close` column is now an AS-OF ADJUSTMENT
-REPLAY - raw close multiplied by a cumulative factor computed ONLY from
-corporate-action events with ex-date <= asof (data/adjustment.py) - not
-raw close. The original raw value is still available under the explicit
-`raw_close` column. This closes the M02 verdict's -90%-momentum hazard
-(a 10:1 split reading as a spurious return collapse) without letting any
-future corporate action leak into a decision made before it was
-announced: `adjustment_factors`/`apply_asof_adjustment` re-gate to
-`ex_date <= asof` internally, and `prices()` additionally hard-slices the
-actions it fetches before handing them off, mirroring the existing
+changed `prices()` itself: its `close`, `open`, `high` and `low` columns
+are now an AS-OF ADJUSTMENT REPLAY - the raw price multiplied by a
+cumulative factor computed ONLY from corporate-action events with
+ex-date <= asof (data/adjustment.py), the IDENTICAL per-date factor
+applied to all four columns - not the raw price. The original raw close
+value is still available under the explicit `raw_close` column (raw
+open/high/low are not separately retained). `volume` is NOT adjusted
+(documented limitation - a real split multiplies share volume by the
+ratio, which this replay does not model; never combine `volume` with the
+adjusted price columns across a gated ex-date, e.g. for dollar volume).
+This closes the M02 verdict's -90%-momentum hazard (a 10:1 split reading
+as a spurious return collapse) without letting any future corporate
+action leak into a decision made before it was announced:
+`adjustment_factors`/`apply_asof_adjustment` re-gate to `ex_date <= asof`
+internally, and `prices()` additionally hard-slices the actions it
+fetches before handing them off, mirroring the existing
 hard-slice-then-assert pattern used for prices/actions everywhere else in
-this module. Only `close` is as-of adjusted - `open`/`high`/`low`/`volume`
-remain raw (documented limitation, out of scope for M02b).
+this module.
+
+Two things a strategy author must not get wrong (VERDICT.md M02b
+re-review): (1) for any session before a gated ex-date, `close` (and
+`open`/`high`/`low`) is a total-return-comparable LEVEL, not a price
+anyone could have traded at that day - only `raw_close`/the row's true
+traded price is that. (2) A missing or stale actions history for a ticker
+BLOCKS `prices()` (raises `StaleActionsCacheError`/`ActionsFetchError`,
+propagated uncaught - see data/corporate_actions.py) rather than
+degrading it to an unadjusted result; there is no silent fallback.
 """
 
 from __future__ import annotations
@@ -139,13 +153,17 @@ class PITDataContext:
     # -- prices -----------------------------------------------------------
 
     def prices(self, tickers: list[str], lookback_days: int) -> pd.DataFrame:
-        """Decision-path OHLCV: NEVER includes adj_close. `close` is the
-        as-of adjustment replay (data/adjustment.py) - raw close x
-        cumulative factor from corporate-action events with ex-date <=
-        asof; the untouched raw value is under `raw_close`. Rows hard-
+        """Decision-path OHLCV: NEVER includes adj_close. `close`/`open`/
+        `high`/`low` are the as-of adjustment replay (data/adjustment.py) -
+        raw price x the identical cumulative factor per date, from
+        corporate-action events with ex-date <= asof; the untouched raw
+        close is under `raw_close`. `volume` is NOT adjusted. Rows hard-
         sliced to <= asof; at most `lookback_days` distinct trading
-        sessions ending at the last session <= asof. See module docstring
-        for the full M02b contract."""
+        sessions ending at the last session <= asof. Raises
+        `StaleActionsCacheError`/`ActionsFetchError` (uncaught) if any
+        requested ticker's actions history is stale or unfetchable - this
+        blocks the decision rather than silently returning an unadjusted
+        result. See module docstring for the full M02b contract."""
         panel = self._sliced_price_panel(tickers, lookback_days)
         actions_by_ticker = self._gated_actions_by_ticker(tickers)
         adjusted = apply_asof_adjustment(panel, actions_by_ticker, self._asof)

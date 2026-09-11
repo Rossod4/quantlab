@@ -17,16 +17,17 @@ agents, enforce the protocol, and carry gate findings forward.
 | M02b adjustment replay | ✅ merged to main 2026-09-11 (163 offline tests green; gate REJECT→ACCEPT; carried items in QUANT-NOTES) |
 | M03 strategy framework | ✅ merged 2026-09-11 (213 tests; filing-lag restrict-only extension; gate ACCEPT) |
 | M03b share terms | ✅ merged 2026-09-11 (227 tests; per-share fundamentals restated over (filed, asof]; canonical blend id; gate ACCEPT) |
-| **M04 backtest engine** | 🔵 **IN PROGRESS** on branch `m04-backtest-engine` — packet plans/M04-backtest-engine.md carries all M02/M02b/M03/M03b items addressed to M04 |
-| M05 validation I | packet drafted in orchestrator scratchpad; commit to plans/ when M04 merges |
+| M04 backtest engine | ✅ merged 2026-09-11 (329 tests; gate REJECT→ACCEPT; 5 accounting bugs fixed; accounting=True gate) |
+| **M05 validation I** | 🔵 **IN PROGRESS** on branch `m05-validation-1` — packet plans/M05-validation-1.md |
+| M06 validation II | packet plans/M06-validation-2.md ready (carried M03b/M04 items folded) |
 | M04–M09 | packets not yet written — write each just-in-time from the template in PROTOCOL.md, folding in QUANT-NOTES items addressed to it |
 
 Milestone specs for M04–M09 live in the approved plan summary at the bottom of this
 file. Task list state is also tracked in the harness task tools (M00/M01/M02 completed).
 
 ## Immediate next action
-Continue the M04 loop from whatever artifacts exist in plans/state/M04/ (none ⇒ dispatch
-a fresh developer on plans/M04-backtest-engine.md). Then M05 (packet exists), M06, then the
+Continue the M05 loop from whatever artifacts exist in plans/state/M05/ (none ⇒ dispatch
+a fresh developer on plans/M05-validation-1.md). Then M06 (packet exists), then the
 real-data run of momentum / value / blend_50_50 through the report card — Alex's decision
 point. Post-M06 data follow-on: per-component TTM EPS share terms (QUANT-NOTES M03b).
 

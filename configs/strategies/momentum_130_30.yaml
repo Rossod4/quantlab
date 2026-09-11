@@ -1,0 +1,8 @@
+# 12-1 momentum, 130/30 active extension (net 1.0, gross 1.6).
+strategy: momentum
+params:
+  book: "130_30"
+  n_long: 30
+  n_short: 30
+  lookback_months: 12
+  skip_months: 1

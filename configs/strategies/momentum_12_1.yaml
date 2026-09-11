@@ -1,0 +1,7 @@
+# Classic 12-1 momentum, long-only, fully invested.
+strategy: momentum
+params:
+  book: long_only
+  n_long: 30
+  lookback_months: 12
+  skip_months: 1

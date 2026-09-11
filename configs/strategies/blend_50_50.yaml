@@ -1,0 +1,16 @@
+# 50/50 blend of the long-only momentum and composite value books.
+strategy: blend
+params:
+  children:
+    - strategy: momentum
+      params:
+        book: long_only
+        n_long: 30
+        lookback_months: 12
+        skip_months: 1
+      weight: 0.5
+    - strategy: value_composite
+      params:
+        n_holdings: 30
+        filing_lag_sessions: 1
+      weight: 0.5

@@ -1,0 +1,8 @@
+# Composite value (P/B, P/E, EV/EBITDA, growth-adjusted), quarterly.
+# filing_lag_sessions is DECIDED-default 1 (plans/QUANT-NOTES.md M02/M03
+# carried item) and is enforced by PITDataContext.fundamentals(): a filing
+# must be filed on or before the previous NYSE session to be visible.
+strategy: value_composite
+params:
+  n_holdings: 30
+  filing_lag_sessions: 1

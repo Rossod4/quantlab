@@ -60,10 +60,12 @@ Price signals MUST be computed on the as-of-adjusted `prices()` from M02b (never
 `prices_for_returns()`, never raw close across time).
 
 Per plans/QUANT-NOTES.md (M02 gate): day-granular `filed <= asof` hands same-day
-after-hours SEC filings to a same-day decision. The value strategy must apply a
+after-hours SEC filings to a same-day decision. DECIDED by the orchestrator (Alex's
+standing preference for the conservative choice): the value strategy MUST apply a
 one-session lag on fundamentals availability (use filings with
-filed <= prev_trading_day(asof)) OR defend the same-day convention explicitly in the
-handoff with the quant gate as the audience. Note the old repo's convention when
+filed <= prev_trading_day(asof)); make the lag a strategy param `filing_lag_sessions`
+defaulting to 1 so the parity test can pin 0 for old-repo comparability and a
+separate test asserts the default-1 behaviour hides a same-day filing. Note the old repo's convention when
 porting and preserve parity-test comparability (the parity fixture may pin asof dates
 where the lag is immaterial — document).
 
@@ -87,3 +89,21 @@ where the lag is immaterial — document).
 ## Parity fixtures
 Fixture price panel + fundamentals dict sized so expected momentum/value scores are
 hand-verifiable; golden numbers with provenance comments.
+
+## Carried from the M02b verdict (binding — see plans/QUANT-NOTES.md "From M02b verdict")
+1. **Value leg, price levels.** `prices()['close']` is an as-of-adjusted total-return
+   LEVEL for every row before the last gated ex-date. Level metrics (P/E, P/B, market
+   cap, price floors) must use the `asof` row (factor exactly 1.0, true traded price)
+   or `raw_close`. A pre-split filing's per-share figure never reconciles with a
+   split-adjusted historical price; pair raw price at t with the filing in force at t.
+   Write a test that the value composite on a fixture spanning a split gives the same
+   score as the hand computation using raw price × filing-in-force.
+2. **Strategy ABC docs + canary.** `raw_close` is strategy-visible and carries the full
+   split discontinuity. The ABC docstring must state cross-time price signals use
+   `close`, never `raw_close`. Add a canary in tests/canaries/ asserting the momentum
+   plugin's score across the NVDA-style split fixture is ~0 for a flat-value stock
+   (i.e. it is computed on `close`); mutation-check it by switching to `raw_close`.
+3. **Volume is unadjusted.** Any dollar-volume or turnover screen spanning a split is
+   discontinuous. M03 strategies must not use `volume` for screens; document in ABC.
+4. **Raw open/high/low are not in `prices()`.** Any strategy needing them must STOP and
+   flag (escalation), not read `prices_for_returns()`.

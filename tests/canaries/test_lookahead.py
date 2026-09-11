@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from quantlab.core.calendar import prev_trading_day
 from quantlab.data.interfaces import (
     ConstituentsProvider,
     CorporateActionsProvider,
@@ -287,3 +288,61 @@ def test_canary_future_dated_action_has_zero_effect_on_prices():
     without_split = ctx_without.prices(["AAA"], 2)
 
     pd.testing.assert_frame_equal(with_split, without_split)
+
+
+# -- (g) filing_lag_sessions can only ever RESTRICT visible filings ---------
+
+
+def test_canary_increasing_filing_lag_only_ever_narrows_visible_filings():
+    """M03 orchestrator-authorised extension: `fundamentals(ticker, *,
+    filing_lag_sessions=N)` steps its `filed <= effective_asof` gate back N
+    further NYSE sessions. This exercises the REAL production extraction
+    logic (`get_point_in_time_fundamentals`, via `_FactsBackedFundamentalsProvider`)
+    against three StockholdersEquity filings, one filed on each of asof,
+    asof's prior session, and the session before that. As `filing_lag_sessions`
+    increases 0 -> 1 -> 2 -> 3, the freshest visible filing must monotonically
+    fall back to the next-older one, then to none - i.e. the value visible at
+    a higher lag is never a filing that was invisible at a lower lag (a
+    strictly-narrowing / subset chain, never a wider one)."""
+    asof = pd.Timestamp("2020-01-15")
+    session_minus_1 = prev_trading_day(asof)
+    session_minus_2 = prev_trading_day(session_minus_1)
+
+    facts = pd.DataFrame(
+        [
+            {
+                "tag": "StockholdersEquity",
+                "start": pd.NaT,
+                "end": pd.Timestamp("2019-12-31"),
+                "filed": session_minus_2,
+                "val": 100.0,
+            },
+            {
+                "tag": "StockholdersEquity",
+                "start": pd.NaT,
+                "end": pd.Timestamp("2020-01-05"),
+                "filed": session_minus_1,
+                "val": 200.0,
+            },
+            {
+                "tag": "StockholdersEquity",
+                "start": pd.NaT,
+                "end": pd.Timestamp("2020-01-10"),
+                "filed": asof,
+                "val": 300.0,
+            },
+        ]
+    )
+    ctx = _minimal_context(
+        asof,
+        DataRequirements(fundamental_fields=frozenset({"stockholders_equity"})),
+        price_provider=_AlwaysReturnsFullPanelPriceProvider(pd.DataFrame()),
+        fundamentals_provider=_FactsBackedFundamentalsProvider(facts),
+    )
+
+    visible_by_lag = [
+        ctx.fundamentals("AAA", filing_lag_sessions=lag)["stockholders_equity"]
+        for lag in (0, 1, 2, 3)
+    ]
+
+    assert visible_by_lag == [300.0, 200.0, 100.0, None]

@@ -28,10 +28,29 @@ receives - `Blend.requires()` declares the union of every child's
 `DataRequirements`, which is a superset of (never narrower than) what each
 child individually declared, so no child's own `ctx` calls can raise
 `UndeclaredDataError` because of the union.
+
+## Canonical `strategy_id` (M03b, closing plans/state/M03/VERDICT.md item
+4.8, carried to M06)
+
+`Strategy.strategy_id` (base.py) by default hashes `self.params` verbatim,
+which for a blend means the children's RAW config dicts as written in the
+YAML - order-sensitive (swapping two children's order changes the hash for
+an identical portfolio) and default-sensitive (omitting a child's default
+param changes the hash even though the child's own validated `strategy_id`
+is identical). Both defeat the M06 multiple-testing trials registry's job
+of recognising a repeat blend. `BlendStrategy` overrides `strategy_id`
+below to hash an order-insensitive, sorted list of `(child.strategy_id,
+weight)` pairs instead - each child's own `strategy_id` is ALREADY stable
+and default-insensitive (it hashes that child's validated pydantic dump,
+not its raw YAML - see base.py), so building the blend id from those
+inherits the same property, plus whatever the blend's own params contribute
+(currently nothing beyond `children`).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
@@ -80,6 +99,21 @@ class BlendStrategy(Strategy):
     @classmethod
     def params_model(cls) -> type[BaseModel]:
         return BlendParams
+
+    @property
+    def strategy_id(self) -> str:
+        """Override of `Strategy.strategy_id` (base.py) - see this module's
+        docstring's "Canonical strategy_id" section. Order-insensitive
+        (children are sorted before hashing) and default-insensitive
+        (built from each child's OWN `strategy_id`, not its raw config
+        dict), while still changing whenever a weight, a child's own
+        selection-affecting param, or a future non-`children` blend param
+        changes."""
+        own_params = {k: v for k, v in self.params.items() if k != "children"}
+        child_pairs = sorted((child.strategy_id, weight) for child, weight in self._children())
+        canonical = json.dumps({"own_params": own_params, "children": child_pairs}, sort_keys=True)
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:10]
+        return f"{self.name}-{digest}"
 
     def _children(self) -> list[tuple[Strategy, float]]:
         # Imported lazily to avoid a module-level import cycle with

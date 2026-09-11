@@ -29,11 +29,18 @@ class _EchoWeightParams(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     weights: dict[str, float]
+    # A default (selection-affecting-if-changed) param, purely so
+    # test_strategy_id_is_order_insensitive_and_default_insensitive below
+    # has a child param that can be omitted vs. written out explicitly -
+    # default 1.0 leaves every OTHER test in this file's weight arithmetic
+    # unaffected.
+    multiplier: float = 1.0
 
 
 @register_strategy("blend-test-echo")
 class EchoWeightStrategy(Strategy):
-    """Test-only strategy: ignores `ctx` and just returns `params.weights`."""
+    """Test-only strategy: ignores `ctx` and just returns `params.weights`
+    scaled by `params.multiplier`."""
 
     @classmethod
     def params_model(cls) -> type[BaseModel]:
@@ -43,9 +50,8 @@ class EchoWeightStrategy(Strategy):
         return DataRequirements()
 
     def generate_targets(self, ctx: PITDataContext, date) -> TargetWeights:
-        return TargetWeights(
-            asof=date, weights=dict(self._params.weights), strategy_id=self.strategy_id
-        )
+        weights = {k: v * self._params.multiplier for k, v in self._params.weights.items()}
+        return TargetWeights(asof=date, weights=weights, strategy_id=self.strategy_id)
 
 
 def _no_op_ctx() -> PITDataContext:
@@ -183,6 +189,74 @@ def test_strategy_id_changes_when_a_child_weight_changes():
         _blend_config(
             ("blend-test-echo", {"weights": {"AAA": 1.0}}, 0.6),
             ("blend-test-echo", {"weights": {"BBB": 1.0}}, 0.4),
+        )
+    )
+    assert a.strategy_id != b.strategy_id
+
+
+# -- strategy_id canonicalization (M03b, closing plans/state/M03/VERDICT.md
+# item 4.8, carried to M06) --------------------------------------------------
+
+
+def test_strategy_id_is_order_insensitive():
+    """Swapping the order of two children with an otherwise identical
+    portfolio must give the SAME blend strategy_id - VERDICT.md 4.8's first
+    over-counting hazard for the M06 trials registry."""
+    from quantlab.strategies.registry import load_strategy
+
+    order_a = load_strategy(
+        _blend_config(
+            ("blend-test-echo", {"weights": {"AAA": 1.0}}, 0.5),
+            ("blend-test-echo", {"weights": {"BBB": 1.0}}, 0.5),
+        )
+    )
+    order_b = load_strategy(
+        _blend_config(
+            ("blend-test-echo", {"weights": {"BBB": 1.0}}, 0.5),
+            ("blend-test-echo", {"weights": {"AAA": 1.0}}, 0.5),
+        )
+    )
+    assert order_a.strategy_id == order_b.strategy_id
+
+
+def test_strategy_id_is_insensitive_to_a_child_omitting_its_default_param():
+    """Omitting a child's default param vs. writing it out explicitly must
+    give the SAME blend strategy_id, since the child's own strategy_id is
+    already identical either way (base.py hashes the validated pydantic
+    dump, not the raw YAML) - VERDICT.md 4.8's second over-counting hazard."""
+    from quantlab.strategies.registry import load_strategy
+
+    omitted_default = load_strategy(
+        _blend_config(
+            ("blend-test-echo", {"weights": {"AAA": 1.0}}, 0.5),
+            ("blend-test-echo", {"weights": {"BBB": 1.0}}, 0.5),
+        )
+    )
+    explicit_default = load_strategy(
+        _blend_config(
+            ("blend-test-echo", {"weights": {"AAA": 1.0}, "multiplier": 1.0}, 0.5),
+            ("blend-test-echo", {"weights": {"BBB": 1.0}}, 0.5),
+        )
+    )
+    assert omitted_default.strategy_id == explicit_default.strategy_id
+
+
+def test_strategy_id_changes_when_a_child_param_changes():
+    """A child param change that changes the CHILD's own strategy_id must
+    still change the blend's id, even though the canonicalization no longer
+    hashes the child's raw config dict directly."""
+    from quantlab.strategies.registry import load_strategy
+
+    a = load_strategy(
+        _blend_config(
+            ("blend-test-echo", {"weights": {"AAA": 1.0}, "multiplier": 1.0}, 0.5),
+            ("blend-test-echo", {"weights": {"BBB": 1.0}}, 0.5),
+        )
+    )
+    b = load_strategy(
+        _blend_config(
+            ("blend-test-echo", {"weights": {"AAA": 1.0}, "multiplier": 2.0}, 0.5),
+            ("blend-test-echo", {"weights": {"BBB": 1.0}}, 0.5),
         )
     )
     assert a.strategy_id != b.strategy_id

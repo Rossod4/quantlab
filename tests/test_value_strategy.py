@@ -17,7 +17,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from quantlab.core.calendar import prev_trading_day
+from quantlab.core.calendar import prev_trading_day, trading_days
 from quantlab.core.errors import UndeclaredDataError
 from quantlab.data.interfaces import (
     ConstituentsProvider,
@@ -335,6 +335,110 @@ def test_filing_lag_zero_matches_the_pre_extension_default_gate():
 
     assert explicit_lag_zero.stockholders_equity == no_lag_argument["stockholders_equity"]
     assert explicit_lag_zero.stockholders_equity == pytest.approx(2000.0)
+
+
+# -- end-to-end: split-spanning name lands at its TRUE composite rank -------
+# (M03b, closing plans/state/M03/VERDICT.md's MATERIAL finding 4.1)
+
+
+class _PerTickerFactsFundamentalsProvider(FundamentalsProvider):
+    """Dispatches to the real (ported-frozen-plus-M03b-additive) extraction
+    logic per ticker, keyed by a per-ticker facts table - lets one fixture
+    exercise production filed-date provenance for several tickers at once."""
+
+    def __init__(self, facts_by_ticker: dict[str, pd.DataFrame]):
+        self._facts_by_ticker = facts_by_ticker
+
+    def get_pit_fundamentals(self, ticker: str, asof: object) -> dict:
+        from dataclasses import asdict
+
+        return asdict(get_point_in_time_fundamentals(self._facts_by_ticker[ticker], asof))
+
+
+def _quarterly_eps_rows(filed: pd.Timestamp, ttm_eps: float) -> list[dict]:
+    quarters = [
+        ("2019-01-01", "2019-03-31"),
+        ("2019-04-01", "2019-06-30"),
+        ("2019-07-01", "2019-09-30"),
+        ("2019-10-01", "2019-12-31"),
+    ]
+    return [
+        {
+            "tag": "EarningsPerShareDiluted",
+            "start": pd.Timestamp(start),
+            "end": pd.Timestamp(end),
+            "filed": filed,
+            "val": ttm_eps / 4,
+        }
+        for start, end in quarters
+    ]
+
+
+def _company_facts(
+    filed: pd.Timestamp, shares_outstanding: float, equity: float, ttm_eps: float
+) -> pd.DataFrame:
+    rows = [
+        {
+            "tag": "EntityCommonStockSharesOutstanding",
+            "start": pd.NaT,
+            "end": pd.Timestamp("2019-12-31"),
+            "filed": filed,
+            "val": shares_outstanding,
+        },
+        {
+            "tag": "StockholdersEquity",
+            "start": pd.NaT,
+            "end": pd.Timestamp("2019-12-31"),
+            "filed": filed,
+            "val": equity,
+        },
+        *_quarterly_eps_rows(filed, ttm_eps),
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_split_spanning_name_lands_at_its_true_composite_rank_not_the_best():
+    """A name with a 4:1 split between its filing and asof must rank at its
+    TRUE (expensive, post-restatement) composite rank through the full
+    generate_targets pipeline, not the artificially cheap rank a stale,
+    unrestated pairing would give it (VERDICT.md 4.1's measured hazard:
+    pe 6.25/pb 0.417, the BEST of four, vs the correct pe 25/pb 1.667, the
+    WORST). "SPLIT" is, before restatement, cheaper than every comparison
+    ticker (pe 10, pb 0.5) and would be picked; after restatement it is the
+    MOST expensive of the four and must be excluded when picking the three
+    cheapest."""
+    filed = pd.Timestamp("2020-01-15")
+    sessions = trading_days(filed, filed + pd.Timedelta(days=400))
+    split_date = sessions[30]
+    asof = sessions[60]
+
+    facts_by_ticker = {
+        "SPLIT": _company_facts(filed, shares_outstanding=100.0, equity=12_000.0, ttm_eps=8.0),
+        "B": _company_facts(filed, shares_outstanding=100.0, equity=4_000.0, ttm_eps=2.0),
+        "C": _company_facts(filed, shares_outstanding=100.0, equity=6_000.0, ttm_eps=3.0),
+        "D": _company_facts(filed, shares_outstanding=100.0, equity=8_000.0, ttm_eps=4.0),
+    }
+    prices = {"SPLIT": 50.0, "B": 20.0, "C": 30.0, "D": 40.0}
+    price_panel = pd.concat([_price_row(t, asof, p) for t, p in prices.items()])
+    split_action = pd.DataFrame(
+        {"ticker": ["SPLIT"], "action_type": ["split"], "value": [4.0]},
+        index=pd.DatetimeIndex([split_date], name="date"),
+    )
+
+    strat = ValueStrategy({"n_holdings": 3})
+    ctx = PITDataContext(
+        asof=asof,
+        requirements=strat.requires(),
+        price_provider=_FakePriceProvider(price_panel),
+        constituents_provider=_FakeConstituentsProvider(list(prices)),
+        fundamentals_provider=_PerTickerFactsFundamentalsProvider(facts_by_ticker),
+        corporate_actions_provider=_FixedActionsProvider(split_action),
+    )
+
+    result = strat.generate_targets(ctx, asof)
+
+    assert "SPLIT" not in result.weights
+    assert set(result.weights) == {"B", "C", "D"}
 
 
 def test_filing_lag_negative_raises_at_the_context_level():

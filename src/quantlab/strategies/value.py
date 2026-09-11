@@ -38,6 +38,16 @@ mandates. (`close`'s own asof row would give the identical number, since the
 as-of adjustment factor is always 1.0 there - `raw_close` is used anyway, as
 the more obviously-correct, self-documenting choice per the verdict.)
 
+M03b (plans/M03b-share-terms.md) closed the residual hazard VERDICT.md
+flagged in this pairing: `ctx.fundamentals()`'s `shares_outstanding` and
+`ttm_eps` are now themselves delivered already restated into the share
+terms in force at `asof` (see data/pit.py's module docstring and
+`fundamentals()`), not the share terms in force when they were filed. So
+`market_cap = raw_close(asof) * shares_outstanding` and
+`pe = raw_close(asof) / ttm_eps` below are now a consistent pairing across
+a split, not merely a consistent PRICE-LEVEL pairing - this module makes no
+other numerical change and declares nothing new to get that.
+
 ## The one-session filing lag (M03 orchestrator-authorised extension)
 
 plans/QUANT-NOTES.md's M02/M03 carried item DECIDES a one-session lag on

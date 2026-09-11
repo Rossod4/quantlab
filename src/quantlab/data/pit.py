@@ -55,6 +55,17 @@ fetches before handing them off, mirroring the existing
 hard-slice-then-assert pattern used for prices/actions everywhere else in
 this module.
 
+M03b (plans/M03b-share-terms.md, closing plans/state/M03/VERDICT.md's
+MATERIAL "stale share terms" finding) changed `fundamentals()`: when
+declared, `shares_outstanding` and `ttm_eps` are restated from the share
+terms in force on their SEC `filed` date into the share terms in force at
+`asof`, using splits with ex-date in `(filed, asof]` (see `fundamentals()`'s
+own docstring and `_split_factor_since_filed` for the ASC 260 argument for
+that window, not `(period_end, asof]`). This closes the hazard where a
+pre-split filing's per-share figures were paired with a post-split `asof`
+price, biasing the value book toward buying recent winners. No other
+`fundamentals()` field changes.
+
 Two things a strategy author must not get wrong (VERDICT.md M02b
 re-review): (1) for any session before a gated ex-date, `close` (and
 `open`/`high`/`low`) is a total-return-comparable LEVEL, not a price
@@ -124,6 +135,53 @@ def _last_session_on_or_before(date: pd.Timestamp) -> pd.Timestamp:
     if is_trading_day(date):
         return date
     return prev_trading_day(date)
+
+
+_ACTION_TYPE_SPLIT = "split"  # mirrors data/adjustment.py's action_type value
+
+# The two PointInTimeFundamentals per-share fields M03b restates into as-of
+# share terms (data/providers/edgar_fundamentals.py), and the corresponding
+# provenance key each one is paired with in the provider's dict.
+_SHARE_TERMS_FILED_KEYS = {
+    "shares_outstanding": "shares_outstanding_filed",
+    "ttm_eps": "ttm_eps_filed",
+}
+
+
+def _split_factor_since_filed(
+    filed: pd.Timestamp, actions: pd.DataFrame, asof: pd.Timestamp
+) -> float:
+    """M03b restatement factor (plans/M03b-share-terms.md): the cumulative
+    split ratio (yfinance convention - data/adjustment.py's module
+    docstring: value=R means R new shares per old share) for every split
+    action with ex-date strictly after `filed` and on or before `asof`.
+
+    Why (filed, asof] and not (period_end, asof]: under ASC 260 a filer
+    retroactively restates its EPS and share counts for any split that
+    happens before the financial statements are ISSUED, so a split between
+    the reporting period's end and the filing date is already reflected in
+    the filed figure - only a split strictly AFTER the filing date leaves
+    the filed figure in stale (pre-split) share terms.
+
+    `actions` is expected to already be hard-sliced to ex-date <= asof by
+    the caller (`_gated_actions_by_ticker` below) - re-checking `<= asof`
+    here is defense-in-depth, mirroring data/adjustment.py's own internal
+    re-gate pattern, not the sole guard. Multiplying a per-share-count
+    field (shares_outstanding) by this factor, or dividing a per-share-
+    dollar field (ttm_eps) by it, brings a filed-date figure into the share
+    terms in force at `asof`. Returns 1.0 (no-op) if there is no such
+    split - "no split" and "the only split(s) are already reflected in the
+    filed figure" are indistinguishable from this factor's perspective, by
+    design."""
+    if actions is None or actions.empty:
+        return 1.0
+    splits = actions[actions["action_type"] == _ACTION_TYPE_SPLIT]
+    if splits.empty:
+        return 1.0
+    window = splits.loc[(splits.index > filed) & (splits.index <= asof)]
+    if window.empty:
+        return 1.0
+    return float(window["value"].astype(float).prod())
 
 
 def _fundamentals_effective_asof(asof: pd.Timestamp, filing_lag_sessions: int) -> pd.Timestamp:
@@ -290,7 +348,42 @@ class PITDataContext:
         value raises `ValueError` rather than being silently accepted,
         since it would otherwise let a decision see a filing filed strictly
         after it - genuine look-ahead. `prices()` is unaffected: this
-        parameter exists on `fundamentals()` only."""
+        parameter exists on `fundamentals()` only.
+
+        M03b share-terms restatement (plans/M03b-share-terms.md, closing
+        plans/state/M03/VERDICT.md's MATERIAL finding): if `shares_outstanding`
+        and/or `ttm_eps` is declared, each is restated from the share terms
+        in force when it was FILED into the share terms in force at `asof`,
+        using `_split_factor_since_filed` on this ticker's own corporate-
+        action history (fetched via `_gated_actions_by_ticker` - the exact
+        same gated-to-`asof` actions `prices()` uses, never a second raw
+        provider call). `shares_outstanding *= factor`; `ttm_eps /= factor`
+        (see `_split_factor_since_filed`'s docstring for the (filed, asof]
+        window and its ASC 260 justification). The window's upper bound is
+        `asof` itself, NOT the (possibly lagged) `effective_asof` above -
+        the lag governs which FILINGS are visible, but a stock split is a
+        market event knowable by its ex-date regardless of any filing lag.
+        Provenance keys, added ONLY for whichever of `shares_outstanding` /
+        `ttm_eps` was declared (M03b REVIEW.md non-blocking finding 2:
+        originally a single shared `share_terms_split_factor` scalar, which
+        misreported the effective factor whenever the two fields' own
+        `filed` dates straddled a different set of splits - split into two
+        independent keys instead so there is nothing left to misreport):
+        `shares_outstanding_split_factor` and/or `ttm_eps_split_factor`
+        (each 1.0 when no split applied to THAT field - no filed date known,
+        or no split in that field's own `(filed, asof]` window), plus
+        `share_terms_asof` (= `asof`, added whenever either field was
+        declared - not field-specific, since `asof` doesn't vary by field).
+        Each field uses its OWN `filed` date; `shares_outstanding` and
+        `ttm_eps` normally share one filing (so in practice the two factors
+        are equal), but a company can restate one figure in a filing that
+        doesn't touch the other, and each field is restated correctly and
+        independently either way. Every other field (`stockholders_equity`,
+        `total_debt`, `cash`, `ttm_ebitda`) is a total, not a per-share
+        figure, so a split leaves it untouched; `annual_eps_growth` is a
+        ratio of two same-vintage EPS figures, so a share-count rescaling
+        cancels out of it and it is likewise left untouched. Fields not
+        declared are still filtered out first, as before."""
         if not self._requirements.fundamental_fields:
             raise UndeclaredDataError(
                 f"fundamentals() called for {ticker!r} but DataRequirements declares no "
@@ -299,7 +392,27 @@ class PITDataContext:
         effective_asof = _fundamentals_effective_asof(self._asof, filing_lag_sessions)
         full = self._fundamentals_provider.get_pit_fundamentals(ticker, effective_asof)
         declared = self._requirements.fundamental_fields
-        return {field: value for field, value in full.items() if field in declared}
+        result = {field: value for field, value in full.items() if field in declared}
+
+        share_terms_fields = [f for f in _SHARE_TERMS_FILED_KEYS if f in declared]
+        if share_terms_fields:
+            actions = self._gated_actions_by_ticker([ticker])[ticker]
+            for field in share_terms_fields:
+                factor = 1.0
+                if result.get(field) is not None:
+                    filed = full.get(_SHARE_TERMS_FILED_KEYS[field])
+                    if filed is not None and not pd.isna(filed):
+                        factor = _split_factor_since_filed(pd.Timestamp(filed), actions, self._asof)
+                        if field == "shares_outstanding":
+                            result[field] = result[field] * factor
+                        else:  # ttm_eps
+                            result[field] = result[field] / factor
+                # Per-field provenance key (M03b REVIEW.md finding 2) - see
+                # docstring above for why this is two keys, not one shared
+                # scalar.
+                result[f"{field}_split_factor"] = factor
+            result["share_terms_asof"] = self._asof
+        return result
 
     # -- universe -----------------------------------------------------------
 

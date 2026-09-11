@@ -492,3 +492,193 @@ iteration-3 tree, not by re-reading the handoff.
   its own parity decision), or `flag_only` as the default for long-short configs. Do not
   ship a long-short config on `exclude_legacy` without stating the choice; a referee will
   ask what the guard did to the short book's tail.
+
+## From M05 verdict (plans/state/M05/VERDICT.md)
+
+### Closure of the M05 items carried from M04
+
+- **M04 item 1 (never compute metrics from `snapshots`) — CLOSED.** `metrics.summary()`
+  reads only `net_returns`/`gross_returns`/`net_equity`/`gross_equity`/`turnover` and the
+  benchmark series; `rolling.py` reads only `net_returns`. Gate-verified: the `Exploding()`
+  sentinel test, which raises on any attribute or item access to `snapshots`, passes.
+- **M04 item 3 (`missing_forward_prices` never a second number) — CLOSED.** The string
+  appears nowhere in `ValidationBasic.flags`; `forced_exits`, `extreme_returns_long` and
+  `extreme_returns_short` are each reported once and the long/short split is preserved.
+  **The "once each" half of the item is NOT closed for `unscored_by_date` and
+  `dropped_tickers_by_date`** — both are stated twice, once inside the combined
+  coverage-and-selection flag and again as standalone flags. VERDICT.md finding 3.
+- **M04 item 4 (coverage bound and unscored/dropped are separate selection effects) —
+  CLOSED.** `_coverage_and_selection_flag` is emitted unconditionally, combines all three
+  numbers, and carries the mandated "SEPARATE selection effects ... not additive into one
+  headline number" wording.
+- **M04 item 2 (nonzero extreme counts beside any Sharpe figure) — PARTIALLY CLOSED.**
+  Satisfied for `ValidationBasic.flags`; NOT satisfied for the `quantlab validate`
+  one-liner, which prints Sharpe/Sortino/Calmar but no extreme counts. VERDICT.md finding 4
+  rules this required, not deferred.
+- **M05/M09 canary item — CLOSED.** `tests/canaries/test_no_prices_for_returns_in_
+  strategies.py` ships with its own planted-violation test, so the AST scan is
+  mutation-confirmed rather than merely currently-passing.
+
+### New carried items
+
+- **→ M07 (reporting), and M06 wherever it quotes a rolling number:** the frozen ported
+  `standard_metrics`/`rolling_window_metrics` build each window's equity as
+  `(1 + returns).cumprod()` with NO leading 1.0, so **every rolling window and every
+  walk-forward comparison column silently omits its own first return**: that return is
+  cancelled out of the CAGR numerator and is invisible to `max_drawdown`'s `cummax`. On a
+  `[-0.50, +0.10, +0.10, +0.10]` window the gate measured Max Drawdown `+0.0000` against a
+  truth of `-0.5000`. This is a faithful port (the old repo's `_window_metrics` is
+  identical) and `tests/test_rolling.py:30`'s `expected_growth = 1.01**11` deliberately pins
+  it, so it must NOT be "fixed" in the ported path. M07's report text must state it wherever
+  a rolling or walk-forward comparison figure is printed, and M06 must not gate
+  `max_drawdown_floor` on a rolling column without accounting for it. `subperiod_table` is
+  new code and IS being fixed under VERDICT.md finding 1.
+- **→ M06 (trials registry):** `sensitivity._strategy_id_for_point` hashes only the config
+  stem plus the point's params. It ignores `backtest_config` entirely even though the
+  function receives it, so the SAME grid run over a different start/end window, cost model
+  or execution mode produces byte-identical trial ids — gate-verified by rerunning a 9-point
+  grid under a 2005–2010 config and a 2015–2020 config and getting the same nine ids.
+  Two genuinely different trials then collide in the registry. This compounds the existing
+  M03b/M04 items about `strategy_id` not encoding data semantics and about
+  `provenance.quantlab_git_sha` carrying no dirty-tree flag. The registry key needs config
+  and semantics, not just params.
+- **→ M06 (trials registry):** the sensitivity trial id scheme is deliberately independent of
+  `Strategy.strategy_id` (stated in `sensitivity.py`'s module docstring), so M06 cannot
+  reconcile the base grid point with the headline run and will count it twice under two
+  different ids. Over-counting N is conservative for DSR so this is not a defect, but M06
+  should state which it is doing rather than leave the double entry unexplained.
+- **→ M06 (verdict thresholds):** `no_cliff_score` is a relative-spread statistic over the
+  neighbourhood's Sharpe multiset — it never reads the base point's OWN value, so it scores
+  "base is the peak beside a cliff" and "base is the trough between two good points"
+  identically (gate-measured: both `-1.0000` on `{-1, 1, 1}` versus `{1, -1, 1}`). It is a
+  roughness detector, not a cliff-edge detector. Related: a uniformly terrible but flat
+  neighbourhood (every point Sharpe `-0.80`) scores a perfect `+1.0000` and would pass
+  `min_no_cliff_score: 0.5`. That is correct behaviour for a spread statistic and is
+  harmless only because `min_net_sharpe: 0.3` gates separately — M06 must apply both, and
+  must never quote the no-cliff score as evidence of quality.
+- **→ M06:** `no_cliff_score`'s spread uses builtin `max()`/`min()`, which do NOT skip NaN,
+  while its median uses `pd.Series.median()`, which does. A NaN Sharpe anywhere in the
+  neighbourhood therefore makes the score depend on the order the grid was enumerated in.
+  Unreachable today (a degenerate zero-vol backtest is needed), but M06 will run the grid on
+  real strategies where a failed or degenerate point is possible. Make NaN handling explicit
+  and deterministic, and count NaN points rather than absorbing them.
+- **→ M06 / M07:** `walk_forward_blend` inserts no purge or embargo between a training block
+  and the test block that immediately follows it. For already-realised strategy period
+  returns this is standard walk-forward and the gate found no self-influence (verified with
+  a planted fixture), but M06's purged-CV work should state why the walk-forward needs no
+  embargo while the CV does, rather than leaving the asymmetry unexplained.
+- **→ M06 / M07:** `walk_forward_blend`'s blend-of-net-returns convention is documented
+  thoroughly and correctly in the module docstring, including an explicit "do not substitute
+  for an M04 blend backtest's `net_returns`". The residual: the weight-choice stability
+  conclusion transfers to the real netted-cost book only if the Sharpe RANKING across grid
+  points is the same under both conventions, and nothing tests that. Before M07 quotes a
+  walk-forward conclusion about a blend that will actually be traded, check the ranking
+  agrees, or say that it was not checked.
+- **→ M06 / M07:** `walk_forward_blend`'s tie-break is `s > best_sharpe` seeded from the
+  first grid point. If the FIRST grid point's training Sharpe is NaN (zero-vol training
+  window), every subsequent comparison against NaN is False and that step locks in the first
+  weight tuple regardless of the others. Inherited from the old repo and frozen, so flag it
+  rather than fix it; M06 should assert no chosen step had a NaN training Sharpe.
+- **→ M06 / M07:** `metrics.summary()` computes `beta`, `information_ratio` and
+  `tracking_error` on whatever dates the strategy and benchmark happen to share, and records
+  the overlap nowhere. Gate-measured: beta moved from `-0.1602` to `-0.4855` and the
+  information ratio flipped sign when the benchmark covered 6 of 60 months, silently. If
+  VERDICT.md finding 6 is not fixed in M05, M06 must not print beta or IR without the
+  overlap count beside them.
+- **→ M06 / M07:** the "benchmark Sharpe exceeds strategy Sharpe" flag is a bare
+  `benchmark_sharpe > net_sharpe` comparison, so it never fires when `benchmark_sharpe` is
+  NaN (degenerate or missing benchmark). The report card then shows `beta: nan`,
+  `benchmark_sharpe: nan` with no flag explaining why. Add an explicit "no usable benchmark"
+  flag rather than relying on a comparison that silently abstains.
+- **→ M06 / M07:** `sortino` uses target 0 and full-sample N (ddof=0) while `sharpe_ratio`'s
+  denominator is `pd.Series.std()` at ddof=1. The Sortino convention is the standard
+  lower-partial-moment one and is the right choice, but the two ratios are not on the same
+  denominator footing and the docstring states neither. Whoever prints them side by side
+  must say so.
+- **→ M09 (canaries):** unchanged from M04 — a strategy that deliberately does
+  `object.__setattr__(ctx, "_accounting", True)` can still reach `prices_for_returns`. The
+  new M05 AST canary narrows this further at the source level but cannot close it.
+
+### Adjustments to "From M05 verdict" above (M05 cycle 2, plans/state/M05/VERDICT.2.md)
+
+M05 was ACCEPTED at cycle 2. All four blocking findings and both non-blocking findings from
+cycle 1 are fixed, plus the three orchestrator-added items. The items above are amended as
+follows; where an item is marked DISCHARGED it needs no action from a later milestone.
+
+- **The M04 carried items are now ALL CLOSED.** Item 2 (nonzero extreme counts beside any
+  Sharpe figure) is closed: the `quantlab validate` one-liner now carries
+  `extreme_returns_long=N extreme_returns_short=M` when either is nonzero, and omits them
+  when both are zero — gate-verified end-to-end through the real CLI. Item 3's "once each"
+  half is closed: the combined coverage sentence now states the relationship without
+  carrying either number, and a gate probe with six mutually distinct counts confirmed every
+  counter appears exactly once across all flags. Items 1 and 4 were already closed at cycle 1
+  and still hold.
+- **The M07/M06 item on first-return blindness STANDS, and is now documented in-tree.** The
+  frozen `standard_metrics`/`rolling_window_metrics` path was correctly NOT changed: the gate
+  reran the old repo's own functions against the new ones across four shapes with a −50%
+  first return planted, and every cell matched at 0.000e+00, with Max Drawdown still reading
+  +0.0000 on the −50%-opening window. `standard_metrics`'s docstring now states the blindness
+  explicitly, names it frozen under CLAUDE.md invariant #4, and instructs against reusing the
+  helper for any new surface where the first return matters; `rolling.py`'s module docstring
+  repeats it. **M07 must still state it wherever a rolling or walk-forward comparison figure
+  is printed, and M06 must still not gate `max_drawdown_floor` on a rolling column without
+  accounting for it.** The `subperiod_table` half of the item is DISCHARGED — that table now
+  rebases from the true prior boundary in `net_equity` and reconciles to the headline curve
+  exactly (all six shipped regimes at +0.0000 error, growth product on the table's own
+  `Growth` column at 0.000e+00).
+- **The M06 item on trial ids ignoring `backtest_config` — DISCHARGED.**
+  `_strategy_id_for_point` now fingerprints `start`/`end`/`execution`, the four cost-model
+  fields and `DATA_SEMANTICS_VERSION` alongside the params. Gate-verified: the same 9-point
+  grid over a different window shares no id with the base run, a 25bps cost change shares no
+  id, and the same config reruns to identical ids. This also partly discharges the standing
+  M03b/M04 note about `strategy_id` not encoding data semantics — for sensitivity trials
+  specifically; the note still stands for `Strategy.strategy_id` itself.
+- **The M06 item on `no_cliff_score` NaN order-dependence — DISCHARGED.** NaN neighbours are
+  filtered once before max/min/median, and `nan_points` records how many were excluded. The
+  gate confirmed the original defect was real (builtin max/min give spread 1.0 on
+  `[1.0, nan, 2.0]` and nan on `[nan, 1.0, 2.0]`) and that it is gone: identical scores under
+  opposite axis enumeration orders, and an all-NaN neighbourhood returns NaN rather than a
+  spurious 1.0 "perfectly flat".
+- **The M06/M07 item on the benchmark comparison abstaining on NaN — DISCHARGED.** A
+  degenerate benchmark now emits `no usable benchmark Sharpe (NaN) - cannot compare to
+  strategy Sharpe`. Gate-verified live through the CLI.
+- **The M06/M07 item on the benchmark overlap count — DISCHARGED.**
+  `MetricsSummary.benchmark_overlap_periods` is recorded and `validate_basic` flags a short
+  overlap against the new `benchmark_overlap_min_fraction` (0.9) in `configs/validation.yaml`.
+  Note for M06: this is M05's first self-read threshold and is deliberately OUTSIDE the
+  `thresholds` block reserved for M06; keep the two separate.
+- **The M06/M07 item on Sortino's stated convention — DISCHARGED.** The docstring now states
+  target 0, full-sample N at ddof=0, why full-sample N is the right lower-partial-moment
+  choice, and the ddof mismatch against `sharpe_ratio`. The formula is unchanged. **The
+  reporting half stands:** whoever prints Sortino beside Sharpe must still say the two
+  denominators are not on the same footing.
+- **The M06 item on `no_cliff_score` being a roughness rather than cliff-edge detector
+  STANDS UNCHANGED.** The formula is the packet's own and was not altered. What changed is
+  that `neighbourhood_size` and `neighbourhood_truncated` are now recorded and serialised, so
+  M06 can at least tell an edge-truncated score from an interior one, and an even-length axis
+  with no explicit `base_point` now raises rather than silently defaulting to an edge.
+  Gate-verified: the cycle-1 five-point probe reproduces −0.6000 / +0.8500 / +0.9710 with
+  `truncated=True/False/True`. M06 must still apply `min_net_sharpe` alongside
+  `min_no_cliff_score` and must never quote the no-cliff score as evidence of quality.
+- **The M06 item on reconciling sensitivity trial ids with `Strategy.strategy_id` STANDS.**
+  The two id schemes remain deliberately independent, so M06 will still count the base grid
+  point twice under two different ids. Over-counting N is conservative for DSR; M06 should
+  state which it is doing.
+- **The M06/M07 items on walk-forward STAND UNCHANGED** — no purge/embargo between adjacent
+  train/test blocks (gate re-confirmed no self-influence against the current tree with the
+  planted fixture); the blend-of-net versus netted-book Sharpe RANKING is still untested; and
+  a NaN training Sharpe on the FIRST grid point still locks in that weight for the step.
+  `walk_forward.py` was not touched by iteration 2.
+- **The M09 canary item STANDS UNCHANGED.**
+
+### New carried item from M05 cycle 2
+
+- **→ M06 / M07 (defensive, low severity):** `rolling._rebased_subperiod_equity` computes
+  `net_equity.index.get_loc(first_return_date) - 1`. A `net_equity` lacking the synthetic
+  leading 1.0 makes that index −1, the slice wraps, and the row degrades silently — the gate
+  measured `Growth=1.000000`, `CAGR=nan`, `Max Drawdown=0.000000` against a true growth of
+  3.163726. Unreachable in-product (the only caller passes `result.net_equity`, which
+  `engine.py:_equity_with_start` always prepends and `BacktestResult.load` round-trips), the
+  requirement is documented in the helper's docstring, and the degraded output is
+  conspicuously degenerate rather than plausibly wrong. A one-line guard raising when
+  `first_pos == 0` would close it; worth doing if M06 or M07 adds a second caller.

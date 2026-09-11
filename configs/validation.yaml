@@ -1,0 +1,58 @@
+# Validation config for `quantlab validate` (src/quantlab/validation/basic.py
+# ValidationConfig). Gate thresholds are stored here for M06 to read - M05's
+# own logic never compares against `thresholds`.
+
+rolling:
+  # Rolling-window lengths (years) reported by validate_basic; each becomes
+  # one entry in ValidationBasic.rolling. A window longer than the result's
+  # own history is skipped (with a flag), not a hard error.
+  window_years: [3, 5]
+
+# Named sub-periods (regimes), in addition to the always-computed
+# first_half/second_half split. Dates are inclusive [start, end] and read as
+# plain ISO strings by subperiod_table.
+regimes:
+  precovid_2012_2019: ["2012-01-01", "2019-12-31"]
+  covid_2020: ["2020-01-01", "2020-12-31"]
+  rate_shock_2021_2022: ["2021-01-01", "2022-12-31"]
+  recent_2023_plus: ["2023-01-01", "2035-12-31"]
+
+# Walk-forward defaults for the momentum/value blend-weight honesty check
+# (src/quantlab/validation/walk_forward.py). weight_grid entries are
+# per-child weight tuples (as lists, since YAML has no tuple literal) that
+# must sum to 1.0 - the old repo's own coarse 0/25/50/75/100 momentum-weight
+# sweep, generalized to the [momentum, value] ordering.
+walk_forward:
+  train_years: 5
+  test_years: 1
+  weight_grid:
+    - [1.0, 0.0]
+    - [0.75, 0.25]
+    - [0.5, 0.5]
+    - [0.25, 0.75]
+    - [0.0, 1.0]
+
+# Parameter-sensitivity ("no-cliff") axes, keyed by strategy family. One or
+# two axes per family (src/quantlab/validation/sensitivity.py's own limit).
+sensitivity:
+  momentum:
+    lookback_months: [9, 12, 15]
+    n_long: [30, 50, 70]
+  value_composite:
+    lookback_months: [9, 12, 15]
+
+# M05 disclosure threshold (quant-gate VERDICT.md non-blocking finding 6) -
+# unlike `thresholds` below, THIS one IS read by M05's own logic:
+# validate_basic flags when the benchmark's overlap with net_returns falls
+# below this fraction of net_returns' own length (beta/IR/tracking error are
+# computed on the overlap only, so a short one deserves a flag).
+benchmark_overlap_min_fraction: 0.9
+
+# M06 gate thresholds - config, not code, so the numbers can be revised
+# without touching M06's implementation. Unused by M05.
+thresholds:
+  min_net_sharpe: 0.3
+  max_drawdown_floor: -0.5
+  min_no_cliff_score: 0.5
+  max_negative_rolling_window_fraction: 0.5
+  max_coverage_bound_pct: 20.0

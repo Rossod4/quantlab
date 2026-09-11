@@ -131,3 +131,30 @@ thresholds live in configs/validation.yaml only; the code reads them, never hard
    (conservative on long books, anti-conservative on short books).
 3. The report card's "untrusted fraction" line combines `coverage_bound` with the
    unscored/dropped counts, labelled as two different selection effects.
+
+## Carried from the M05 verdict (binding — full text in plans/QUANT-NOTES.md "From M05 verdict")
+1. Registry keys: `(strategy_id, data_semantics_version, backtest_config_hash)`. M05
+   iteration 2 makes sensitivity trial ids include the backtest config hash; the
+   registry must key the same way. State explicitly whether the sensitivity base point
+   is counted once or twice relative to the strategy's own id (over-counting is
+   conservative for DSR; say which you do).
+2. `no_cliff_score` is a relative-spread statistic that never reads the base point's
+   own value: NEVER quote it as evidence of quality; always gate `min_net_sharpe`
+   alongside it. Respect its `edge` / `nan_points` flags (M05 iteration 2) in gate
+   reasons.
+3. Purged CV vs walk-forward: the report card must state why the walk-forward needs no
+   embargo (weights chosen on strictly prior blocks, next-period returns are not
+   labels) while the CV does (overlapping label windows).
+4. Before quoting a blend conclusion from the walk-forward, check that the Sharpe
+   ranking across grid points agrees under the old blend-of-net-returns convention and
+   M04's netted-book costing; if not checked, the report says so.
+5. Assert no chosen walk-forward step had a NaN training Sharpe (inherited tie-break
+   seeds from the first grid point).
+6. Beta / IR / TE are printed only with their overlap count (M05 iteration 2 records
+   it); the "no usable benchmark" flag (M05 iteration 2) is a hard gate failure reason.
+7. Rolling / sub-period numbers: the frozen ported `rolling_window_metrics` omits each
+   window's first return (faithful port, pinned by test); M05's corrected sub-period
+   table does not. Gate `max_drawdown_floor` only on the full-sample or corrected
+   figures, and label the rolling table as the ported convention.
+8. Sortino uses target 0 and full-sample N (ddof=0); Sharpe uses pandas ddof=1. Report
+   both conventions beside the numbers.

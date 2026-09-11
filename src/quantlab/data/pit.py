@@ -126,6 +126,30 @@ def _last_session_on_or_before(date: pd.Timestamp) -> pd.Timestamp:
     return prev_trading_day(date)
 
 
+def _fundamentals_effective_asof(asof: pd.Timestamp, filing_lag_sessions: int) -> pd.Timestamp:
+    """The effective as-of date `fundamentals()` gates against: `asof`
+    snapped to the last real session on or before it (`_last_session_on_or_
+    before`), then stepped back `filing_lag_sessions` further NYSE sessions
+    via `prev_trading_day` (strict-for-sessions, which is exactly right
+    once already snapped to a session - see plans/QUANT-NOTES.md's M00
+    note). `filing_lag_sessions=0` returns `_last_session_on_or_before(asof)`:
+    identical to the pre-extension `filed <= asof` gate for a session
+    `asof`, but strictly narrower (never wider) for a non-session `asof` -
+    e.g. a Saturday `asof` of 2020-01-18 now gates at 2020-01-17 instead of
+    literally 2020-01-18. Still restrict-only, so no pre-existing caller can
+    see a filing it couldn't see before.
+
+    Raises `ValueError` if `filing_lag_sessions` is negative - a negative
+    lag would let a decision see a filing filed AFTER it (look-ahead), so
+    this must be impossible to express, not merely unused."""
+    if filing_lag_sessions < 0:
+        raise ValueError(f"filing_lag_sessions must be >= 0, got {filing_lag_sessions}")
+    effective = _last_session_on_or_before(asof)
+    for _ in range(filing_lag_sessions):
+        effective = prev_trading_day(effective)
+    return effective
+
+
 class PITDataContext:
     """Hard-bound to one `asof` date; the only data-access surface a
     strategy ever receives."""
@@ -244,17 +268,36 @@ class PITDataContext:
 
     # -- fundamentals -------------------------------------------------------
 
-    def fundamentals(self, ticker: str) -> dict[str, Any]:
+    def fundamentals(self, ticker: str, *, filing_lag_sessions: int = 0) -> dict[str, Any]:
         """Only SEC figures with `filed <= asof` (enforced inside the
         ported extraction logic - see data/providers/edgar_fundamentals.py).
         Returns only the fields declared in DataRequirements.fundamental_fields;
-        raises UndeclaredDataError if none were declared."""
+        raises UndeclaredDataError if none were declared.
+
+        `filing_lag_sessions` (orchestrator-authorised additive extension,
+        M03; see plans/state/M03/HANDOFF.md): optionally steps the gate back
+        this many NYSE sessions before evaluating `filed <= effective_asof`
+        instead of `filed <= asof` - see `_fundamentals_effective_asof`.
+        Exists because the EDGAR filed-date gate is day-granular, so a
+        same-day, often after-hours filing is otherwise visible to a
+        same-day decision (M02 VERDICT.md carried item 2 /
+        plans/QUANT-NOTES.md); passing a lag hides such filings. The
+        parameter can only RESTRICT what's visible, never expand it:
+        default 0 is identical to the pre-existing `filed <= asof` gate for
+        a session `asof` (every prior caller and the M02 parity fixtures
+        are byte-identical), and strictly narrower - never wider - for a
+        non-session `asof` (see `_fundamentals_effective_asof`). A negative
+        value raises `ValueError` rather than being silently accepted,
+        since it would otherwise let a decision see a filing filed strictly
+        after it - genuine look-ahead. `prices()` is unaffected: this
+        parameter exists on `fundamentals()` only."""
         if not self._requirements.fundamental_fields:
             raise UndeclaredDataError(
                 f"fundamentals() called for {ticker!r} but DataRequirements declares no "
                 "fundamental_fields"
             )
-        full = self._fundamentals_provider.get_pit_fundamentals(ticker, self._asof)
+        effective_asof = _fundamentals_effective_asof(self._asof, filing_lag_sessions)
+        full = self._fundamentals_provider.get_pit_fundamentals(ticker, effective_asof)
         declared = self._requirements.fundamental_fields
         return {field: value for field, value in full.items() if field in declared}
 

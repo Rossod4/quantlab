@@ -1,0 +1,11 @@
+# Same strategy/window as momentum_12_1_2012_2026.yaml, but filling at the
+# NEXT session's open rather than the decision-date close - the realistic
+# execution mode (a real order can't fill at the same close the decision
+# was made on). Not a parity target; see acceptance criterion 11.
+start: 2012-01-01
+end: 2026-06-30
+strategy_config: configs/strategies/momentum_12_1.yaml
+rebalance_freq: month_end
+execution: next_open
+cost_model: flat_bps
+one_way_cost_bps: 10.0

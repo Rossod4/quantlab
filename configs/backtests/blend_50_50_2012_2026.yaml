@@ -1,0 +1,13 @@
+# 50/50 momentum/value blend, `close` execution, flat 10bps. The engine
+# costs the NETTED book (plans/QUANT-NOTES.md "From M03 verdict", MATERIAL
+# item - a deliberate divergence from the old repo, which blended each
+# sleeve's NET returns and so double-charged costs on offsetting positions);
+# blend parity with the old repo is NOT an acceptance criterion. Carries the
+# same TTM-EPS caveat as value_composite_2012_2026.yaml (its value sleeve).
+start: 2012-01-01
+end: 2026-06-30
+strategy_config: configs/strategies/blend_50_50.yaml
+rebalance_freq: month_end
+execution: close
+cost_model: flat_bps
+one_way_cost_bps: 10.0

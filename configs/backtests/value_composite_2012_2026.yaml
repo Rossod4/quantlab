@@ -1,0 +1,12 @@
+# Composite value, `close` execution, flat 10bps. CAVEAT (plans/QUANT-NOTES.md
+# "From M03b verdict" item 1, carried into every value/blend result via
+# BacktestResult.provenance.known_caveats): TTM EPS can be a mixed-share-terms
+# sum across a split that falls between component filings - do not quote a
+# result from this config without that caveat.
+start: 2012-01-01
+end: 2026-06-30
+strategy_config: configs/strategies/value_composite.yaml
+rebalance_freq: month_end
+execution: close
+cost_model: flat_bps
+one_way_cost_bps: 10.0

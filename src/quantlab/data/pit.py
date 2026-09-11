@@ -34,6 +34,19 @@ computing returns over already-elapsed historical periods, never for
 ranking/decision-making. `prices()` is UNCHANGED in that respect (never
 adj_close).
 
+M04 (HANDOFF.3, following up on quant-gate VERDICT.md cycle 1's non-blocking
+note) made the "never for strategy signal logic" rule STRUCTURAL rather than
+purely conventional: `PITDataContext.__init__` takes `accounting: bool =
+False`, and `prices_for_returns()` raises `UndeclaredDataError` unless the
+context was built with `accounting=True`. Every context a strategy is ever
+handed - by `backtest/engine.py`'s decision-path `context_factory`, and by
+the same factory a `BlendStrategy` passes to its own children - uses the
+default `False`. Only `backtest/engine.py`'s own internal accounting
+contexts (`_accounting_context`, used for fill/settlement/benchmark
+bookkeeping, never exposed to a strategy) pass `True`. See
+`prices_for_returns()`'s own docstring and tests/canaries/test_lookahead.py
+canary (j).
+
 M02b (the HARD, gate-mandated follow-on packet recorded in
 plans/state/M02/VERDICT.md's carried item 1 and plans/QUANT-NOTES.md)
 changed `prices()` itself: its `close`, `open`, `high` and `low` columns
@@ -220,6 +233,7 @@ class PITDataContext:
         constituents_provider: ConstituentsProvider,
         fundamentals_provider: FundamentalsProvider,
         corporate_actions_provider: CorporateActionsProvider,
+        accounting: bool = False,
     ):
         self._asof = normalize_timestamp(asof)
         self._requirements = requirements
@@ -227,6 +241,25 @@ class PITDataContext:
         self._constituents_provider = constituents_provider
         self._fundamentals_provider = fundamentals_provider
         self._corporate_actions_provider = corporate_actions_provider
+        # M03b verdict carried item 9 (plans/QUANT-NOTES.md, closed in M04):
+        # per-ticker gated actions, memoised for the lifetime of THIS
+        # context instance - see `_gated_actions_by_ticker`.
+        self._actions_cache: dict[str, pd.DataFrame] = {}
+        # M04 quant-gate VERDICT.md (cycle 1, non-blocking note) / M04
+        # HANDOFF.3 follow-up: orchestrator-authorised additive parameter.
+        # `prices_for_returns()` was previously reachable from ANY context,
+        # including the one a strategy's own `generate_targets` receives -
+        # a strategy could call it directly and get `adj_close` plus raw
+        # OHL, with nothing but convention (this module's docstring, the
+        # Strategy ABC's docs, per-plugin canaries) stopping it. `accounting`
+        # makes that a CONSTRUCTION-TIME property instead: default `False`
+        # (a decision-path context, as every strategy-facing context is)
+        # blocks `prices_for_returns()` outright; only a context the ENGINE
+        # itself builds for its own accounting/settlement bookkeeping
+        # (backtest/engine.py's `_accounting_context`) passes `True`. See
+        # `prices_for_returns()`'s docstring and
+        # tests/canaries/test_lookahead.py canary (j).
+        self._accounting = accounting
 
     @property
     def asof(self) -> pd.Timestamp:
@@ -258,21 +291,62 @@ class PITDataContext:
         opt-in accessor) and independent of whether the provider itself
         honored the requested `end` bound. Mirrors the hard-slice-then-
         assert pattern `actions()` uses below; `adjustment.py` re-gates
-        internally too, so this is defense-in-depth, not the sole guard."""
+        internally too, so this is defense-in-depth, not the sole guard.
+
+        MEMOISED per ticker for the lifetime of this `PITDataContext`
+        instance (M03b verdict carried item 9): both `prices()` and
+        `fundamentals()` call this for the same ticker within one
+        rebalance's context, and before this the provider was hit fresh on
+        every single call - a real, measured cost across the full
+        2012-2026 universe times ~170 monthly rebalances. `asof` is fixed
+        for the life of this instance, so a cached result never goes stale
+        within it; a fresh `PITDataContext` (a new rebalance date, or a new
+        per-child context from the blend factory - backtest/engine.py) gets
+        its own empty cache, so nothing survives across `asof` values. Each
+        ticker's own provider call still happens at most once regardless of
+        how many times or in what combination `prices()`/`fundamentals()`
+        request it - proven by a call-count test in tests/test_pit.py.
+        Returns a fresh `.copy()` on every call (cached or not) so a caller
+        mutating its result can never corrupt what a later call sees -
+        mirrors this module's existing defensive-copy discipline (canary d)."""
         gated: dict[str, pd.DataFrame] = {}
         for ticker in tickers:
+            if ticker in self._actions_cache:
+                gated[ticker] = self._actions_cache[ticker].copy()
+                continue
             raw = self._corporate_actions_provider.get_actions(ticker, _EPOCH, self._asof)
             sliced = raw.loc[raw.index <= self._asof]
             _assert_no_future_dates(
                 sliced.index, self._asof, context=f"PITDataContext.prices actions[{ticker}]"
             )
-            gated[ticker] = sliced
+            self._actions_cache[ticker] = sliced
+            gated[ticker] = sliced.copy()
         return gated
 
     def prices_for_returns(self, tickers: list[str], lookback_days: int) -> pd.DataFrame:
         """Accounting-path OHLCV, including yfinance's globally-adjusted
         `adj_close`. For equity-curve/return bookkeeping only - NEVER for
-        strategy signal logic. See module docstring for the full reasoning."""
+        strategy signal logic. See module docstring for the full reasoning.
+
+        Raises `UndeclaredDataError` unless this context was constructed
+        with `accounting=True` (M04 HANDOFF.3 follow-up to quant-gate
+        VERDICT.md, cycle 1): before this, a strategy holding ANY context -
+        including the ordinary decision-path one `generate_targets`
+        receives - could call this method directly and receive `adj_close`
+        plus raw OHL, with only convention (never a construction-time
+        guarantee) standing between it and a strategy's own signal logic.
+        `default=False` on `PITDataContext.__init__` means every context a
+        strategy is ever handed blocks this outright, by construction, not
+        by policy; only `backtest/engine.py`'s own internal accounting
+        contexts (`_accounting_context`, never exposed to a strategy) pass
+        `accounting=True`."""
+        if not self._accounting:
+            raise UndeclaredDataError(
+                "prices_for_returns() called on a non-accounting PITDataContext - this "
+                "accessor is for the backtest engine's own equity-curve/return bookkeeping "
+                "only, never for strategy signal logic. Construct PITDataContext with "
+                "accounting=True if this really is an accounting-path context."
+            )
         panel = self._sliced_price_panel(tickers, lookback_days)
         return panel[_PRICE_RETURNS_COLUMNS].copy()
 

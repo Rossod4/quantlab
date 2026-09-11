@@ -7,7 +7,7 @@ merge on ACCEPT, escalate to Alex only at genuine human touchpoints. **You do no
 implement milestone code yourself** — the loop does; you write packets, dispatch
 agents, enforce the protocol, and carry gate findings forward.
 
-## Current state (2026-09-11)
+## Current state (2026-09-11, afternoon)
 
 | Milestone | State |
 |---|---|
@@ -15,16 +15,20 @@ agents, enforce the protocol, and carry gate findings forward.
 | M01 data providers | ✅ merged to main |
 | M02 PIT core | ✅ merged to main (141 offline tests green on main) |
 | M02b adjustment replay | ✅ merged to main 2026-09-11 (163 offline tests green; gate REJECT→ACCEPT; carried items in QUANT-NOTES) |
-| **M03 strategy framework** | 🔵 **IN PROGRESS** on branch `m03-strategy-framework` — packet plans/M03-strategy-framework.md updated with M02b carried items + one-session filing lag decision |
+| M03 strategy framework | ✅ merged 2026-09-11 (213 tests; filing-lag restrict-only extension; gate ACCEPT) |
+| M03b share terms | ✅ merged 2026-09-11 (227 tests; per-share fundamentals restated over (filed, asof]; canonical blend id; gate ACCEPT) |
+| **M04 backtest engine** | 🔵 **IN PROGRESS** on branch `m04-backtest-engine` — packet plans/M04-backtest-engine.md carries all M02/M02b/M03/M03b items addressed to M04 |
+| M05 validation I | packet drafted in orchestrator scratchpad; commit to plans/ when M04 merges |
 | M04–M09 | packets not yet written — write each just-in-time from the template in PROTOCOL.md, folding in QUANT-NOTES items addressed to it |
 
 Milestone specs for M04–M09 live in the approved plan summary at the bottom of this
 file. Task list state is also tracked in the harness task tools (M00/M01/M02 completed).
 
 ## Immediate next action
-Continue the M03 loop from whatever artifacts exist in plans/state/M03/ (none ⇒ dispatch
-a fresh developer on plans/M03-strategy-framework.md). Then M04 (write the packet
-just-in-time from the summary below, folding in every QUANT-NOTES item addressed to M04).
+Continue the M04 loop from whatever artifacts exist in plans/state/M04/ (none ⇒ dispatch
+a fresh developer on plans/M04-backtest-engine.md). Then M05 (packet exists), M06, then the
+real-data run of momentum / value / blend_50_50 through the report card — Alex's decision
+point. Post-M06 data follow-on: per-component TTM EPS share terms (QUANT-NOTES M03b).
 
 ## How to dispatch agents
 - If this session started inside `quantlab/` the custom agents load natively: use

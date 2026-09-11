@@ -7,27 +7,24 @@ merge on ACCEPT, escalate to Alex only at genuine human touchpoints. **You do no
 implement milestone code yourself** — the loop does; you write packets, dispatch
 agents, enforce the protocol, and carry gate findings forward.
 
-## Current state (2026-07-11)
+## Current state (2026-09-11)
 
 | Milestone | State |
 |---|---|
 | M00 core scaffold | ✅ merged to main |
 | M01 data providers | ✅ merged to main |
 | M02 PIT core | ✅ merged to main (141 offline tests green on main) |
-| **M02b adjustment replay** | 🔴 **IN PROGRESS — resume here.** Branch `m02b-adjustment-replay` (checked out). A developer agent was killed mid-task by a session limit. Its WIP is committed (marked WIP): `src/quantlab/data/adjustment.py` + `pit.py` wiring exist; `tests/test_adjustment.py` is INCOMPLETE and RED (imports `quantlab.core.requirements`, should be `quantlab.data.requirements`); parity fixtures, canary (f), the −90%→0% regression test, and HANDOFF.md are all missing. |
-| M03 strategy framework | packet ready (plans/M03-strategy-framework.md, includes gate conditions) — **blocked until M02b merges** |
+| M02b adjustment replay | ✅ merged to main 2026-09-11 (163 offline tests green; gate REJECT→ACCEPT; carried items in QUANT-NOTES) |
+| **M03 strategy framework** | 🔵 **IN PROGRESS** on branch `m03-strategy-framework` — packet plans/M03-strategy-framework.md updated with M02b carried items + one-session filing lag decision |
 | M04–M09 | packets not yet written — write each just-in-time from the template in PROTOCOL.md, folding in QUANT-NOTES items addressed to it |
 
 Milestone specs for M04–M09 live in the approved plan summary at the bottom of this
 file. Task list state is also tracked in the harness task tools (M00/M01/M02 completed).
 
 ## Immediate next action
-Dispatch a **developer** agent on packet `plans/M02b-adjustment-replay.md`, telling it:
-WIP from an interrupted predecessor is committed on this branch — audit it, fix the
-broken import, finish the packet (parity fixtures, canary (f) with self-mutation
-check, regression test per acceptance criterion 4, HANDOFF.md). Then continue the
-normal loop (code-reviewer → quant-gate → merge). plans/state/M02/VERDICT.md is the
-binding spec for M02b semantics.
+Continue the M03 loop from whatever artifacts exist in plans/state/M03/ (none ⇒ dispatch
+a fresh developer on plans/M03-strategy-framework.md). Then M04 (write the packet
+just-in-time from the summary below, folding in every QUANT-NOTES item addressed to M04).
 
 ## How to dispatch agents
 - If this session started inside `quantlab/` the custom agents load natively: use

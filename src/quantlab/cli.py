@@ -14,8 +14,16 @@ import typer
 from quantlab import __version__
 
 if TYPE_CHECKING:
-    from quantlab.backtest.result import QualityFlags
+    import pandas as pd
+
+    from quantlab.backtest.result import BacktestResult, QualityFlags
+    from quantlab.core.config import PlatformConfig
+    from quantlab.validation.basic import ValidationConfig
     from quantlab.validation.metrics import MetricsSummary
+    from quantlab.validation.registry import TrialsRegistry
+    from quantlab.validation.report_card import ReportCard
+    from quantlab.validation.sensitivity import SensitivityResult, SensitivityRunner
+    from quantlab.validation.walk_forward import WalkForwardResult
 
 app = typer.Typer(
     name="quantlab",
@@ -125,14 +133,37 @@ def validate(
     config: Path = typer.Option(
         Path("configs/validation.yaml"), "--config", help="Path to validation.yaml."
     ),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help=(
+            "Also run the M06 report card: trials registry, PSR/DSR, purged/embargoed CV, "
+            "White Reality Check / Hansen SPA, block-bootstrap Monte Carlo, capacity (built "
+            "from platform.yaml's cache-backed price provider over every ticker the strategy "
+            "ever held - offline when the cache is warm), and the "
+            "REJECTED/RESEARCH_ONLY/ELIGIBLE_FOR_PAPER verdict."
+        ),
+    ),
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml (used by --full)."
+    ),
+    no_sensitivity: bool = typer.Option(
+        False,
+        "--no-sensitivity",
+        help="Skip the sensitivity grid for this run only (overrides validation.yaml's "
+        "sensitivity_enabled=true). Only meaningful with --full.",
+    ),
+    child_result: list[Path] = typer.Option(
+        [],
+        "--child-result",
+        help="Directory of a saved child-sleeve BacktestResult, for the walk-forward "
+        "honesty check when the headline strategy is a blend (repeat for each child; "
+        "at least 2 required). Only meaningful with --full.",
+    ),
 ) -> None:
     """Run basic-tier validation (metrics, rolling, sub-periods, flags) on a
-    saved `BacktestResult` and write the report to `--out`.
-
-    Walk-forward and parameter-sensitivity checks are not run by this
-    command (they need inputs beyond one saved result - see
-    `validation/basic.py`'s module docstring); it covers the "basic" tier
-    only (`plans/M05-validation-1.md`)."""
+    saved `BacktestResult` and write the report to `--out`; with `--full`,
+    also build and write the M06 report card (see `--full`'s help text)."""
     import json
 
     from quantlab.backtest.result import BacktestResult
@@ -142,7 +173,20 @@ def validate(
     bench_result = BacktestResult.load(benchmark) if benchmark is not None else None
     validation_config = load_validation_config(config)
 
-    basic = validate_basic(bt_result, bench_result, validation_config)
+    sensitivity_result: SensitivityResult | None = None
+    walk_forward_result: WalkForwardResult | None = None
+    if full and validation_config.sensitivity_enabled and not no_sensitivity:
+        sensitivity_result = _build_sensitivity_result(bt_result, platform, validation_config)
+    if full and child_result:
+        walk_forward_result = _build_walk_forward_result(bt_result, child_result, validation_config)
+
+    basic = validate_basic(
+        bt_result,
+        bench_result,
+        validation_config,
+        walk_forward=walk_forward_result,
+        sensitivity=sensitivity_result,
+    )
 
     out.mkdir(parents=True, exist_ok=True)
     (out / "validation_basic.json").write_text(json.dumps(basic.to_json(), sort_keys=True))
@@ -150,6 +194,285 @@ def validate(
     typer.echo(_validate_one_liner(basic.metrics, bt_result.quality_flags))
     for flag in basic.flags:
         typer.echo(f"  - {flag}")
+
+    if full:
+        from quantlab.core.config import load_platform_config
+        from quantlab.validation.registry import TrialsRegistry
+        from quantlab.validation.report_card import build_report_card
+
+        platform_config = load_platform_config(platform)
+        registry = TrialsRegistry(platform_config.reports_dir)
+        # quant-gate VERDICT.md M06 cycle-1 finding 5(a): idempotent, so
+        # calling it on every --full run is harmless (registry.py's own
+        # `seed_historical_blend_trials` docstring).
+        registry.seed_historical_blend_trials()
+
+        price_panel, missing_tickers = _build_capacity_price_panel(bt_result, platform_config)
+
+        strategy_id = bt_result.provenance.get("strategy_id", "")
+        family = strategy_id.rsplit("-", 1)[0] if strategy_id else ""
+        if sensitivity_result is not None:
+            _record_sensitivity_result(bt_result, sensitivity_result, family, registry)
+
+        report_card = build_report_card(
+            bt_result,
+            bench_result,
+            registry,
+            validation_config,
+            walk_forward=walk_forward_result,
+            sensitivity=sensitivity_result,
+            price_panel=price_panel,
+            price_panel_missing_tickers=missing_tickers,
+        )
+
+        (out / "report_card.json").write_text(json.dumps(report_card.to_json(), sort_keys=True))
+        (out / "report_card.md").write_text(_report_card_markdown(report_card))
+
+        typer.echo(f"\nverdict: {report_card.verdict}")
+        for gate in report_card.gates:
+            status = "PASS" if gate.passed else "FAIL"
+            typer.echo(f"  [{gate.kind:4s} {status}] {gate.name}: {gate.reason}")
+
+
+def _make_sensitivity_runner(platform_config: PlatformConfig) -> SensitivityRunner:
+    """Construct a REAL `SensitivityRunner` (sensitivity.py's own Protocol)
+    backed by the actual backtest engine and the platform's configured
+    providers. Module-level, called by name (not passed as a default
+    argument) so `validate --full`'s CLI test can monkeypatch THIS function
+    with a fake runner factory (quant-gate VERDICT.md M06 cycle-1 finding
+    5's own test requirement) without touching a real cache/network.
+    """
+    import yaml
+
+    from quantlab.backtest.engine import build_backtest_providers, run_backtest
+    from quantlab.strategies.registry import load_strategy
+
+    providers = build_backtest_providers(platform_config)
+
+    def runner(strategy_config, params, backtest_config):
+        data = yaml.safe_load(Path(strategy_config).read_text(encoding="utf-8"))
+        merged_params = {**data.get("params", {}), **params}
+        strategy = load_strategy({"strategy": data["strategy"], "params": merged_params})
+        return run_backtest(strategy, backtest_config, providers)
+
+    return runner
+
+
+def _build_sensitivity_result(
+    bt_result: BacktestResult, platform: Path, validation_config: ValidationConfig
+) -> SensitivityResult | None:
+    """Run the sensitivity grid for the headline strategy's family
+    (quant-gate VERDICT.md M06 cycle-1 finding 5(c)) via
+    `_make_sensitivity_runner`'s real engine. Returns `None` (never raises)
+    when the family has no configured axes in `validation.yaml`'s
+    `sensitivity` section, the saved result's provenance doesn't carry
+    enough to reconstruct a `BacktestConfig`, or the grid itself fails for
+    any reason (e.g. a cold cache) - `report_card.py`'s `no_cliff_score`
+    gate already treats a missing sensitivity result as a documented
+    failure, not a crash of the whole `--full` run.
+    """
+    strategy_id = bt_result.provenance.get("strategy_id", "")
+    family = strategy_id.rsplit("-", 1)[0] if strategy_id else ""
+    param_axes = validation_config.sensitivity.get(family)
+    backtest_config_dict = bt_result.provenance.get("backtest_config")
+    has_strategy_config = bool(backtest_config_dict and backtest_config_dict.get("strategy_config"))
+    if not param_axes or not has_strategy_config:
+        return None
+
+    try:
+        from quantlab.backtest.config import BacktestConfig
+        from quantlab.core.config import load_platform_config
+        from quantlab.validation.sensitivity import sensitivity_grid
+
+        backtest_config = BacktestConfig.model_validate(backtest_config_dict)
+        platform_config = load_platform_config(platform)
+        runner = _make_sensitivity_runner(platform_config)
+        return sensitivity_grid(
+            backtest_config_dict["strategy_config"], param_axes, backtest_config, runner
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade to "no sensitivity", never crash --full
+        typer.echo(f"  (sensitivity grid skipped: {exc})", err=True)
+        return None
+
+
+def _record_sensitivity_result(
+    bt_result: BacktestResult,
+    sensitivity_result: SensitivityResult,
+    family: str,
+    registry: TrialsRegistry,
+) -> None:
+    """Record every sensitivity grid point into the registry (quant-gate
+    VERDICT.md M06 cycle-1 finding 5(c)) - `registry.record_sensitivity` is
+    never called from product code before this."""
+    from quantlab.validation.metrics import PERIODS_PER_YEAR
+
+    backtest_config_dict = bt_result.provenance.get("backtest_config", {})
+    rebalance_freq = backtest_config_dict.get("rebalance_freq")
+    periods_per_year = PERIODS_PER_YEAR.get(rebalance_freq) if rebalance_freq else None
+    registry.record_sensitivity(
+        sensitivity_result, family=family or "unknown", periods_per_year=periods_per_year
+    )
+
+
+def _check_child_rebalance_frequencies(
+    children: list[BacktestResult], child_result_dirs: list[Path]
+) -> None:
+    """Raise a clear `ValueError` when child sleeves were run at DIFFERENT
+    rebalance frequencies (quant-gate VERDICT.md M06 cycle-1 addendum) -
+    `walk_forward_blend` has no way to detect this itself: it just
+    intersects whatever dates happen to coincide across the children's own
+    indices, which for e.g. a monthly momentum sleeve and a quarterly value
+    sleeve silently produces a "blend" over a near-arbitrary, far sparser
+    date set (whichever month-ends happen to also be quarter-ends) with NO
+    signal anything was wrong - the module's own docstring says a caller
+    must pre-compound mismatched children to one frequency first
+    (`compound_to`/`compound_to_quarterly`), so failing loudly here, before
+    that silent misuse can happen, is the correct default."""
+    freqs = {
+        d.name: c.provenance.get("backtest_config", {}).get("rebalance_freq")
+        for d, c in zip(child_result_dirs, children, strict=True)
+    }
+    if len(set(freqs.values())) > 1:
+        raise ValueError(
+            f"child sleeves have different rebalance frequencies: {freqs} - "
+            "walk_forward_blend requires every child at the SAME frequency; "
+            "compound the faster one(s) to match first (see "
+            "validation/walk_forward.py's compound_to/compound_to_quarterly)"
+        )
+
+
+def _build_walk_forward_result(
+    bt_result: BacktestResult, child_result_dirs: list[Path], validation_config: ValidationConfig
+) -> WalkForwardResult | None:
+    """Run the blend-weight walk-forward honesty check (quant-gate
+    VERDICT.md M06 cycle-1 finding 5(d)) when the headline strategy is a
+    `blend` and at least 2 `--child-result` sleeve directories were given.
+    Returns `None` (never raises) otherwise, or if the children's return
+    series share no common dates - `walk_forward_stability`'s gate already
+    treats a missing walk-forward as vacuously satisfied ("if present"), not
+    a crash.
+    """
+    strategy_id = bt_result.provenance.get("strategy_id", "")
+    family = strategy_id.rsplit("-", 1)[0] if strategy_id else ""
+    if family != "blend" or len(child_result_dirs) < 2:
+        return None
+
+    try:
+        from quantlab.backtest.result import BacktestResult
+        from quantlab.validation.walk_forward import walk_forward_blend
+
+        children = [BacktestResult.load(d) for d in child_result_dirs]
+        _check_child_rebalance_frequencies(children, child_result_dirs)
+        wf = validation_config.walk_forward
+        return walk_forward_blend(
+            [c.net_returns for c in children],
+            weight_grid=[tuple(w) for w in wf.weight_grid],
+            train_years=wf.train_years,
+            test_years=wf.test_years,
+            child_labels=tuple(d.name for d in child_result_dirs),
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade to "no walk-forward", never crash --full
+        typer.echo(f"  (walk-forward skipped: {exc})", err=True)
+        return None
+
+
+def _build_capacity_price_panel(
+    bt_result: BacktestResult, platform_config: PlatformConfig
+) -> tuple[dict[str, pd.DataFrame] | None, list[str]]:
+    """Build `report_card.build_report_card`'s `price_panel` input for
+    `validate --full`'s capacity gate: every ticker the strategy ever held
+    (`bt_result.holdings_history`), fetched over the backtest's own window
+    via `platform_config`'s configured price provider - cache-backed, so a
+    warm cache never touches the network (see
+    `data.providers.yfinance_prices.YFinancePriceProvider`'s docstring).
+
+    Returns `(panel_or_None, missing_tickers)`: `missing_tickers` names
+    every held ticker the provider could not supply data for (no cache, no
+    network, or a config error), so `report_card.py`'s capacity gate can say
+    which ones instead of a generic "no panel" message. `panel` is `None`
+    only when there were no held tickers to look up, or the price provider
+    itself could not be constructed at all (a config problem, not a
+    per-ticker one).
+    """
+    held_tickers = sorted(
+        {t for tw in bt_result.holdings_history.values() for t, w in tw.weights.items() if w != 0}
+    )
+    if not held_tickers:
+        return None, []
+
+    backtest_config = bt_result.provenance.get("backtest_config", {})
+    start, end = backtest_config.get("start"), backtest_config.get("end")
+    if start is None or end is None:
+        return None, held_tickers
+
+    from quantlab.data.interfaces import build_provider
+    from quantlab.validation.capacity import price_panel_from_long
+
+    try:
+        price_provider = build_provider("prices", platform_config.providers.prices, platform_config)
+        long_panel = price_provider.get_prices(held_tickers, start, end)
+    except Exception:
+        # A config error (unknown provider name) or a provider-level failure
+        # (e.g. every ticker uncached and the network is unavailable) - the
+        # capacity gate below treats an all-missing panel as a documented
+        # failure, not a crash of the whole `--full` run.
+        return None, held_tickers
+
+    panel = price_panel_from_long(long_panel)
+    missing = sorted(set(held_tickers) - set(panel))
+    return (panel or None), missing
+
+
+def _format_fraction(value: float | None) -> str:
+    return f"{value:.0%}" if value is not None else "n/a"
+
+
+def _report_card_markdown(report_card: ReportCard) -> str:
+    """Markdown summary of a `ReportCard` - the full HTML report is M07's
+    job (work packet's "Out of scope"); this is a plain-text-ish stopgap so
+    `--full`'s output is human-readable without JSON tooling. Prints the
+    full `ReportCardProvenance` section (quant-gate VERDICT.md M06 cycle-1
+    finding 6)."""
+    p = report_card.provenance
+    m = report_card.basic.metrics
+    dirty_badge = " **DIRTY TREE**" if p.dirty else ""
+    lines = [
+        f"# QuantLab Report Card - verdict: {report_card.verdict}",
+        "",
+        "## Provenance",
+        f"- strategy_id: `{p.strategy_id}`",
+        f"- data_semantics_version: `{p.data_semantics_version}`",
+        f"- quantlab_git_sha: `{p.quantlab_git_sha}`{dirty_badge} (source: {p.dirty_source})",
+        f"- N trials: {p.n_trials} distinct (raw key count: {p.n_trials_raw}, "
+        f"{p.dirty_trial_count} dirty)",
+        f"- Reality Check / SPA realised trial count K: "
+        f"{p.rc_trial_count if p.rc_trial_count is not None else 'n/a'}",
+        f"- Reality Check / SPA benchmark: {p.rc_spa_benchmark_source}",
+        f"- Headline trial's own retained fraction in the RC/SPA common date range: "
+        f"{_format_fraction(p.headline_retained_fraction)}",
+        f"- {p.untrusted_fraction_line}",
+        "",
+        "## Headline metrics",
+        f"- net CAGR: {m.net_cagr:.2%}  |  net max drawdown: {m.net_max_drawdown:.2%}  |  "
+        f"Calmar: {m.net_calmar:.2f}  |  hit rate: {m.hit_rate:.1%}",
+        f"- Sharpe: {m.net_sharpe:.2f}  |  Sortino: {m.net_sortino:.2f}",
+        f"  ({p.sharpe_sortino_convention})",
+        "",
+        "## Gates",
+        "| Gate | Kind | Value | Threshold | Result | Reason |",
+        "|---|---|---|---|---|---|",
+    ]
+    for gate in report_card.gates:
+        status = "PASS" if gate.passed else "FAIL"
+        lines.append(
+            f"| {gate.name} | {gate.kind} | {gate.value!r} | {gate.threshold!r} | {status} | "
+            f"{gate.reason} |"
+        )
+    lines.append("")
+    lines.append("## Known caveats")
+    for caveat in report_card.known_caveats:
+        lines.append(f"- {caveat}")
+    return "\n".join(lines) + "\n"
 
 
 def _validate_one_liner(metrics: MetricsSummary, quality_flags: QualityFlags) -> str:

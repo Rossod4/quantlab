@@ -18,16 +18,22 @@ agents, enforce the protocol, and carry gate findings forward.
 | M03 strategy framework | ✅ merged 2026-09-11 (213 tests; filing-lag restrict-only extension; gate ACCEPT) |
 | M03b share terms | ✅ merged 2026-09-11 (227 tests; per-share fundamentals restated over (filed, asof]; canonical blend id; gate ACCEPT) |
 | M04 backtest engine | ✅ merged 2026-09-11 (329 tests; gate REJECT→ACCEPT; 5 accounting bugs fixed; accounting=True gate) |
-| **M05 validation I** | 🔵 **IN PROGRESS** on branch `m05-validation-1` — packet plans/M05-validation-1.md |
-| M06 validation II | packet plans/M06-validation-2.md ready (carried M03b/M04 items folded) |
+| M05 validation I | ✅ merged 2026-09-11 (416 tests; gate REJECT→ACCEPT; sub-period first-return bug fixed) |
+| **M06 validation II** | 🔵 **cycle 3 APPROVED by Alex 2026-09-12; iteration 4 in progress** (was escalated 2026-09-11 evening) — 3 dev iters, review APPROVE, gate REJECT ×2 (cap). 5/6 blockers closed; remaining: headline trial can be dropped from the RC matrix by the overlap resolver (plans/state/M06/VERDICT.2.md). Recommended: one narrow cycle 3. Work is uncommitted on branch `m06-validation-2`. |
+| M04b engine perf | 🔵 in parallel worktree `..\quantlab-m04b` (branch `m04b-engine-perf`): calendar bounds, negative price cache, panel store, QualityGate wired with quarantine + membership-based symbol-reuse detector (42 names), unscored self-reported; full real run 8m32s; gate REJECT→ACCEPT cycle 2 (2026-09-12); ✅ merged to main 2026-09-12 (492 tests). Worktree can be removed after M06 merges. |
 | M04–M09 | packets not yet written — write each just-in-time from the template in PROTOCOL.md, folding in QUANT-NOTES items addressed to it |
 
 Milestone specs for M04–M09 live in the approved plan summary at the bottom of this
 file. Task list state is also tracked in the harness task tools (M00/M01/M02 completed).
 
+## Data
+A full data/cache (842 tickers, prices 2010-06..2026-09-11, actions with fetched_at=2026-09-11, EDGAR facts) was prefetched on 2026-09-11 via the orchestrator scratchpad script (M09 should formalise it as `quantlab data`). A real momentum backtest via `quantlab backtest` took >40 min on this machine — engine performance is a known M09 concern (per-ticker parquet reads per rebalance).
+
 ## Immediate next action
-Continue the M05 loop from whatever artifacts exist in plans/state/M05/ (none ⇒ dispatch
-a fresh developer on plans/M05-validation-1.md). Then M06 (packet exists), then the
+M06 is at the loop cap awaiting Alex's decision (see table). If approved: one narrow cycle 3 on the
+headline-pinning fix + disclosures listed in VERDICT.2.md, then review, gate, merge. M04b merges after
+M06 (rebase the worktree branch on main; conflicts expected only in QUANT-NOTES.md). Then M07 (packet
+drafted in the orchestrator scratchpad), M08, M09 (drafted). Then the
 real-data run of momentum / value / blend_50_50 through the report card — Alex's decision
 point. Post-M06 data follow-on: per-component TTM EPS share terms (QUANT-NOTES M03b).
 

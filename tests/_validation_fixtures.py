@@ -46,11 +46,37 @@ def make_backtest_result(
     quality_flags: QualityFlags | None = None,
     coverage_bound: float = 0.0,
     snapshots: object = None,
+    strategy_id: str = "momentum-0000000000",
+    data_semantics_version: str = "m03b",
+    initial_capital: float = 1_000_000.0,
+    known_caveats: list[str] | None = None,
+    holdings_history: dict | None = None,
+    dirty: bool | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    strategy_config: str | None = None,
 ) -> BacktestResult:
     """Build a minimal, real `BacktestResult` for offline validation tests.
     Every field the validation suite is allowed to read is populated
-    honestly; fields it must never read (`holdings_history`, `snapshots`)
-    default to empty/exploding rather than realistic data."""
+    honestly; `snapshots` (never read by any validation code - carried M04
+    verdict item 1) defaults to empty/exploding rather than realistic data.
+
+    `strategy_id`/`data_semantics_version`/`initial_capital`/`known_caveats`
+    (new for M06 - registry.py/report_card.py read `result.provenance` for
+    these) default to fixed, deterministic values so existing M05 callers
+    (which never inspected them) are unaffected. `holdings_history` (new for
+    M06 - capacity.py derives `position_frac` from it) defaults to `{}`,
+    same as before. `dirty` (new for M06b): when given, written into
+    `provenance["dirty"]` so `registry.py` can prefer it over its own
+    `git status` fallback; omitted (`None`, the default) leaves the key out
+    of `provenance` entirely, exercising the fallback path. `start`/`end`
+    (new for M06's `--full` capacity wiring) default to `net_returns`'s own
+    first/last dates. `strategy_config` (new for M06 cycle-1 finding 5's
+    CLI sensitivity wiring): when given, written into
+    `provenance["backtest_config"]["strategy_config"]` so
+    `cli._build_sensitivity_result` has enough to reconstruct a
+    `BacktestConfig`; omitted (the default) leaves the key out.
+    """
     if gross_returns is None:
         gross_returns = net_returns
     if benchmark_returns is None:
@@ -64,6 +90,23 @@ def make_backtest_result(
         turnover = pd.Series(0.1, index=net_returns.index)
     cost_drag = pd.Series(0.0, index=net_returns.index)
 
+    provenance: dict[str, object] = {
+        "strategy_id": strategy_id,
+        "data_semantics_version": data_semantics_version,
+        "quantlab_git_sha": "test-sha",
+        "known_caveats": known_caveats or [],
+        "backtest_config": {
+            "rebalance_freq": rebalance_freq,
+            "initial_capital": initial_capital,
+            "start": start or str(net_returns.index[0].date()),
+            "end": end or str(net_returns.index[-1].date()),
+        },
+    }
+    if dirty is not None:
+        provenance["dirty"] = dirty
+    if strategy_config is not None:
+        provenance["backtest_config"]["strategy_config"] = strategy_config
+
     return BacktestResult(
         gross_returns=gross_returns,
         net_returns=net_returns,
@@ -73,11 +116,11 @@ def make_backtest_result(
         benchmark_equity=benchmark_equity,
         turnover=turnover,
         cost_drag=cost_drag,
-        holdings_history={},
+        holdings_history={} if holdings_history is None else holdings_history,
         snapshots={} if snapshots is None else snapshots,
         quality_flags=quality_flags if quality_flags is not None else QualityFlags(),
         coverage_report=CoverageReport(
             by_year=pd.Series(dtype=float), overall_bound=coverage_bound, masked_tickers={}
         ),
-        provenance={"backtest_config": {"rebalance_freq": rebalance_freq}},
+        provenance=provenance,
     )

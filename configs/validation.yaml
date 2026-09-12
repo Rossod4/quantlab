@@ -41,6 +41,32 @@ sensitivity:
   value_composite:
     lookback_months: [9, 12, 15]
 
+# quant-gate VERDICT.md M06 cycle-1 finding 5: whether `validate --full`
+# runs this grid through the real engine at all. `--no-sensitivity` on the
+# CLI overrides this to false for one run.
+sensitivity_enabled: true
+
+# quant-gate VERDICT.md M06 cycle-1 finding 3: which benchmark White RC /
+# Hansen SPA test the best trial against - "embedded" (default) uses the
+# SAME benchmark every other gate uses (result.benchmark_returns, or a
+# separately-supplied --benchmark result); "zero" tests "is the best trial
+# profitable at all", independent of any benchmark.
+reality_check:
+  benchmark: embedded
+
+# quant-gate VERDICT.md M06 cycle-1 finding 10: a trial retaining less than
+# this fraction of its own date range in the Reality Check/SPA common-date
+# intersection is excluded (with a named reason) rather than silently
+# truncated. 0.0 disables the floor.
+min_overlap_fraction: 0.8
+
+# quant-gate VERDICT.md M06 cycle-1 finding 9: capacity's "100x" bar
+# multiplies THIS, not the backtest's own notional initial_capital (which
+# means "simulated book size", not what Alex actually intends to trade).
+# Alex's real account is a retail Trading212 stake, nowhere near the
+# backtest's default $1,000,000 notional - set this deliberately.
+intended_capital_usd: 1000.0
+
 # M05 disclosure threshold (quant-gate VERDICT.md non-blocking finding 6) -
 # unlike `thresholds` below, THIS one IS read by M05's own logic:
 # validate_basic flags when the benchmark's overlap with net_returns falls
@@ -50,9 +76,41 @@ benchmark_overlap_min_fraction: 0.9
 
 # M06 gate thresholds - config, not code, so the numbers can be revised
 # without touching M06's implementation. Unused by M05.
+#
+# max_coverage_bound_pct changed from M05's placeholder 20.0 to 15.0 here -
+# the M06 work packet's own hard-gate spec ("REJECTED if ... coverage_bound
+# > 15%"), which supersedes the earlier value.
 thresholds:
   min_net_sharpe: 0.3
   max_drawdown_floor: -0.5
   min_no_cliff_score: 0.5
   max_negative_rolling_window_fraction: 0.5
-  max_coverage_bound_pct: 20.0
+  max_coverage_bound_pct: 15.0
+  # Hard gates (report_card.py) - any failure => REJECTED.
+  min_dsr: 0.95
+  max_rc_pvalue: 0.10
+  # Soft gates (report_card.py) - all must pass, together with every hard
+  # gate, for ELIGIBLE_FOR_PAPER; otherwise RESEARCH_ONLY.
+  min_psr: 0.95
+  # Renamed from min_purged_cv_mean_oof_sharpe (quant-gate VERDICT.md M06
+  # cycle-1 finding 4 - see validation/purged_cv.py's module docstring for
+  # why "purged CV" overclaimed what this statistic actually measures).
+  min_subperiod_oof_sharpe: 0.0
+  max_spa_pvalue: 0.10
+  mc_max_prob_drawdown_worse_than_observed: 0.5
+  capacity_min_multiple_of_intended_capital: 100.0
+  min_walk_forward_stability_fraction: 0.5
+  min_track_record_confidence: 0.95
+
+# M06 resampling parameters (validation/basic.py's BootstrapConfig) - the
+# stationary bootstrap (Politis & Romano 1994) that reality_check.py's White
+# RC / Hansen SPA and monte_carlo.py's block bootstrap both read rather than
+# hardcode. Two distinct seeds so the two procedures draw independently.
+bootstrap:
+  b: 200
+  block_len: 6.0
+  seed: 0
+  monte_carlo_n_paths: 500
+  monte_carlo_seed: 1
+  purged_cv_n_splits: 5
+  purged_cv_embargo: 1

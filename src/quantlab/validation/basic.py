@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 import yaml
@@ -55,6 +55,42 @@ class WalkForwardAxisConfig(BaseModel):
     weight_grid: list[list[float]] = Field(default_factory=list)
 
 
+class BootstrapConfig(BaseModel):
+    """M06 resampling parameters (stationary bootstrap - Politis & Romano
+    1994) - config, not code, per the M06 work packet: `reality_check.py`'s
+    White RC / Hansen SPA and `monte_carlo.py`'s block bootstrap both read
+    these rather than hardcoding B/block length/seed. Two distinct seeds
+    (`seed` for Reality Check/SPA, `monte_carlo_seed` for the Monte Carlo
+    path resampler) so the two procedures' resamples are independent draws,
+    not accidentally correlated by sharing one seed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    b: int = Field(default=200, gt=0)
+    block_len: float = Field(default=6.0, ge=1.0)
+    seed: int = 0
+    monte_carlo_n_paths: int = Field(default=500, gt=0)
+    monte_carlo_seed: int = 1
+    purged_cv_n_splits: int = Field(default=5, ge=2)
+    purged_cv_embargo: int = Field(default=1, ge=0)
+
+
+class RealityCheckConfig(BaseModel):
+    """quant-gate VERDICT.md M06 cycle-1 finding 3: which benchmark White
+    RC / Hansen SPA test the best trial against is a STATED CHOICE, not an
+    accident of whether `--benchmark` happened to be passed on the CLI.
+    `"embedded"` (default) uses `result.benchmark_returns` (or `benchmark_
+    result.net_returns` when a separate benchmark result IS supplied) -
+    exactly what `metrics.summary()`/`net_sharpe_vs_benchmark`/
+    `min_track_record_length` already use, so the whole report card speaks
+    about ONE benchmark. `"zero"` explicitly tests "is the best trial
+    profitable at all", independent of any benchmark."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    benchmark: Literal["embedded", "zero"] = "embedded"
+
+
 class ValidationConfig(BaseModel):
     """Rolling window years, regime splits, walk-forward train/test years
     and weight grid, sensitivity axes per strategy family, and the M06 gate
@@ -66,6 +102,26 @@ class ValidationConfig(BaseModel):
     regimes: dict[str, tuple[str, str]] = Field(default_factory=dict)
     walk_forward: WalkForwardAxisConfig = Field(default_factory=WalkForwardAxisConfig)
     sensitivity: dict[str, dict[str, list[Any]]] = Field(default_factory=dict)
+    # quant-gate VERDICT.md M06 cycle-1 finding 5: whether `validate --full`
+    # runs the sensitivity grid (via the real engine) at all - default True;
+    # `--no-sensitivity` on the CLI overrides this to False for one run.
+    sensitivity_enabled: bool = True
+    # M06 resampling parameters - see BootstrapConfig's docstring.
+    bootstrap: BootstrapConfig = Field(default_factory=BootstrapConfig)
+    # quant-gate VERDICT.md M06 cycle-1 finding 3 - see RealityCheckConfig's
+    # docstring.
+    reality_check: RealityCheckConfig = Field(default_factory=RealityCheckConfig)
+    # quant-gate VERDICT.md M06 cycle-1 finding 10: a trial retaining less
+    # than this fraction of its own window in the RC/SPA common-date
+    # intersection is excluded (with a reason) rather than silently
+    # truncated - see reality_check.build_trial_matrix. 0.0 disables it.
+    min_overlap_fraction: float = Field(default=0.8, ge=0.0, le=1.0)
+    # quant-gate VERDICT.md M06 cycle-1 finding 9: capacity's "100x" bar
+    # multiplies THIS, not the backtest's own notional `initial_capital`
+    # (which means something else - the simulated book size, not what Alex
+    # actually intends to trade). Default 1000 (Alex's real account is a
+    # retail Trading212 stake, nowhere near the $1M backtest notional).
+    intended_capital_usd: float = Field(default=1000.0, gt=0)
     # M05 disclosure threshold (quant-gate VERDICT.md non-blocking finding
     # 6) - unlike `thresholds` below, THIS one IS read by M05's own logic:
     # validate_basic flags when the benchmark's overlap with net_returns

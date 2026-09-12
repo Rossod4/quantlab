@@ -395,6 +395,23 @@ only ones that do not close.
   later gate.
 
 ## Orchestrator decisions (recorded for the gate; Alex delegated these)
+- **M06 loop cap, 2026-09-12:** M06 exhausted the two quant-gate cycles; escalated to Alex
+  with a one-screen summary; Alex approved ONE narrow third cycle scoped to VERDICT.2.md
+  (headline pinning in the overlap resolver, exception-path exclusion capture, DSR
+  non-monotonicity disclosure, capacity trivial-pass sentence, RC/SPA size bound).
+
+- **M06 finding 4 (purged CV on fixed-parameter strategies), 2026-09-11:** a purged
+  K-fold cannot yield genuine out-of-fold evidence when nothing is refitted per fold.
+  Decision: the gate and statistic are renamed `subperiod_oof_sharpe` with a reason string
+  stating purge/embargo have no effect by construction; `purged_kfold_splits` stays as a
+  tested utility; a genuine purged CV over the sensitivity grid (fit = best grid point per
+  training fold) is carried to post-v1. No fake CV ships.
+- **M06 finding 1 (DSR rising with N):** trials deduplicated by net-return hash; trial
+  variance floored at the null sampling variance of a per-period Sharpe, 1/(n−1); SR* = 0
+  only for N = 1. The "over-counting is conservative" claim is deleted everywhere.
+- **M06 finding 3:** every gate uses the result's embedded benchmark by default; CLI
+  override is loud on every reason line.
+
 - **M04 finding 4 (extreme guard on shorts), 2026-09-11:** the old repo's
   `long_short_engine.py` (lines 280-291) applied the SAME upside-only glitch guard to the
   bottom (short) basket, with per-book counts. The engine's trigger is therefore inherited
@@ -682,3 +699,366 @@ follows; where an item is marked DISCHARGED it needs no action from a later mile
   requirement is documented in the helper's docstring, and the degraded output is
   conspicuously degenerate rather than plausibly wrong. A one-line guard raising when
   `first_pos == 0` would close it; worth doing if M06 or M07 adds a second caller.
+
+## From M06 verdict (plans/state/M06/VERDICT.md) — REJECT, cycle 1
+
+M06 was REJECTED at cycle 1. The closed-form statistics (PSR, DSR's `SR*` with the
+Euler-Mascheroni term and both `Φ⁻¹` arguments, MinTRL, the purged-split construction,
+White's and Hansen's recentring, the stationary bootstrap's `1/L` parameter, the
+Corwin-Schultz port) were all re-derived independently at the gate and match to 0.0
+absolute — none of them is at issue. Six blocking findings, all in the plumbing between
+those formulas and the verdict. Full text and reproductions in VERDICT.md.
+
+### Status of the items M06 was carrying
+
+- **M04 item 1 (dirty-tree flag) — registry half CLOSED, report half NOT CLOSED.** The
+  three-source `dirty`/`dirty_source` recording is implemented and tested, but
+  `grep -n "dirty" src/quantlab/validation/report_card.py src/quantlab/cli.py` returns
+  nothing: `ReportCard` has no provenance section and no `quantlab_git_sha`/`dirty`/
+  `dirty_source` field. `registry.py`'s docstring asserts "`report_card.py` surfaces it in
+  the provenance section", which is false. VERDICT.md finding 6. **Binding on M06 cycle 2.**
+- **M04 item 2 (extreme counts beside PSR/DSR) — PARTIALLY CLOSED.** The caveat, with the
+  long/short direction, is appended to the DSR (`report_card.py:449`) and MinTRL
+  (`report_card.py:510`) gate reasons but NOT to the PSR gate's, though PSR consumes the
+  same truncated skew/kurt. One line. VERDICT.md finding 11.
+- **M04 item 3 (combined "untrusted fraction" line) — PARTIALLY CLOSED.** The combined
+  sentence is produced by `validate_basic` and reaches `report_card.json` via
+  `basic.flags[0]`, but `_report_card_markdown` (`cli.py:249-266`) renders only the gate
+  table and `known_caveats`, so the one line telling a reader how much of the book is
+  unmeasurable is absent from the human-readable report card. VERDICT.md finding 8.
+- **M05 item 1 (three-part registry key; state the base-point counting) — CLOSED as to the
+  key and the disclosure, but the STATED DIRECTION IS WRONG.** See the new item below.
+- **M05 item 2 (never quote `no_cliff_score` alone) — PARTIALLY CLOSED.** `min_net_sharpe`
+  is correctly gated alongside it and both must pass. But `nan_points`,
+  `neighbourhood_size` and `neighbourhood_truncated` appear nowhere in `report_card.py`, so
+  an edge-truncated or NaN-contaminated score is quoted with the same confidence as an
+  interior one. VERDICT.md finding 11.
+- **M05 item 3 (why walk-forward needs no embargo and CV does) — CLOSED in text**
+  (`_PURGE_VS_WALK_FORWARD_NOTE`, unconditionally in `known_caveats`, and correct as
+  reasoning). Note that it now describes machinery that does not act — see the new
+  purged-CV item below.
+- **M05 item 4 (blend ranking agreement) — CLOSED as a disclosure**
+  (`_WALK_FORWARD_RANKING_NOTE`, added whenever a walk-forward is supplied). Vacuous in
+  practice today because `validate --full` never supplies one.
+- **M05 item 5 (no chosen walk-forward step had a NaN training Sharpe) — NOT VERIFIABLE,
+  correctly disclosed** (`_WALK_FORWARD_NAN_TIEBREAK_NOTE`). Accepted as an open item;
+  `WalkForwardResult` does not retain per-step training Sharpes. **→ M07:** if the
+  walk-forward is ever quoted in a report, retain the per-step training Sharpe so this can
+  be asserted rather than disclaimed.
+- **M05 item 6 (overlap count / "no usable benchmark") — CLOSED.** A NaN benchmark Sharpe
+  is an explicit hard-gate failure with its own reason string.
+- **M05 item 7 (`max_drawdown_floor` on full-sample only; label the rolling convention) —
+  CLOSED.** The drawdown gate reads `MetricsSummary.net_max_drawdown` and says so; the
+  negative-rolling-fraction gate's reason states the frozen first-return-blind convention
+  explicitly.
+- **M05 item 8 (Sortino/Sharpe denominator conventions stated where printed) — NOT
+  CLOSED.** Neither the report card nor `_validate_one_liner` (`cli.py:277-280`, which
+  prints Sharpe and Sortino side by side) states the ddof=1 / ddof=0 mismatch. VERDICT.md
+  finding 8. **Binding on M06 cycle 2 and carried to M07.**
+
+### New carried items
+
+- **→ M06 cycle 2 (blocking):** recording more trials RAISES the DSR. `var_sr_trials` is
+  estimated from the same set `n_trials` counts, so a trial whose Sharpe sits near the mean
+  raises `N` and shrinks `V̂` at once, and `SR* ∝ √V̂` shrinks faster than the `Φ⁻¹` term
+  grows. Gate-measured end-to-end through `build_report_card` with the shipped
+  `min_dsr: 0.95`: nine dispersed siblings plus a headline run give DSR 0.9024 (gate FAIL);
+  recording 15 further backtests that differ from the headline ONLY in `initial_capital`
+  (identical `net_returns`, new config hash, new key) gives N=25 and DSR 0.9647 (gate
+  PASS). At 40 such reruns, 0.9872. Degenerate end: when every trial shares one Sharpe,
+  `var_sr_trials == 0` and `deflated_sharpe.py:105-106` sets `SR* = 0` at ANY N — DSR
+  measured 0.999641 identically at N = 2, 10, 100 and 100000. **The
+  "over-counting N is conservative for DSR" claim in `registry.py`'s docstring and in
+  `_REGISTRY_BASE_POINT_NOTE` is false as implemented and is currently printed to the
+  reader as reassurance — it must be removed, not reworded.** This SUPERSEDES the M05
+  carried item's "over-counting N is conservative; M06 should state which it is doing":
+  stating it is not enough.
+- **→ M06 cycle 2 (blocking):** `build_trial_matrix` labels columns by `key[0]`
+  (`strategy_id`) alone, so trials differing only in the other two key slots collapse into
+  one column. Gate-measured: 4 distinct registry keys with 4 stored series → K=2; two
+  records sharing a `strategy_id` → K=1, and the `len(records) < 2` guard runs before the
+  collapse so it does not fire. A Reality Check whose max is over one trial applies no
+  multiple-testing correction, yet `reality_check_pvalue` is a HARD gate and the measured
+  p=0.005 passes it.
+- **→ M06 cycle 2 (blocking):** the RC/SPA benchmark is ZERO whenever `--benchmark` is not
+  passed, while `net_sharpe_vs_benchmark` and MinTRL fall back to
+  `result.benchmark_returns`. One card can test "beats SPY" on one gate and "makes money at
+  all" on another, with nothing saying which. Gate-measured on the same six trials with an
+  embedded SPY-like series: White RC p = 0.000 against zero, p = 0.272 against the embedded
+  benchmark, with the hard bar at 0.10 — the same data passes or fails purely on a CLI
+  flag. The benchmark choice must come from `configs/validation.yaml` and be printed.
+- **→ M06 cycle 2 (blocking) and → M07/M08 (design, ESCALATED TO ALEX):** `cv_sharpe`
+  discards the training positions (`purged_cv.py:123`), so the purge and the embargo cannot
+  change its output. Gate-measured on one 144-month series: mean OOF Sharpe is
+  0.7817692617 identically under `embargo=1`, `embargo=40`, `label_horizon=24`, and a
+  training set containing every row including the test fold. The number is a
+  contiguous-sub-period consistency statistic on a strategy already fitted on the whole
+  sample, not out-of-sample evidence, and the gate name and reason string both claim
+  otherwise. In-loop remedy is disclosure (rename or restate, plus a `known_caveats` entry
+  and a test pinning the invariance). The design question — whether a genuine purged CV
+  that refits per fold belongs in a later milestone — is Alex's call, not another loop
+  iteration; the packet's own `cv_sharpe(returns, splits)` signature cannot express one.
+- **→ M06 cycle 2 (blocking):** `ELIGIBLE_FOR_PAPER` is unreachable through
+  `quantlab validate --full`. `record_sensitivity` and `seed_historical_blend_trials` have
+  no caller outside `tests/`, so the packet's "records every sensitivity grid point" and
+  "the Phase 3 five-weight sweep is pre-loaded" are unwired; `--full` passes neither
+  `sensitivity=` nor `walk_forward=`. Gate-measured through the real CLI on a fixture with
+  annualised Sharpe ≈ 2.0 and PSR = 1.0: verdict REJECTED, N=1, DSR NaN, rc/spa None —
+  two hard gates fail on every first run, and the verdict thereafter depends on how many
+  unrelated backtests share `reports_dir`.
+  `tests/test_cli_validate.py:106` asserts only that the verdict is one of the three, which
+  is why the suite is green. Direction is safe (over-conservative), but the milestone does
+  not deliver a working decision function.
+- **→ M06 cycle 2 / M07:** RC and SPA are over-sized at the shipped `block_len: 6.0`. 600
+  simulations on i.i.d. data: size at the 0.10 bar is 0.123 (RC) / 0.128 (SPA) against a
+  nominal 0.100, MC se 0.012; at `block_len=1` it is 0.092 / 0.105 with KS p = 0.33,
+  confirming the statistic itself is right and the block length is the cause. At the
+  suite's OWN test settings (T=40, K=4, `block_len=3.0`) 600 sims give KS p = 0.0070,
+  below the suite's own `ks_p > 0.01` bar — the in-tree calibration test lacks the power to
+  see what it certifies. Separately, `p_value = mean(boot >= obs)` can return exactly 0.0,
+  which no continuous null admits; use `(1 + count) / (B + 1)`.
+- **→ M07 (reporting):** `_report_card_markdown` renders only the gate table and
+  `known_caveats`. Missing and needed by a referee: `N` as a NUMBER (the DSR reason
+  contains the literal letter "N", `report_card.py:444`); the realised RC/SPA `K` and
+  `n_periods`; a distinct reason when DSR is NaN because the registry was too thin, which
+  today is indistinguishable from a DSR that failed; the coverage/selection "untrusted
+  fraction" sentence; the Sharpe/Sortino ddof conventions; capacity's spread percentiles,
+  which are computed and serialised but never shown.
+- **→ M06 cycle 2 / M09 (thresholds, for Alex):** "intended capital" is
+  `provenance["backtest_config"]["initial_capital"]` (`report_card.py:638`), whose default
+  is $1,000,000 (`backtest/config.py:38`), so `capacity_min_multiple_of_intended_capital:
+  100.0` is a $100M floor on the MINIMUM of the four ceilings. The old repo's own real-data
+  range was $95M–$335M at an assumed 50-name book, so the low end fails; a 30-name book at
+  ADV p10 reads $38M at 5% participation. This soft gate will almost certainly bind on real
+  data and cap every strategy at RESEARCH_ONLY. Intended capital should be its own key in
+  `configs/validation.yaml`, set deliberately — inheriting a backtest notional that means
+  something else can fail in either direction (Alex's real account is retail-sized, which
+  would make the gate trivially passable).
+- **→ M06 cycle 2 / M07:** `build_trial_matrix` intersects all trials' date indices with no
+  floor. Two 120-period trials overlapping by 60 produced a (60, 2) matrix — half the
+  headline strategy's own history dropped from the test that gates its rejection, with no
+  flag. A 3-period overlap would still yield a p-value the hard gate acts on. Add a
+  minimum-common-periods threshold and report the retained fraction.
+- **→ M07 (low severity, informational):** two gates are close to vacuous or to a coin
+  flip on a 12-year monthly book and should be read as such. `min_psr: 0.95` binds only
+  below an annualised Sharpe of about 0.47 (PSR = 0.939 at 0.45, 0.957 at 0.50, 0.9996 at
+  1.00, and 1.0 at 2.0); and `mc_max_prob_drawdown_worse_than_observed: 0.5` sits at the
+  approximate centre of its own statistic's null, so it fails roughly whenever the realised
+  drawdown was milder than typical for the return distribution. Both are soft gates, so the
+  cost is a cap at RESEARCH_ONLY, but neither should be quoted as evidence of quality.
+
+### Adjustments to "From M06 verdict" above (M06 cycle 2, plans/state/M06/VERDICT.2.md)
+
+M06 was REJECTED again at cycle 2, but far more narrowly. Five of the six cycle-1 blockers
+are fully closed and were re-verified against the iteration-3 tree by re-running the
+cycle-1 reproductions, not by re-reading the handoff. The items above are amended as
+follows; DISCHARGED means no later milestone need act.
+
+- **Cycle-1 finding 2 (RC under-counts trials) — DISCHARGED.** `_column_label` joins the
+  full three-part key. Gate-verified: four distinct keys with four stored series, three
+  sharing one `strategy_id`, now give matrix K=4 (was 2); two records sharing a
+  `strategy_id` give K=2 (was 1, i.e. a Reality Check with no multiple-testing correction
+  at all). The `< 2` guard now runs on `matrix.shape[1]`.
+- **Cycle-1 finding 3 (RC/SPA benchmark silently zero) — DISCHARGED.**
+  `reality_check.benchmark` is a real config key defaulting to `embedded`; the resolved
+  source is printed in both gate reasons and in provenance. On the six-trial fixture that
+  gave p=0.000 vs p=0.272 at cycle 1, the card now reports p=0.2687 against the embedded
+  benchmark — the same series every other gate uses.
+- **Cycle-1 finding 4 (purged CV inert and misnamed) — DISCHARGED as disclosure.** Renamed
+  `subperiod_oof_sharpe`; the gate reason and a `known_caveats` entry both state that no
+  model is refit per fold, that purge/embargo cannot change the value, and that it is NOT a
+  purged cross-validation. Gate-reconfirmed invariant (0.7817692617 under embargo=1,
+  embargo=40, label_horizon=24, and a fully-leaking training set). `purged_kfold_splits` is
+  kept, correct, and reserved for a future fitted strategy. **The gate ACCEPTS the
+  orchestrator's decision (a)**: no fake CV ships, and the genuine refit-per-fold CV over
+  the sensitivity grid is carried post-v1. That reasoning is sound and is not escalated.
+- **Cycle-1 finding 5 (ELIGIBLE_FOR_PAPER unreachable via the CLI) — DISCHARGED.**
+  `_make_sensitivity_runner` is a real engine-backed factory; `--full` seeds historical
+  trials, runs and records the sensitivity grid, and runs the walk-forward for blend
+  families. The CLI test now pins `verdict == "ELIGIBLE_FOR_PAPER"` with zero failing gates
+  against the REAL `configs/validation.yaml`, and a companion test pins REJECTED. The
+  cycle-1 tautological assertion is gone.
+- **Cycle-1 finding 6 (dirty flag never reached the report card) — DISCHARGED.**
+  `ReportCard.provenance` carries strategy_id, semantics version, git sha, dirty,
+  dirty_source, n_trials, n_trials_raw, dirty_trial_count, RC trial count K, RC/SPA
+  benchmark source and headline retained fraction, all rendered in report_card.md, with a
+  caveat when any counted trial came from a dirty tree. Gate-verified live
+  (`dirty=True`, `dirty_source='provenance'`, `dirty_trial_count=2`).
+- **Cycle-1 item 8 (markdown completeness) — LARGELY DISCHARGED.** N prints as a number,
+  K prints on both RC and SPA gates, the coverage/selection "untrusted fraction" sentence
+  is in Provenance, and a Headline metrics section prints Sharpe beside Sortino with the
+  ddof convention stated beside them. **This also closes the M05 carried item 8** (Sortino/
+  Sharpe conventions stated where printed). Capacity's spread percentiles remain JSON-only
+  — fine, and now M07's to render.
+- **Cycle-1 item 9 (intended capital) — DISCHARGED as to mechanism.** `intended_capital_usd`
+  is its own config key (default 1000), no longer the backtest notional, and the gate reason
+  states the resolved dollar figure. See the new item below for the half still open.
+- **Cycle-1 item 10 (silent intersection truncation) — DISCHARGED, and the motivating case
+  now works.** The gate's own two-same-length-offset-windows case, measured at cycle 1 as a
+  silent (60, 2) truncation, now excludes the offset trial with a named reason while the
+  aligned majority keeps its FULL 120 periods (matrix (120, 3), retained fractions
+  offset 0.5 / majority 1.0 each). The cost of this fix is the new blocker below.
+- **Cycle-1 item 11 (half-wired carried disclosures) — DISCHARGED.** The extreme-return
+  caveat is now on the PSR gate as well as DSR/MinTRL, and `neighbourhood_size`/
+  `neighbourhood_truncated`/`nan_points` appear in both the `no_cliff_score` and
+  `min_net_sharpe` gate reasons. **This closes the remaining halves of the M04 carried item
+  2 and the M05 carried item 2.**
+- **The false "over-counting N is conservative for DSR" claim — REMOVED.** The base-point
+  `known_caveats` note now states that over-counting is NOT generally conservative once
+  `var_sr_trials` is estimated from the same trial set, and justifies the disclosure by the
+  effect's small size rather than by a guaranteed direction. Correct as rewritten.
+- **Cycle-1 finding 1 (DSR rises with more trials) — PARTIALLY CLOSED, residual carried
+  below.** The return-series hash dedup fully neutralises the exact case the gate
+  demonstrated (byte-identical cosmetic reruns: DSR now flat at 0.9024 through 40 reruns,
+  N stays 10 distinct while the raw key count reaches 50), and the `1/(n_periods-1)`
+  variance floor (a correct Lo 2002 small-sample null variance, on the right per-period
+  footing) bounds the damage and restores monotonicity once it binds. Replicating the whole
+  sensitivity grid — the workflow `--full` now produces automatically — moves DSR in the
+  CORRECT direction (0.9024 at N=10 down to 0.4229 at N=73 across 8 cost levels).
+- **Cycle-1 item 7 (RC/SPA over-sizing) — PARTIALLY CLOSED, carried.** `(1+count)/(B+1)` is
+  in and works (minimum attainable p is now 0.00498 = 1/201, never exactly 0), and it shaved
+  the over-sizing: 600 sims at the shipped `block_len=6.0` now give size 0.117 (RC) / 0.118
+  (SPA) at the 0.10 bar, against 0.123/0.128 before; the `block_len=1` control reads
+  0.085/0.093 with KS p=0.40, confirming the statistic is sound and the block length is the
+  whole story. The developer explicitly declined to raise the in-tree calibration test's
+  simulation count and said so rather than adjusting it silently — the right call, and the
+  item stays carried. At the test's own settings 600 sims put RC's KS p at 0.0121, barely
+  clearing its own 0.01 bar, and SPA's at 0.0016: **the test still cannot measure what it
+  certifies.**
+
+### New carried items from M06 cycle 2
+
+- **→ M06 cycle 3 (BLOCKING):** the headline strategy can be excluded from its own Reality
+  Check. `_resolve_overlap` treats every trial as an equally disposable removal candidate,
+  including the headline. When the headline's window is offset from the majority of its
+  family's recorded trials, it is dropped and the RC/SPA run over the survivors —
+  `reality_check_pvalue`, a HARD gate, then answers about strategies that are not the one
+  being validated. Gate-measured in the PERMISSIVE direction: three strong aligned trials on
+  2014-2023 plus a worthless headline (per-period Sharpe ≈ 0) on an offset 2019-2028 window
+  gives `headline_retained_fraction=0.5`, K=3, best_trial=`momentum-maj1`, p=0.0050, RC HARD
+  GATE **PASS**, SPA soft gate PASS, with the headline absent from the matrix and the gate
+  reason saying only "over K=3 realised trials". Remedy: pin the headline as never-removable
+  in `_resolve_overlap`; if it cannot be retained above the floor, the Reality Check must
+  FAIL with that named cause rather than run without it; assert in `report_card.py` that a
+  non-None `rc` always has the headline label as a column, with a planted-case test.
+- **→ M06 cycle 3 (BLOCKING, same fix):** when `build_trial_matrix` raises, the tuple unpack
+  at `report_card.py:485` never runs, so `rc_excluded` and `retained_fractions` are silently
+  discarded — `headline_retained_fraction` reads `None`, no exclusion caveat is emitted, and
+  the RC gate reason claims "fewer than 2 registered trials with a stored return series"
+  when in fact four trials each had one and the overlap resolver deadlocked. Gate-measured.
+  Capture the exclusions on the exception path and give the `rc is None` branch a reason that
+  distinguishes "too few trials recorded" from "excluded by the overlap floor" from "no
+  common dates".
+- **→ M06 cycle 3 (non-blocking) and M07:** DSR is still not monotone in N in the
+  above-floor regime, and nothing in the report says so. Re-running only the HEADLINE under
+  successive 1bp cost changes (a real, deterministic shift, not jitter) flips the `min_dsr`
+  hard gate: DSR 0.9024 FAIL at 1 run, 0.9356 FAIL at 6, **0.9537 PASS at 10**, peaking
+  0.9796 at 25 before the floor (0.006993 = 1/143) binds and the curve turns back down.
+  Bounded, and inherent to estimating Bailey & López de Prado's `V[SR]` from recorded
+  trials, so not blocking — but the report card must state that DSR is not monotone in N
+  above the floor, and the regression test must cover the near-duplicate path, not only the
+  byte-identical one it currently pins.
+- **→ M06 cycle 3 (non-blocking):** the orchestrator's own decision (d) is half-implemented.
+  `intended_capital_usd: 1000` landed and the gate reason states the resolved figure, but the
+  required "the capacity gate is trivially passable at a retail stake" sentence exists only
+  as a YAML comment — grepping `trivially` and `retail` across `report_card.py`, `cli.py`
+  and `configs/validation.yaml` finds nothing else. A reader sees the capacity gate passing
+  at 75000x against a 100x bar with nothing saying the bar is vacuous at this stake. Emit the
+  sentence whenever the multiple clears the bar by more than an order of magnitude.
+- **→ M07 (cosmetic, but this is the deliverable until M07 lands):**
+  `_report_card_markdown` uses `{gate.value!r}`, so the rendered table shows
+  `np.float64(1.0)` in the `no_cliff_score` row, and Calmar/Sortino render as bare `nan` in
+  the Headline metrics section.
+- **→ M07 (informational, unchanged from cycle 1):** `min_psr: 0.95` binds only below an
+  annualised Sharpe of about 0.47 on a 12-year monthly book, and
+  `mc_max_prob_drawdown_worse_than_observed: 0.5` sits at the approximate centre of its own
+  statistic's null. Both are soft gates; neither is evidence of quality.
+
+### M06 gate cycle 3 — ACCEPT (plans/state/M06/VERDICT.3.md)
+
+M06 is **ACCEPTED**. Dispositions below supersede the cycle-2 block where they conflict.
+Verified by re-running the cycle-2 reproductions unchanged against the iteration-4 tree,
+not by re-reading the handoff. Suite 533 tests green, ~25 s, ruff clean; the gate mutated
+no source, test or config file.
+
+- **Cycle-2 blocker A (headline excluded from its own Reality Check) — CLOSED, and the
+  guard is load-bearing rather than assert-only.** The planted case — three strong aligned
+  trials on 2014-2023 plus a worthless headline on an offset 2019-2028 window, which at
+  cycle 2 gave a PASSING RC hard gate at p=0.0050 for a strategy absent from its own matrix
+  — now yields `rc=None`, the RC gate FAILING by name ("headline trial excluded by overlap
+  floor (retained_fraction=50%) … refuse to run on its sibling trials alone"), SPA failing,
+  `headline_retained_fraction=0.5`, the headline-cause caveat present, verdict REJECTED.
+  Brute-forced the invariant over 200 layouts (headline offsets {0,24,60,96,120} months ×
+  headline lengths {24,60,120,180} × five sibling configurations × both benchmark modes):
+  16 layouts ran the Reality Check, 184 refused, **0 violations** — every non-None `rc` had
+  the headline as a matrix column, checked by independently rebuilding the matrix with the
+  protection disabled. The headline-has-the-shortest-window case (24 months inside three
+  120-month siblings) correctly removes the siblings, never the headline, and refuses with
+  "found 1 after alignment/exclusion". Re-ran the planted case under `python -O`, where
+  `report_card.py:512`'s assert is stripped: still `rc=None` and a failing gate, because
+  `reality_check.py:309` raises a real `TrialMatrixError`. Two layers, the outer one
+  load-bearing.
+- **Cycle-2 blocker A item 3 (exclusions lost on raise; one generic reason) — CLOSED.**
+  `TrialMatrixError` carries `reason_kind`, `excluded` and `retained_fractions` from every
+  raise site. All three causes are distinguishable in the RENDERED `report_card.md` gate
+  table, checked there rather than on the exception object: "fewer than 2 registered trials
+  in this family have a stored return series" / "headline trial excluded by overlap floor
+  (retained_fraction=50%) …" / "no common dates across trials in family 'momentum'". The
+  fourth shape (exclusions left fewer than 2 survivors) renders as "found 1 after
+  alignment/exclusion (registry held 4 records with a series)", also distinguishable. The
+  cycle-2 case that reported the false "fewer than 2 registered trials" when four trials
+  each had a series now names the headline cause and preserves all four exclusion
+  sentences in `known_caveats`.
+- **Cycle-2 item B (DSR non-monotonicity undisclosed) — CLOSED as disclosure.** The DSR
+  gate reason carries "DSR is not monotone in N above the variance floor; near-duplicate
+  reruns of one grid point can move it", confirmed in the rendered markdown of the shipped
+  ELIGIBLE_FOR_PAPER CLI path, and appended only when DSR is actually computed. The new
+  regression pins both halves (movement up, then bounded and turning back down where the
+  `1/(n_periods-1)` floor binds) on a small fast fixture rather than the gate's literal
+  144-period numbers — the right trade for suite time, same two properties pinned.
+- **Cycle-2 item C (capacity trivial-pass sentence) — CLOSED.** Emitted above 10x the bar
+  and present in the rendered report: "NOTE: the capacity gate is trivially passable at
+  this stake (75000x against a 100x bar) - this is not evidence of edge, only that the
+  resolved intended capital is small relative to the instrument's liquidity." This
+  discharges the outstanding half of orchestrator decision (d).
+- **Cycle-2 item D (calibration test power) — PARTIALLY CLOSED, residual carried below.**
+  `test_white_rc_size_at_shipped_block_length_is_bounded` measures actual size at the gate's
+  own 0.10 bar at the shipped `block_len=6.0` over 300 sims, and the pre-existing uniformity
+  test now documents inline that it runs at `block_len=3.0` and is a construction sanity
+  check, not a calibration measurement. Honest framing, accepted as scoped.
+
+### Carried items from M06 cycle 3
+
+- **→ M07 (reporting):** `reality_check.py`'s own module docstring says "the gate REASON
+  should state the measured over-sizing rather than imply nominal calibration", and it does
+  not. Grepping `report_card.py` for any mention of the measured size finds nothing: the RC
+  gate reason still reads "White Reality Check p=… against the 0.10 bar" with no hint that
+  the 0.10 bar is nominal rather than achieved (measured ~0.117 at the shipped
+  `block_len=6.0` over 600 sims; the `block_len=1.0` control reads 0.085 with KS p=0.40,
+  confirming the statistic is sound and the block length is the whole story). Put the
+  measured size in the RC and SPA gate reasons.
+- **→ M07 (testing, low priority):** the new size-bound test's band is 0.04-0.28 around a
+  measured ~0.12. At 300 sims the standard error is about 0.019, so the band sits ~4 SE
+  below and ~8 SE above: it will not flake and it catches a gross regression, but it cannot
+  distinguish 0.12 from 0.25 nor notice the over-sizing disappearing. Tighten it if M07 ever
+  needs the Reality Check's size to be a reported number rather than a documented one.
+- **→ M07 (cosmetic, deliberately out of cycle-3 scope):** `_report_card_markdown` uses
+  `{gate.value!r}`, so the rendered gate table shows `np.float64(1.0)` in the
+  `no_cliff_score` row and bare `nan` for Calmar and Sortino in the Headline metrics
+  section. M07 replaces this renderer anyway.
+- **→ M09 (operational, low severity):** `build_trial_matrix` calls
+  `registry.load_series` on every trial with a `series_path`. A missing or corrupt parquet
+  sidecar raises `OSError`, not `ValueError`, so it escapes `report_card.py`'s
+  `except ValueError` and crashes `validate --full` rather than degrading to a failed RC
+  gate. Unreachable while the registry and its sidecars stay co-located; worth a guard when
+  M09 starts moving `reports_dir` around.
+- **→ M07 / M09 (informational, unchanged and still true):** `min_psr: 0.95` binds only
+  below an annualised Sharpe of about 0.47 on a 12-year monthly book, and
+  `mc_max_prob_drawdown_worse_than_observed: 0.5` sits at the approximate centre of its own
+  statistic's null. Both are soft gates. Neither is evidence of quality and neither should
+  be quoted as such.
+- **→ M09 (thresholds, for Alex):** `intended_capital_usd: 1000` makes the capacity gate
+  vacuous by roughly three orders of magnitude, which the report now says out loud. That is
+  the correct disclosure, not a substitute for a decision: before any real-data run, set the
+  figure to what will actually be traded, or drop the capacity gate to informational and say
+  so in the config.

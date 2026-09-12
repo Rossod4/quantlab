@@ -91,6 +91,30 @@ def sharpe_ratio(
     return (annualized_return - risk_free_rate) / vol
 
 
+def raw_sharpe(returns: pd.Series) -> float:
+    """The PER-PERIOD Sharpe ratio - `mean(returns) / std(returns, ddof=1)`,
+    with NO annualization (same `ddof=1` as `sharpe_ratio`'s own denominator,
+    just without the `sqrt(periods_per_year)` scaling).
+
+    `validation/deflated_sharpe.py`'s PSR/DSR/`min_track_record_length`
+    formulas are derived for a Sharpe estimated from `n` iid PER-PERIOD
+    draws (Lo 2002 / Bailey & López de Prado's own derivation) - that
+    module's docstring states `sr` must be on the SAME footing as `n` (a
+    raw period count) and `skew`/`kurt` (computed on the raw per-period
+    series). Passing `sharpe_ratio`'s ANNUALIZED value alongside a raw `n`
+    silently breaks that footing (quant-gate REVIEW.md, M06 cycle-1 finding
+    1 - a ~9x DSR error on the reviewer's own hand-checked example) - this
+    function exists specifically so `report_card.py`/`registry.py` have one
+    shared, correct per-period estimator to call instead. NaN when the
+    sample standard deviation is zero (mirrors `sharpe_ratio`'s zero-vol
+    guard).
+    """
+    std = returns.std(ddof=1)
+    if std == 0:
+        return float("nan")
+    return float(returns.mean() / std)
+
+
 def max_drawdown(equity_curve: pd.Series) -> float:
     """Largest peak-to-trough decline in an equity curve, as a negative fraction."""
     running_max = equity_curve.cummax()

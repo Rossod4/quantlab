@@ -1,0 +1,217 @@
+# QuantLab report - {{ header.strategy_id }}
+
+**Verdict: {{ header.verdict }}**{% if header.dirty %} **{{ header.dirty_badge }}**{% endif %}
+
+`{{ header.strategy_id }}` · data semantics `{{ header.data_semantics_version }}` · run {{ header.run_date }} · git `{{ header.git_sha }}` · quantlab {{ header.quantlab_version }}
+
+{{ header.summary_line }}
+
+_{{ header.verdict_legend }}_
+
+## Headline vs. benchmark
+{% if headline.available %}
+| Metric | Net | Gross | Note |
+|---|---|---|---|
+{% for row in headline.rows %}| {{ row.label }} | {{ row.net }} | {{ row.gross or "" }} | {{ row.note or "" }} |
+{% endfor %}
+{{ headline.benchmark_line }}
+
+{% if plot_files.equity_curve %}![Equity curve]({{ plot_files.equity_curve }})
+{% elif plot_errors.equity_curve %}_plot unavailable: {{ plot_errors.equity_curve }}_
+{% endif %}
+{% if plot_files.drawdown %}![Drawdown]({{ plot_files.drawdown }})
+{% elif plot_errors.drawdown %}_plot unavailable: {{ plot_errors.drawdown }}_
+{% endif %}
+{% else %}
+_No report card was supplied - run `quantlab validate --full` for headline metrics._
+{% endif %}
+
+## Trust panel
+
+**Coverage bound: {{ trust.coverage_bound_pct }}** - {{ trust.coverage_bound_definition }}.
+
+{{ trust.separate_selection_effects_note }}
+{% if trust.untrusted_fraction_line %}
+
+{{ trust.untrusted_fraction_line }}
+{% endif %}
+
+| | |
+|---|---|
+| Forced exits (delisting) | {{ trust.forced_exits }} |
+| Extreme-return exclusions, long book | {{ trust.extreme_returns_long }} |
+| Extreme-return exclusions, short book | {{ trust.extreme_returns_short }} |
+| Rebalance dates with unscored names | {{ trust.unscored_date_count }} |
+| Rebalance dates with data-availability drops | {{ trust.dropped_ticker_date_count }} |
+
+{{ trust.unscored_names_caveat }}
+{% for c in trust.extreme_return_caveats %}
+{{ c }}
+{% endfor %}
+{% if trust.known_caveats %}
+### Known caveats
+{% for c in trust.known_caveats %}
+- {{ c }}
+{% endfor %}
+{% endif %}
+
+## Validation badges
+{% if gates.available %}
+N trials (distinct): **{{ gates.n_trials }}** (raw key count: {{ gates.n_trials_raw }}, {{ gates.dirty_trial_count }} dirty) · PSR {{ gates.psr }} · DSR {{ gates.dsr }} · min track-record length {{ gates.min_trl }}
+
+Reality Check: {{ gates.rc_detail }}
+
+Hansen SPA: {{ gates.spa_detail }}
+
+RC/SPA benchmark: {{ gates.rc_spa_benchmark_source }} · headline's own retained fraction: {{ gates.headline_retained_fraction }}
+{% if gates.monte_carlo_detail %}
+
+Monte Carlo: {{ gates.monte_carlo_detail }}
+{% endif %}
+{% if gates.capacity_detail %}
+
+Capacity: {{ gates.capacity_detail }}
+{% endif %}
+
+| Gate | Kind | Value | Threshold | Result | Reason |
+|---|---|---|---|---|---|
+{% for g in gates.hard + gates.soft %}| {{ g.name }} | {{ g.kind }} | {{ g.value }} | {{ g.threshold }} | {{ g.status }} | {{ g.reason }}{% if g.note %} {{ g.note }}{% endif %} |
+{% endfor %}
+{% else %}
+_No report card was supplied - run `quantlab validate --full` for gate results._
+{% endif %}
+
+## Robustness
+{% if robustness.available %}
+{% for tbl in robustness.rolling %}
+### Rolling {{ tbl.window_years }}y window
+
+{{ robustness.rolling_ported_convention_note }}
+{% if tbl.truncated %} Showing first/last {{ tbl.shown_each_side }} of {{ tbl.total_rows }} rows.{% endif %}
+
+| Window end | CAGR | Vol | Sharpe | Max DD |
+|---|---|---|---|---|
+{% for r in tbl.rows %}| {{ r.date }} | {{ r.cagr }} | {{ r.vol }} | {{ r.sharpe }} | {{ r.max_dd }} |
+{% endfor %}
+{% endfor %}
+{% if plot_files.rolling_sharpe %}![Rolling Sharpe]({{ plot_files.rolling_sharpe }})
+{% elif plot_errors.rolling_sharpe %}_plot unavailable: {{ plot_errors.rolling_sharpe }}_
+{% endif %}
+
+### Sub-period / regime table
+
+| Period | CAGR | Vol | Sharpe | Max DD | Growth |
+|---|---|---|---|---|---|
+{% for r in robustness.subperiods %}| {{ r.name }} | {{ r.cagr }} | {{ r.vol }} | {{ r.sharpe }} | {{ r.max_dd }} | {{ r.growth }} |
+{% endfor %}
+{% if plot_files.subperiod_bars %}![Sub-period CAGR]({{ plot_files.subperiod_bars }})
+{% elif plot_errors.subperiod_bars %}_plot unavailable: {{ plot_errors.subperiod_bars }}_
+{% endif %}
+
+{% if robustness.sensitivity %}
+### Parameter sensitivity
+
+no_cliff_score = **{{ robustness.sensitivity.no_cliff_score }}** (neighbourhood_size={{ robustness.sensitivity.neighbourhood_size }}, neighbourhood_truncated={{ robustness.sensitivity.neighbourhood_truncated }}, nan_points={{ robustness.sensitivity.nan_points }}) - shown ONLY beside min_net_sharpe below.
+
+{{ robustness.sensitivity.no_cliff_gate_reason }}
+
+{{ robustness.sensitivity.min_net_sharpe_gate_reason }}
+
+Base point: **{{ robustness.sensitivity.base_point_label }}**
+
+| Grid point | Net Sharpe |
+|---|---|
+{% for r in robustness.sensitivity.surface_rows %}| {{ r.point_label }}{% if r.is_base_point %} (base point){% endif %} | {{ r.net_sharpe }}{% if r.is_nan %} (excluded from no_cliff_score){% endif %} |
+{% endfor %}
+{% if plot_files.sensitivity_heatmap %}![Sensitivity surface]({{ plot_files.sensitivity_heatmap }})
+{% elif plot_errors.sensitivity_heatmap %}_plot unavailable: {{ plot_errors.sensitivity_heatmap }}_
+{% endif %}
+{% endif %}
+
+{% if robustness.walk_forward %}
+### Walk-forward (blend weight honesty check)
+
+{{ robustness.walk_forward.no_embargo_note }}
+
+{{ robustness.walk_forward.ranking_agreement_line }}
+
+{{ robustness.walk_forward.training_sharpes_note }}
+
+{{ robustness.walk_forward.stability_reason }}
+
+#### Chosen weight per step
+
+{{ robustness.walk_forward.chosen_weight_header }}
+{{ robustness.walk_forward.chosen_weight_separator }}
+{% for r in robustness.walk_forward.chosen_rows %}{{ r.markdown_line }}
+{% endfor %}
+{% if plot_files.walk_forward_weights %}![Walk-forward chosen weights]({{ plot_files.walk_forward_weights }})
+{% elif plot_errors.walk_forward_weights %}_plot unavailable: {{ plot_errors.walk_forward_weights }}_
+{% endif %}
+
+{{ robustness.walk_forward.comparison_ported_convention_note }}
+
+| Grid point | CAGR | Vol | Sharpe | Max DD |
+|---|---|---|---|---|
+{% for r in robustness.walk_forward.comparison_rows %}| {{ r.label }} | {{ r.cagr }} | {{ r.vol }} | {{ r.sharpe }} | {{ r.max_dd }} |
+{% endfor %}
+{% endif %}
+
+{% if plot_files.monte_carlo_fan %}
+### Monte Carlo resample
+
+![Monte Carlo fan]({{ plot_files.monte_carlo_fan }})
+{% elif plot_errors.monte_carlo_fan %}
+### Monte Carlo resample
+
+_plot unavailable: {{ plot_errors.monte_carlo_fan }}_
+{% endif %}
+
+{% if plot_files.universe_size %}
+### Portfolio size
+
+![Portfolio size over time]({{ plot_files.universe_size }})
+{% elif plot_errors.universe_size %}
+### Portfolio size
+
+_plot unavailable: {{ plot_errors.universe_size }}_
+{% endif %}
+
+{% if robustness.flags %}
+### Flags
+{% for f in robustness.flags %}
+- {{ f }}
+{% endfor %}
+{% endif %}
+{% else %}
+_No report card was supplied - run `quantlab validate --full` for robustness detail._
+{% endif %}
+
+## Execution conventions
+
+| | |
+|---|---|
+| Execution mode | {{ execution.execution_mode }} - {{ execution.execution_note }} |
+| Cost model | {{ execution.cost_model }} ({{ execution.one_way_cost_bps }} bps one-way) |
+| Borrow fee (annual) | {{ execution.borrow_fee_annual_bps }} bps |
+| Corwin-Schultz lookback | {{ execution.corwin_schultz_lookback_days }} days |
+| Delisting haircut | {{ execution.delisting_haircut }} |
+| Extreme-return policy | {{ execution.extreme_return_policy }} (bound {{ execution.extreme_return_bound }}x) |
+| Filing lag | {{ execution.filing_lag_sessions }} session(s) |
+| Max dropped fraction (abort threshold) | {{ execution.max_dropped_fraction }} |
+| Abort on unscoreable date | {{ execution.abort_on_unscoreable }} |
+
+## Provenance appendix
+
+| | |
+|---|---|
+| Strategy id | `{{ provenance.strategy_id }}` |
+| Strategy params | `{{ provenance.strategy_params }}` |
+| Backtest config | `{{ provenance.backtest_config }}` |
+| Providers | `{{ provenance.providers }}` |
+| Actions-cache fetched_at range | {{ provenance.actions_cache_fetched_at_min }} - {{ provenance.actions_cache_fetched_at_max }} |
+| Cache dir | {{ provenance.cache_dir }} |
+| Run seconds | {{ provenance.run_seconds }} |
+| Quarantined tickers | {{ provenance.quarantined_count }} |
+| Masked-start tickers | {{ provenance.masked_start_count }} |
+| quantlab version | {{ provenance.quantlab_version }} |

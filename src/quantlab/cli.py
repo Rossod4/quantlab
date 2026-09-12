@@ -189,7 +189,9 @@ def validate(
     )
 
     out.mkdir(parents=True, exist_ok=True)
-    (out / "validation_basic.json").write_text(json.dumps(basic.to_json(), sort_keys=True))
+    (out / "validation_basic.json").write_text(
+        json.dumps(basic.to_json(), sort_keys=True), encoding="utf-8"
+    )
 
     typer.echo(_validate_one_liner(basic.metrics, bt_result.quality_flags))
     for flag in basic.flags:
@@ -225,8 +227,17 @@ def validate(
             price_panel_missing_tickers=missing_tickers,
         )
 
-        (out / "report_card.json").write_text(json.dumps(report_card.to_json(), sort_keys=True))
-        (out / "report_card.md").write_text(_report_card_markdown(report_card))
+        (out / "report_card.json").write_text(
+            json.dumps(report_card.to_json(), sort_keys=True), encoding="utf-8"
+        )
+        # explicit UTF-8: the M07 template's RC/SPA "measured size" note
+        # (reporting/context.py's `_measured_size_note`) uses U+2248 (~=),
+        # which Path.write_text's default locale encoding (cp1252 on
+        # Windows) cannot represent - reproduced as a UnicodeEncodeError on
+        # this exact command before this fix.
+        (out / "report_card.md").write_text(
+            _report_card_markdown(bt_result, report_card), encoding="utf-8"
+        )
 
         typer.echo(f"\nverdict: {report_card.verdict}")
         for gate in report_card.gates:
@@ -423,56 +434,22 @@ def _build_capacity_price_panel(
     return (panel or None), missing
 
 
-def _format_fraction(value: float | None) -> str:
-    return f"{value:.0%}" if value is not None else "n/a"
+def _report_card_markdown(bt_result: BacktestResult, report_card: ReportCard) -> str:
+    """Markdown summary of a `ReportCard`, rendered from the M07 reporting
+    package's own `report.md.j2` template - replaces the M06 stopgap
+    renderer this function used to be (quant-gate carried item: it used
+    `{gate.value!r}`, which leaked `np.float64(1.0)` into the rendered
+    table, and never surfaced N/K/capacity spread percentiles/Sortino
+    convention). `report_card.json` remains the source of truth; this is
+    presentation only, with no plots (unlike `quantlab report`, which also
+    embeds them) so `validate --full` stays fast."""
+    from quantlab.reporting.context import build_report_context
+    from quantlab.reporting.render import _markdown_environment
 
-
-def _report_card_markdown(report_card: ReportCard) -> str:
-    """Markdown summary of a `ReportCard` - the full HTML report is M07's
-    job (work packet's "Out of scope"); this is a plain-text-ish stopgap so
-    `--full`'s output is human-readable without JSON tooling. Prints the
-    full `ReportCardProvenance` section (quant-gate VERDICT.md M06 cycle-1
-    finding 6)."""
-    p = report_card.provenance
-    m = report_card.basic.metrics
-    dirty_badge = " **DIRTY TREE**" if p.dirty else ""
-    lines = [
-        f"# QuantLab Report Card - verdict: {report_card.verdict}",
-        "",
-        "## Provenance",
-        f"- strategy_id: `{p.strategy_id}`",
-        f"- data_semantics_version: `{p.data_semantics_version}`",
-        f"- quantlab_git_sha: `{p.quantlab_git_sha}`{dirty_badge} (source: {p.dirty_source})",
-        f"- N trials: {p.n_trials} distinct (raw key count: {p.n_trials_raw}, "
-        f"{p.dirty_trial_count} dirty)",
-        f"- Reality Check / SPA realised trial count K: "
-        f"{p.rc_trial_count if p.rc_trial_count is not None else 'n/a'}",
-        f"- Reality Check / SPA benchmark: {p.rc_spa_benchmark_source}",
-        f"- Headline trial's own retained fraction in the RC/SPA common date range: "
-        f"{_format_fraction(p.headline_retained_fraction)}",
-        f"- {p.untrusted_fraction_line}",
-        "",
-        "## Headline metrics",
-        f"- net CAGR: {m.net_cagr:.2%}  |  net max drawdown: {m.net_max_drawdown:.2%}  |  "
-        f"Calmar: {m.net_calmar:.2f}  |  hit rate: {m.hit_rate:.1%}",
-        f"- Sharpe: {m.net_sharpe:.2f}  |  Sortino: {m.net_sortino:.2f}",
-        f"  ({p.sharpe_sortino_convention})",
-        "",
-        "## Gates",
-        "| Gate | Kind | Value | Threshold | Result | Reason |",
-        "|---|---|---|---|---|---|",
-    ]
-    for gate in report_card.gates:
-        status = "PASS" if gate.passed else "FAIL"
-        lines.append(
-            f"| {gate.name} | {gate.kind} | {gate.value!r} | {gate.threshold!r} | {status} | "
-            f"{gate.reason} |"
-        )
-    lines.append("")
-    lines.append("## Known caveats")
-    for caveat in report_card.known_caveats:
-        lines.append(f"- {caveat}")
-    return "\n".join(lines) + "\n"
+    context = build_report_context(bt_result, report_card.to_json(), None)
+    context["plot_files"] = {}
+    context["plot_errors"] = {}
+    return _markdown_environment().get_template("report.md.j2").render(**context)
 
 
 def _validate_one_liner(metrics: MetricsSummary, quality_flags: QualityFlags) -> str:
@@ -498,9 +475,46 @@ def _validate_one_liner(metrics: MetricsSummary, quality_flags: QualityFlags) ->
 
 
 @app.command()
-def report() -> None:
-    """Generate a report from a backtest result."""
-    _not_implemented("M0X")
+def report(
+    result: Path = typer.Option(
+        ..., "--result", exists=True, file_okay=False, help="Directory of a saved BacktestResult."
+    ),
+    out: Path = typer.Option(..., "--out", help="Directory to write the report to."),
+    card: Path | None = typer.Option(
+        None,
+        "--card",
+        exists=True,
+        file_okay=False,
+        help="Directory holding report_card.json/validation_basic.json (default: --result).",
+    ),
+    format: str = typer.Option(
+        "both", "--format", help="Which file(s) to write: html | md | both."
+    ),
+    config: Path = typer.Option(
+        Path("configs/validation.yaml"),
+        "--config",
+        help=(
+            "Path to validation.yaml - read for the Monte Carlo bootstrap seed so the "
+            "fan plot uses the SAME draw as the quoted percentiles in report_card.json "
+            "(quant-gate VERDICT.md M07 cycle-1 finding 11: a report built without this "
+            "silently defaults to seed=1, which only coincidentally matches today's "
+            "shipped config)."
+        ),
+    ),
+) -> None:
+    """Render a self-contained HTML report (inline CSS, base64 PNGs, no
+    external assets) and/or its markdown twin from a saved `BacktestResult`
+    and, if present, its `report_card.json`/`validation_basic.json`."""
+    from quantlab.reporting.render import render_report
+    from quantlab.validation.basic import load_validation_config
+
+    if format not in ("html", "md", "both"):
+        raise typer.BadParameter("--format must be one of: html, md, both")
+
+    validation_config = load_validation_config(config) if config.exists() else None
+    written = render_report(result, out, card_dir=card, config=validation_config, fmt=format)
+    for kind, path in written.items():
+        typer.echo(f"wrote {kind}: {path}")
 
 
 @app.command()

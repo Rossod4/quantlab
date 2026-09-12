@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>QuantLab report - {{ header.strategy_id }}</title>
+<style>
+  :root {
+    --bg: #f8fafc; --card: #ffffff; --text: #111827; --muted: #6b7280;
+    --border: #e5e7eb; --accent: #2563eb; --pass: #047857; --fail: #b91c1c;
+    --code-bg: #f1f5f9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a; --card: #1e293b; --text: #e5e7eb; --muted: #9ca3af;
+      --border: #334155; --accent: #60a5fa; --pass: #34d399; --fail: #f87171;
+      --code-bg: #111827;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); margin: 0; padding: 24px 16px 64px;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h2 { font-size: 1.2rem; margin: 32px 0 8px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 1.0rem; margin: 20px 0 6px; color: var(--muted); }
+  .muted { color: var(--muted); }
+  .legend { font-size: 0.85rem; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin: 12px 0; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 0.85rem; }
+  .badge-eligible { background: rgba(4,120,87,0.15); color: var(--pass); }
+  .badge-research { background: rgba(217,119,6,0.15); color: #d97706; }
+  .badge-rejected { background: rgba(185,28,28,0.15); color: var(--fail); }
+  .badge-dirty { background: rgba(185,28,28,0.15); color: var(--fail); margin-left: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  .status-pass { color: var(--pass); font-weight: 600; }
+  .status-fail { color: var(--fail); font-weight: 600; }
+  .kind-hard { font-weight: 600; }
+  .base-point { font-weight: 600; }
+  ul.caveats { margin: 8px 0; padding-left: 20px; }
+  ul.caveats li { margin: 4px 0; }
+  .table-scroll { overflow-x: auto; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 0.85em; }
+  img.plot { max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); background: #ffffff; margin: 8px 0; }
+  .plot-unavailable { border: 1px dashed var(--border); border-radius: 8px; padding: 12px 16px; margin: 8px 0; color: var(--fail); font-size: 0.85rem; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>QuantLab report
+    {% if header.verdict == "ELIGIBLE_FOR_PAPER" %}<span class="badge badge-eligible">{{ header.verdict }}</span>
+    {% elif header.verdict == "RESEARCH_ONLY" %}<span class="badge badge-research">{{ header.verdict }}</span>
+    {% elif header.verdict == "REJECTED" %}<span class="badge badge-rejected">{{ header.verdict }}</span>
+    {% else %}<span class="badge muted">{{ header.verdict }}</span>{% endif %}
+    {% if header.dirty %}<span class="badge badge-dirty">{{ header.dirty_badge }}</span>{% endif %}
+  </h1>
+  <p class="muted">
+    <code>{{ header.strategy_id }}</code> &middot; data semantics <code>{{ header.data_semantics_version }}</code>
+    &middot; run {{ header.run_date }} &middot; git <code>{{ header.git_sha }}</code>
+    &middot; quantlab {{ header.quantlab_version }}
+  </p>
+  <p>{{ header.summary_line }}</p>
+  <p class="muted legend">{{ header.verdict_legend }}</p>
+
+  <h2>Headline vs. benchmark</h2>
+  {% if headline.available %}
+  <div class="card table-scroll">
+    <table>
+      <thead><tr><th>Metric</th><th>Net</th><th>Gross</th><th>Note</th></tr></thead>
+      <tbody>
+      {% for row in headline.rows %}
+        <tr><td>{{ row.label }}</td><td>{{ row.net }}</td><td>{{ row.gross or "" }}</td><td class="muted">{{ row.note or "" }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p>{{ headline.benchmark_line }}</p>
+  </div>
+  {% if plots.equity_curve %}<img class="plot" alt="Equity curve" src="data:image/png;base64,{{ plots.equity_curve }}">
+  {% elif plot_errors.equity_curve %}<p class="plot-unavailable">plot unavailable: {{ plot_errors.equity_curve }}</p>{% endif %}
+  {% if plots.drawdown %}<img class="plot" alt="Drawdown" src="data:image/png;base64,{{ plots.drawdown }}">
+  {% elif plot_errors.drawdown %}<p class="plot-unavailable">plot unavailable: {{ plot_errors.drawdown }}</p>{% endif %}
+  {% else %}
+  <p class="muted">No report card was supplied - run <code>quantlab validate --full</code> for headline metrics.</p>
+  {% endif %}
+
+  <h2>Trust panel</h2>
+  <div class="card">
+    <p><strong>Coverage bound: {{ trust.coverage_bound_pct }}</strong> &mdash; {{ trust.coverage_bound_definition }}.</p>
+    <p>{{ trust.separate_selection_effects_note }}</p>
+    {% if trust.untrusted_fraction_line %}<p>{{ trust.untrusted_fraction_line }}</p>{% endif %}
+    <table>
+      <tbody>
+        <tr><td>Forced exits (delisting)</td><td>{{ trust.forced_exits }}</td></tr>
+        <tr><td>Extreme-return exclusions, long book</td><td>{{ trust.extreme_returns_long }}</td></tr>
+        <tr><td>Extreme-return exclusions, short book</td><td>{{ trust.extreme_returns_short }}</td></tr>
+        <tr><td>Rebalance dates with unscored names</td><td>{{ trust.unscored_date_count }}</td></tr>
+        <tr><td>Rebalance dates with data-availability drops</td><td>{{ trust.dropped_ticker_date_count }}</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">{{ trust.unscored_names_caveat }}</p>
+    {% for c in trust.extreme_return_caveats %}<p class="muted">{{ c }}</p>{% endfor %}
+    {% if trust.known_caveats %}
+    <h3>Known caveats</h3>
+    <ul class="caveats">{% for c in trust.known_caveats %}<li>{{ c }}</li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+
+  <h2>Validation badges</h2>
+  {% if gates.available %}
+  <div class="card">
+    <p>N trials (distinct): <strong>{{ gates.n_trials }}</strong>
+       (raw key count: {{ gates.n_trials_raw }}, {{ gates.dirty_trial_count }} dirty)
+       &middot; PSR {{ gates.psr }} &middot;
+       DSR {{ gates.dsr }} &middot; min track-record length {{ gates.min_trl }}</p>
+    <p class="muted">Reality Check: {{ gates.rc_detail }}</p>
+    <p class="muted">Hansen SPA: {{ gates.spa_detail }}</p>
+    <p class="muted">RC/SPA benchmark: {{ gates.rc_spa_benchmark_source }} &middot;
+       headline's own retained fraction: {{ gates.headline_retained_fraction }}</p>
+    {% if gates.monte_carlo_detail %}<p class="muted">Monte Carlo: {{ gates.monte_carlo_detail }}</p>{% endif %}
+    {% if gates.capacity_detail %}<p class="muted">Capacity: {{ gates.capacity_detail }}</p>{% endif %}
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Gate</th><th>Kind</th><th>Value</th><th>Threshold</th><th>Result</th><th>Reason</th></tr></thead>
+      <tbody>
+      {% for g in gates.hard + gates.soft %}
+        <tr>
+          <td class="{{ 'kind-hard' if g.kind == 'hard' else '' }}">{{ g.name }}</td>
+          <td>{{ g.kind }}</td><td>{{ g.value }}</td><td>{{ g.threshold }}</td>
+          <td class="{{ 'status-pass' if g.status == 'PASS' else 'status-fail' }}">{{ g.status }}</td>
+          <td>{{ g.reason }}{% if g.note %} {{ g.note }}{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No report card was supplied - run <code>quantlab validate --full</code> for gate results.</p>
+  {% endif %}
+
+  <h2>Robustness</h2>
+  {% if robustness.available %}
+  {% for tbl in robustness.rolling %}
+    <h3>Rolling {{ tbl.window_years }}y window</h3>
+    <p class="muted">{{ robustness.rolling_ported_convention_note }}
+      {% if tbl.truncated %}Showing first/last {{ tbl.shown_each_side }} of {{ tbl.total_rows }} rows.{% endif %}</p>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Window end</th><th>CAGR</th><th>Vol</th><th>Sharpe</th><th>Max DD</th></tr></thead>
+      <tbody>{% for r in tbl.rows %}<tr><td>{{ r.date }}</td><td>{{ r.cagr }}</td><td>{{ r.vol }}</td><td>{{ r.sharpe }}</td><td>{{ r.max_dd }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+  {% endfor %}
+  {% if plots.rolling_sharpe %}<img class="plot" alt="Rolling Sharpe" src="data:image/png;base64,{{ plots.rolling_sharpe }}">
+  {% elif plot_errors.rolling_sharpe %}<p class="plot-unavailable">plot unavailable: {{ plot_errors.rolling_sharpe }}</p>{% endif %}
+
+  <h3>Sub-period / regime table</h3>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Period</th><th>CAGR</th><th>Vol</th><th>Sharpe</th><th>Max DD</th><th>Growth</th></tr></thead>
+    <tbody>{% for r in robustness.subperiods %}<tr><td>{{ r.name }}</td><td>{{ r.cagr }}</td><td>{{ r.vol }}</td><td>{{ r.sharpe }}</td><td>{{ r.max_dd }}</td><td>{{ r.growth }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% if plots.subperiod_bars %}<img class="plot" alt="Sub-period CAGR" src="data:image/png;base64,{{ plots.subperiod_bars }}">
+  {% elif plot_errors.subperiod_bars %}<p class="plot-unavailable">plot unavailable: {{ plot_errors.subperiod_bars }}</p>{% endif %}
+
+  {% if robustness.sensitivity %}
+  <h3>Parameter sensitivity</h3>
+  <p>no_cliff_score = <strong>{{ robustness.sensitivity.no_cliff_score }}</strong>
+     (neighbourhood_size={{ robustness.sensitivity.neighbourhood_size }},
+      neighbourhood_truncated={{ robustness.sensitivity.neighbourhood_truncated }},
+      nan_points={{ robustness.sensitivity.nan_points }}) - shown ONLY beside min_net_sharpe below.</p>
+  <p class="muted">{{ robustness.sensitivity.no_cliff_gate_reason }}</p>
+  <p class="muted">{{ robustness.sensitivity.min_net_sharpe_gate_reason }}</p>
+  <p class="muted">Base point: <strong>{{ robustness.sensitivity.base_point_label }}</strong></p>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Grid point</th><th>Net Sharpe</th></tr></thead>
+    <tbody>
+    {% for r in robustness.sensitivity.surface_rows %}
+      <tr class="{{ 'base-point' if r.is_base_point else '' }}">
+        <td>{{ r.point_label }}{% if r.is_base_point %} (base point){% endif %}</td>
+        <td>{{ r.net_sharpe }}{% if r.is_nan %} (excluded from no_cliff_score){% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% if plots.sensitivity_heatmap %}<img class="plot" alt="Sensitivity surface" src="data:image/png;base64,{{ plots.sensitivity_heatmap }}">
+  {% elif plot_errors.sensitivity_heatmap %}<p class="plot-unavailable">plot unavailable: {{ plot_errors.sensitivity_heatmap }}</p>{% endif %}
+  {% endif %}
+
+  {% if robustness.walk_forward %}
+  <h3>Walk-forward (blend weight honesty check)</h3>
+  <p class="muted">{{ robustness.walk_forward.no_embargo_note }}</p>
+  <p>{{ robustness.walk_forward.ranking_agreement_line }}</p>
+  <p class="muted">{{ robustness.walk_forward.training_sharpes_note }}</p>
+  <p class="muted">{{ robustness.walk_forward.stability_reason }}</p>
+  <h4>Chosen weight per step</h4>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Step date</th>{% for label in robustness.walk_forward.child_labels %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+    <tbody>
+    {% for r in robustness.walk_forward.chosen_rows %}
+      <tr><td>{{ r.date }}</td>{% for label in robustness.walk_forward.child_labels %}<td>{{ r.weights_by_child[label] }}</td>{% endfor %}</tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% if plots.walk_forward_weights %}<img class="plot" alt="Walk-forward chosen weights" src="data:image/png;base64,{{ plots.walk_forward_weights }}">
+  {% elif plot_errors.walk_forward_weights %}<p class="plot-unavailable">plot unavailable: {{ plot_errors.walk_forward_weights }}</p>{% endif %}
+  <p class="muted">{{ robustness.walk_forward.comparison_ported_convention_note }}</p>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Grid point</th><th>CAGR</th><th>Vol</th><th>Sharpe</th><th>Max DD</th></tr></thead>
+    <tbody>{% for r in robustness.walk_forward.comparison_rows %}<tr><td>{{ r.label }}</td><td>{{ r.cagr }}</td><td>{{ r.vol }}</td><td>{{ r.sharpe }}</td><td>{{ r.max_dd }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+
+  {% if plots.monte_carlo_fan %}
+  <h3>Monte Carlo resample</h3>
+  <img class="plot" alt="Monte Carlo fan" src="data:image/png;base64,{{ plots.monte_carlo_fan }}">
+  {% elif plot_errors.monte_carlo_fan %}
+  <h3>Monte Carlo resample</h3>
+  <p class="plot-unavailable">plot unavailable: {{ plot_errors.monte_carlo_fan }}</p>
+  {% endif %}
+
+  {% if plots.universe_size %}
+  <h3>Portfolio size</h3>
+  <img class="plot" alt="Portfolio size over time" src="data:image/png;base64,{{ plots.universe_size }}">
+  {% elif plot_errors.universe_size %}
+  <h3>Portfolio size</h3>
+  <p class="plot-unavailable">plot unavailable: {{ plot_errors.universe_size }}</p>
+  {% endif %}
+
+  {% if robustness.flags %}
+  <h3>Flags</h3>
+  <ul class="caveats">{% for f in robustness.flags %}<li>{{ f }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% else %}
+  <p class="muted">No report card was supplied - run <code>quantlab validate --full</code> for robustness detail.</p>
+  {% endif %}
+
+  <h2>Execution conventions</h2>
+  <div class="card">
+    <table>
+      <tbody>
+        <tr><td>Execution mode</td><td>{{ execution.execution_mode }} &mdash; {{ execution.execution_note }}</td></tr>
+        <tr><td>Cost model</td><td>{{ execution.cost_model }} ({{ execution.one_way_cost_bps }} bps one-way)</td></tr>
+        <tr><td>Borrow fee (annual)</td><td>{{ execution.borrow_fee_annual_bps }} bps</td></tr>
+        <tr><td>Corwin-Schultz lookback</td><td>{{ execution.corwin_schultz_lookback_days }} days</td></tr>
+        <tr><td>Delisting haircut</td><td>{{ execution.delisting_haircut }}</td></tr>
+        <tr><td>Extreme-return policy</td><td>{{ execution.extreme_return_policy }} (bound {{ execution.extreme_return_bound }}x)</td></tr>
+        <tr><td>Filing lag</td><td>{{ execution.filing_lag_sessions }} session(s)</td></tr>
+        <tr><td>Max dropped fraction (abort threshold)</td><td>{{ execution.max_dropped_fraction }}</td></tr>
+        <tr><td>Abort on unscoreable date</td><td>{{ execution.abort_on_unscoreable }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Provenance appendix</h2>
+  <div class="card">
+    <table>
+      <tbody>
+        <tr><td>Strategy id</td><td><code>{{ provenance.strategy_id }}</code></td></tr>
+        <tr><td>Strategy params</td><td><code>{{ provenance.strategy_params }}</code></td></tr>
+        <tr><td>Backtest config</td><td><code>{{ provenance.backtest_config }}</code></td></tr>
+        <tr><td>Providers</td><td><code>{{ provenance.providers }}</code></td></tr>
+        <tr><td>Actions-cache fetched_at range</td><td>{{ provenance.actions_cache_fetched_at_min }} - {{ provenance.actions_cache_fetched_at_max }}</td></tr>
+        <tr><td>Cache dir</td><td>{{ provenance.cache_dir }}</td></tr>
+        <tr><td>Run seconds</td><td>{{ provenance.run_seconds }}</td></tr>
+        <tr><td>Quarantined tickers</td><td>{{ provenance.quarantined_count }}</td></tr>
+        <tr><td>Masked-start tickers</td><td>{{ provenance.masked_start_count }}</td></tr>
+        <tr><td>quantlab version</td><td>{{ provenance.quantlab_version }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+</body>
+</html>

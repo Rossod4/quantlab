@@ -32,16 +32,20 @@ profitable at all, rather than "does it beat SPY").
 Block-length calibration (quant-gate VERDICT.md M06 cycle-1 finding 7, NOT
 fixed here - a config/disclosure matter, not a formula bug): on i.i.d.
 input at the shipped `bootstrap.block_len: 6.0`, White RC's actual size at
-the `max_rc_pvalue: 0.10` bar measures ~0.123 (SPA ~0.128) over 600
-simulations - about 25% more false "significant" verdicts than nominal.
-`block_len=1.0` (plain i.i.d. resampling) measures ~0.092, confirming the
-statistic's OWN construction is correctly calibrated and the over-sizing
-comes entirely from the block length on i.i.d. input. Real monthly returns
-are autocorrelated, so `block_len=6.0` may still be the right choice for
-this platform's actual data - but the gate REASON should state the measured
-over-sizing rather than imply nominal calibration, and the in-tree
-synthetic-null test needs enough simulations to have power to see it (200
-sims, the packet's own number, does not - see test_reality_check.py).
+the `max_rc_pvalue: 0.10` bar measures ~0.117 (SPA ~0.118) over 600
+simulations, post the `(1 + count) / (B + 1)` p-value fix (quant-gate
+VERDICT.2.md M06 cycle-2 item 7) - about 17% more false "significant"
+verdicts than nominal. `block_len=1.0` (plain i.i.d. resampling) measures
+~0.085-0.092, confirming the statistic's OWN construction is correctly
+calibrated and the over-sizing comes entirely from the block length on
+i.i.d. input. Real monthly returns are autocorrelated, so `block_len=6.0`
+may still be the right choice for this platform's actual data - but the
+gate REASON should state the measured over-sizing rather than imply nominal
+calibration (quant-gate VERDICT.3.md M06 cycle-3 carried item, closed by
+M07's report layer using `MEASURED_SIZE_AT_SHIPPED_BLOCK_LEN` below), and
+the in-tree synthetic-null test needs enough simulations to have power to
+see it (200 sims, the packet's own number, does not - see
+test_reality_check.py).
 """
 
 from __future__ import annotations
@@ -55,6 +59,20 @@ import pandas as pd
 
 from quantlab.validation.bootstrap import stationary_bootstrap_indices
 from quantlab.validation.registry import TrialRecord, TrialsRegistry
+
+# quant-gate VERDICT.3.md M06 cycle-3 carried item: "put the measured size in
+# the RC and SPA gate reasons" (or, as landed, beside the M07 report's RC/SPA
+# badges - see reporting/context.py's `_gates_section`) rather than let a
+# reader believe the `max_rc_pvalue`/`max_spa_pvalue` bar in
+# configs/validation.yaml reflects achieved calibration. A DOCUMENTED
+# constant (see the block-length-calibration note in this module's own
+# docstring above for the measurement itself: 600 stationary-bootstrap
+# simulations of i.i.d. data at `MEASURED_SIZE_BLOCK_LEN`) - never
+# recomputed live on a real run, so a caller must not attach it to a result
+# measured at a different `block_len`.
+MEASURED_SIZE_BLOCK_LEN = 6.0
+MEASURED_SIZE_AT_SHIPPED_BLOCK_LEN = {"white_rc": 0.117, "hansen_spa": 0.118}
+NOMINAL_SIZE_BAR = 0.10
 
 
 def _column_label(record: TrialRecord) -> str:

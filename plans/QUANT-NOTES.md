@@ -395,6 +395,12 @@ only ones that do not close.
   later gate.
 
 ## Orchestrator decisions (recorded for the gate; Alex delegated these)
+- **Capacity gate at retail stake, 2026-09-12 (M06 cycle-3 carried item, decided for M09):**
+  Alex's real stake is £100–500. `intended_capital_usd` stays 1000; the capacity gate is
+  demoted to a new `informational` class in configs/validation.yaml — always reported with
+  the AUM ceiling, spread percentiles and the old repo's $95M–$335M context, never affecting
+  the verdict. Flip back to soft in config if institutional size is ever traded.
+
 - **M06 loop cap, 2026-09-12:** M06 exhausted the two quant-gate cycles; escalated to Alex
   with a one-screen summary; Alex approved ONE narrow third cycle scoped to VERDICT.2.md
   (headline pinning in the overlap resolver, exception-path exclusion capture, DSR
@@ -1230,3 +1236,221 @@ re-reading the handoff.
   closable by date comparison alone — it needs a second signal, if it is ever worth doing.
 - **→ M09 (reconciliation):** the 17.66% vs 15.7% reconciliation remains M09's. The cycle-1
   scope note stands, with the contamination channel now quantified above rather than open-ended.
+
+
+## From M07 verdict (plans/state/M07/VERDICT.md) — REJECT, cycle 1
+
+M07 was REJECTED at cycle 1. The autoescape design, the plot semantics and the
+carried-note coverage in sections 3, 4 and 6 are sound and were verified adversarially
+at the gate (hostile ticker through `price_panel_missing_tickers` into the real capacity
+gate reason; hostile YAML param and hostile `known_caveats` entry through
+`result.provenance`) — none of that is at issue and cycle 2 should not reopen it. The
+three blockers are in section 5's walk-forward block plus one unimplemented half of a
+carried item. Full text and reproductions in VERDICT.md.
+
+### Closure status of the M07-addressed items
+
+- **Coverage-bound definition, separate-selection-effects note, `known_caveats` verbatim,
+  extreme-return direction statement, dirty-tree badge — CLOSED.** All present in section
+  3 of all three rendered fixtures; the direction statement fires only on a nonzero count,
+  which is correct.
+- **Rolling first-return-blind convention (M05 carried) — CLOSED.** Printed beside every
+  rolling table and beside the walk-forward comparison table in both templates.
+- **`no_cliff_score` never described as quality, shown only beside `min_net_sharpe`, with
+  `nan_points`/`neighbourhood_size`/`neighbourhood_truncated` (M05/M06 carried) — CLOSED.**
+- **Sharpe (ddof=1) / Sortino (target 0, ddof=0) conventions stated where printed (M05
+  item 8, M06 carried) — CLOSED.** In the headline table's Note column beside Sortino.
+- **N as a number, N deduplicated vs raw vs dirty, K and common-period count on RC and
+  SPA, the distinct DSR-NaN "registry too thin" reason, the untrusted-fraction line,
+  capacity spread percentiles, DSR non-monotonicity beside the DSR badge, the two M06
+  informational sentences on exactly `probabilistic_sharpe_ratio` and
+  `monte_carlo_drawdown` (M06 carried items 1, 3, 7) — CLOSED.**
+- **Measured RC/SPA over-sizing in the gate detail (M06 cycle-3 carried) — CLOSED, and
+  well done.** Block-length-gated, so it is never misattached to a run at a `block_len`
+  the measurement does not cover; the fallback sentence names both block lengths.
+- **Number formatting: no numpy repr, no bare `nan`, fixed precision (M06 carried item 6)
+  — CLOSED except for infinity** (see the new item below).
+- **`missing_forward_prices` never quoted as a second corroborating number (M04/M05
+  carried) — DISCHARGED.** Absent from the report entirely.
+- **Execution conventions incl. which price the entry is measured at (M04 carried) —
+  CLOSED in behaviour, NOT in coverage.** The `next_open` sentence is true of the shipped
+  engine (`engine.py:140-153`, `:949-951`) and renders correctly when
+  `backtest_config.execution` is present — gate-verified live. But every fixture leaves
+  the key unset, so no rendered fixture and no test exercises it. See the new item below.
+- **Walk-forward no-embargo explanation, per-step training Sharpes honestly "not
+  retained", ranking agreement "not checked" (M05/M06 carried item 2) — the three
+  SENTENCES are CLOSED; the chosen-weight sequence half REMAINS OPEN** (blocking finding
+  2 below).
+- **Capacity trivial-pass statement (M06 carried item 4) — CLOSED. The $95M–$335M
+  context half REMAINS OPEN** (blocking finding 3 below).
+
+### New carried items
+
+- **→ M07 cycle 2 (BLOCKING):** the walk-forward comparison table reads
+  `WalkForwardResult.to_json()`'s `comparison` with the axes transposed.
+  `walk_forward.py:200-206` builds the DataFrame with METRICS as the index and GRID
+  POINTS as columns; `to_json` (`walk_forward.py:103`) serialises `orient="index"`,
+  yielding `{metric: {grid_point: value}}`; `context.py:466` iterates it as
+  `{grid_point: {metric: value}}`. Gate-reproduced on a real 10-step, 2-child,
+  5-grid-point `walk_forward_blend`: the rendered table has four rows labelled
+  `Annualized Volatility` / `CAGR` / `Max Drawdown` / `Sharpe Ratio` and every cell reads
+  `n/a (not available)`, while the real numbers sit in the JSON. Live on the
+  `validate --full` blend path (`cli.py:177-187` builds and passes a real
+  `WalkForwardResult`). Not caught because `test_report_context.py:338-353`'s
+  hand-written `comparison` fixture is in the shape `context.py` assumes rather than the
+  shape the producer emits — the test certifies the bug. Remedy: transpose at the
+  boundary, rebuild that test fixture from a real `walk_forward_blend(...).to_json()`,
+  and add a walk-forward-bearing rendered fixture.
+- **→ M07 cycle 2 (BLOCKING):** `context.py:453-464` builds `chosen_rows` (the per-step
+  chosen-weight sequence, asserted by `test_report_context.py:362`) and NEITHER template
+  renders it — the sequence appears only inside `walk_forward_weights.png`, which in the
+  markdown twin is an external sibling file, so it exists as text in neither format and
+  is not diffable. M06 carried item 2 requires it printed. Same root cause hits
+  `_sensitivity_section`'s `surface_rows`/`base_point`/`param_axes`
+  (`context.py:433-443`), none of which any template renders: the surface's values, the
+  base point's coordinates and which cells are NaN exist only inside the heatmap PNG.
+- **→ M07 cycle 2 (BLOCKING):** M06 carried item 4's first half is unimplemented. The old
+  repo's own $95M–$335M capacity range is in no template, no context builder and none of
+  the three rendered fixtures (only `validation/capacity.py:6`'s docstring). Without it an
+  AUM ceiling has no reference scale. Print it from a named constant beside the ceiling
+  range, with the 50-name-book assumption stated.
+- **→ M07 cycle 2 / M09 (reporting):** the trust panel prints "Rebalance dates with
+  unscored names" as a bare count with no caveat, but the M06 cycle-3 verdict measured
+  that this flag records "not selected", not "could not be scored" — 173 rebalance dates
+  carrying 467–476 names each against 30 holdings on the real run. On a real report that
+  row reads `173` and a referee reads it as 173 dates with unscoreable names. The
+  upstream fix (a `TargetWeights.unscored` field, or renaming the flag) is not M07's, but
+  the caveat beside the number is.
+- **→ M07 cycle 2 (low severity):** `_num` (`context.py:122-124`) guards NaN but passes
+  infinity through `f"{v:.2f}"`, so the REJECTED fixture prints "min track-record length
+  inf" and "needs >= inf observations for significance". Render infinity as
+  `n/a (<reason>)` the way NaN is rendered.
+- **→ M07 cycle 2 (coverage, not behaviour):** acceptance criterion 3 does not cover
+  section 6. Every `_report_fixtures.py` verdict leaves `backtest_config.execution` unset,
+  so `test_render.py:100-106` asserts only the "not recorded" fallback and the M04 carried
+  entry-price sentence appears in no fixture and no rendering test. Populate one fixture's
+  `backtest_config` fully.
+- **→ M07 cycle 2 / M09 (honesty, highest leverage of the non-blocking items):** the
+  report has no legend for what a verdict or a soft gate means. A green
+  `ELIGIBLE_FOR_PAPER` badge sits above "net CAGR 43.10%, Sharpe 5.15, max drawdown
+  0.00%" with nothing saying the verdict means "cleared the platform's gates for paper
+  trading", not "has an edge", and nothing saying a soft-gate failure caps the verdict
+  rather than rejecting it. The capacity gate already models the right behaviour with its
+  own "this is not evidence of edge" sentence; the verdict badge deserves the same.
+- **→ M07 cycle 2 / M08 (reporting robustness):** `render.py:152-220` wraps every plot in
+  a bare `except Exception` and silently omits the section, so a crashed plot and a
+  legitimately absent one are indistinguishable to the reader. Print "plot unavailable:
+  <reason>" instead of closing over the failure.
+- **→ M07 cycle 2 (low severity):** `render.py:126`'s basic-only fallback sets
+  `untrusted_fraction_line = flags[0] if flags else ""` — whatever flag happens to be
+  first is printed under the untrusted-fraction slot in the trust panel. Select by content
+  or leave it empty.
+- **→ M07 cycle 2 / M09 (low severity):** `cli.report` never passes `config`
+  (`cli.py:501`), so the Monte Carlo fan's seed is hardcoded to `1` in
+  `render.py:78-85`. It matches `configs/validation.yaml:114` today, so the fan currently
+  IS the same draw as the quoted percentiles — but changing that seed silently decouples
+  the picture from the numbers above it with nothing on the page saying so. Pass the
+  loaded validation config through, or caption the fan.
+- **→ M07 cycle 2 (cosmetic):** the coverage-bound/selection-effects sentence prints twice
+  (trust panel and again under Robustness → Flags); the markdown twin carries HTML
+  entities (`&middot;`, 8 per report) rather than plain separators; `Sortino n/a (not
+  available)` gives a generic reason where "no losing periods" is the real one; the
+  rolling table dumps every window row (50 in the fixture, ~130 on a 12-year book) with no
+  truncation.
+- **→ M08/M09 (documentation, one sentence):** `render.py:70-75` correctly reasons that
+  the markdown twin has no HTML-injection surface. Gate-confirmed: a hostile ticker
+  survives into `report.md` raw and into `report.html` escaped. Worth stating in the
+  module docstring that the markdown is safe only as TEXT — piped through a markdown
+  renderer that passes inline HTML, the payload becomes live. The HTML twin is the safe
+  artifact.
+
+
+### M07 gate cycle 2 — ACCEPT (plans/state/M07/VERDICT.2.md)
+
+M07 is **ACCEPTED**. Dispositions below supersede the cycle-1 block above wherever they
+conflict. Verified by re-running the cycle-1 reproductions unchanged against the
+iteration-3 tree and by building fresh hostile and degenerate cases at the gate, not by
+re-reading the handoff. Suite 735 tests green, ~80 s, ruff clean; the gate mutated no
+source, test, config or fixture file, and the four fixture checksums are unchanged.
+`configs/validation.yaml` is not in the diff — production `b: 200`, `block_len: 6.0`,
+`monte_carlo_n_paths: 500` are untouched, so the reduced suite-time figures come from the
+test fixture's own small bootstrap, not a production change.
+
+- **Cycle-1 blocker 1 (walk-forward comparison transposed) — CLOSED.** Re-ran the exact
+  10-step / 2-child / 5-grid-point reproduction and checked every rendered cell against
+  `WalkForwardResult.comparison` as a DataFrame rather than against the JSON, so a
+  matching serialiser bug could not hide inside a matching consumer bug: six rows, six
+  grid points, zero `n/a`, all four metrics matching to the printed precision in both
+  formats. `_transpose_comparison_by_grid_point` re-keys at the consumer boundary, leaving
+  the read-only `to_json()` alone. The root cause is properly fixed: the test fixture is
+  now generated by a real `walk_forward_blend(...).to_json()`, so the consumer can no
+  longer be certified against a shape the producer does not emit.
+- **Cycle-1 blocker 2 (chosen-weight sequence / sensitivity surface PNG-only) — CLOSED.**
+  All 10 chosen-weight steps render as distinct table rows in both formats, matching the
+  DataFrame exactly. The sensitivity surface is a real table with the base point labelled;
+  gate-tested on a case the shipped fixtures do not cover (a 2-D 3x2 grid with a planted
+  NaN cell and `neighbourhood_truncated=True`) — all six points render and the NaN cell is
+  annotated rather than blank. **Escaping survived the rewrite:** the new precomputed
+  markdown lines interpolate config-sourced `child_labels` but are plain `str`, not
+  `Markup`, and are referenced only by `report.md.j2` (the HTML template builds its own
+  `<tr>` loops); the Markup allowlist grew by exactly one static literal
+  (`VERDICT_LEGEND`). The cycle-1 hostile-ticker injection through the real
+  `price_panel_missing_tickers` -> capacity-gate-reason route was re-run against the new
+  tree and still escapes in HTML, still leaves the page well-formed, still raw in the twin.
+- **Cycle-1 blocker 3 (old-repo $95M-$335M capacity range) — CLOSED.**
+  `OLD_REPO_CAPACITY_RANGE_USD`/`_ASSUMPTION` are constants in `capacity.py`, printed
+  beside this run's own ceiling with "For scale only, NOT the output of this run" and the
+  50-name-book assumption stated.
+- **Unscored-names caveat — CLOSED, better than asked.** It branches on the run's own
+  `data_semantics_version` rather than asserting one static meaning, so it tracks the real
+  M04b semantics boundary instead of hard-coding the pre-M04b reading.
+- **Infinity formatting — CLOSED for everything M07 owns** ("unbounded (n/a)" in the badge
+  line and the gate Value column). See the new carried item below for the upstream half.
+- **Section-6 coverage gap — CLOSED.** The fourth fixture's fully populated
+  `backtest_config` makes the test assert the real `next_open` sentence AND assert the
+  "not recorded" fallback is absent — never both, never neither.
+- **Silent plot failures — CLOSED.** Gate-verified by monkeypatching `plot_equity_curves`
+  to raise: both formats render "plot unavailable: ValueError: ..." and the failure is
+  logged.
+- **`--config` seed passthrough, untrusted-fraction flag selected by content, verdict/gate
+  legend, and all cosmetics (deduped coverage sentence, plain separators, rolling
+  truncation, markdown-safety docstring) — CLOSED.** The legend states plainly that hard
+  failures cap at REJECTED, soft failures cap at RESEARCH_ONLY, the two informational notes
+  never affect the verdict, and "a verdict is not evidence of edge; it states which tests
+  the result survived" — the highest-leverage sentence the cycle-1 report was missing, now
+  directly under the badge.
+- **Markdown twin safe only as plain text — DISCHARGED as documented** in
+  `_markdown_environment`'s docstring. Gate-confirmed: a hostile ticker is escaped in HTML
+  and raw in the twin, which is correct for a plain-text artifact.
+
+### Items still open after M07 (re-addressed to M09)
+
+- **→ M09 (cosmetic, upstream):** `report_card.py`'s `min_track_record_length` reason prose
+  still reads "needs >= inf observations for significance" while the Value column beside it
+  now reads "unbounded (n/a)". **Gate ruling: the developer's scoping is correct and this
+  is NOT M07's to fix.** `ReportCard` is a read-only input under the packet's "Interfaces to
+  honor"; M07 formats every number it owns, and `test_infinity_never_renders_bare`
+  documents the boundary explicitly rather than quietly excluding the case. The row looks
+  internally inconsistent but both halves convey the same true fact (no sample size attains
+  significance at a zero Sharpe). Fix it in `report_card.py`, not by having the reporting
+  layer rewrite prose it does not own.
+- **→ M09 (cosmetic):** a NaN sensitivity cell renders
+  `n/a (NaN (excluded)) (excluded from no_cliff_score)` — nested parentheses and "excluded"
+  three times in one cell, because `_num`'s reason and the template's own suffix say the
+  same thing. Gate-reproduced on a 2-D grid with a planted NaN point. One-line fix whenever
+  `context.py` is next open.
+- **→ whoever next touches `validation/walk_forward.py` (unchanged, still correctly
+  disclosed):** per-step training Sharpes are not retained on `WalkForwardResult`, so a NaN
+  training Sharpe on a CHOSEN step cannot be verified; and the blend-of-net versus
+  netted-book Sharpe RANKING is still unchecked. The report prints honest "cannot be
+  verified here" and "not checked" lines and fabricates nothing, which is the right
+  behaviour until the object retains the figures.
+- **→ M08/M09 (operational):** suite wall time has grown 53 s -> ~80 s against the 90 s
+  budget as the M07 fixture set reached four rendered verdicts. M08 is about to add to this
+  suite and the headroom is thin.
+- **→ M09 (fixture realism, informational):** the `walk_forward` fixture's walk-forward
+  covers 2008-2020 while its headline result covers 2015-2019, because the walk-forward
+  series is synthetic and bolted onto the headline rather than derived from it. A real
+  `validate --full` builds both from the same child results, and the report does disclose
+  the walk-forward's own step dates, so the window is visible to a reader. No product
+  defect — recorded so nobody reads that fixture as a realistic worked example.

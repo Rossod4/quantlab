@@ -44,6 +44,15 @@ _DEFAULT_SPREAD_PERCENTILES = (0.10, 0.25, 0.50, 0.75, 0.90, 0.99)
 _DEFAULT_PARTICIPATION_LEVELS = (0.05, 0.10)
 _DEFAULT_ADV_PERCENTILES = (0.10, 0.25)
 
+# quant-gate VERDICT.md M07 cycle-1 finding 3: the M07 report must print this
+# beside its own AUM ceiling range as a reference scale, not compute it - see
+# this module's own docstring above (REVIEW_PHASE5.md §5, on the old repo's
+# real 2012-2026 S&P 500 cache under its hardcoded 1/50 "assumed 50-name
+# book" position_frac, NOT this run's own book size). A documented constant,
+# never recomputed live.
+OLD_REPO_CAPACITY_RANGE_USD = (95_000_000.0, 335_000_000.0)
+OLD_REPO_CAPACITY_RANGE_ASSUMPTION = "an assumed 50-name book (1/50 position_frac)"
+
 
 def corwin_schultz_spread(high: pd.Series, low: pd.Series) -> float:
     """Median Corwin-Schultz (2012) estimated full spread, as a fraction of

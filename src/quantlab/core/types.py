@@ -4,7 +4,7 @@ import math
 from enum import StrEnum
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def normalize_timestamp(value: object) -> pd.Timestamp:
@@ -58,6 +58,17 @@ class TargetWeights(_FrozenModel):
     asof: pd.Timestamp
     weights: dict[str, float]
     strategy_id: str
+    # M04b quant-gate VERDICT.md cycle 1 finding 3 (blocking, additive):
+    # ticker -> a short human reason the strategy ITSELF tried to score this
+    # name and could not (e.g. "missing lookback price"). Before this,
+    # `backtest/engine.py`'s `quality_flags.unscored_by_date` inferred
+    # "unscored" as `ctx.universe() - weights.keys()`, which conflates a
+    # genuinely unscoreable name with one the strategy simply didn't select
+    # into a top-N book - on a real ~500-name universe with a 30-name book,
+    # that made the flag ~473 names wide at every rebalance, useless as a
+    # data-quality signal. Empty by default so every pre-existing
+    # strategy/test that never populates it is unaffected.
+    unscored: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("asof", mode="before")
     @classmethod

@@ -318,4 +318,30 @@ class ValueStrategy(Strategy):
             for ticker in selected:
                 weights[ticker] = per_holding
 
-        return TargetWeights(asof=date, weights=weights, strategy_id=self.strategy_id)
+        # M04b quant-gate VERDICT.md cycle 1 finding 3: record ONLY names
+        # this strategy itself could not score - a declared-universe name
+        # with no valid (non-NaN) composite score, per
+        # `compute_composite_score`'s own MIN_AVAILABLE_METRICS guard - not
+        # a name that scored fine but wasn't picked into the top `n_holdings`.
+        # The reason distinguishes WHERE the name fell out: no price at all,
+        # no `shares_outstanding` (can't establish market cap -
+        # `compute_value_ratios` skips it entirely, so it never even gets a
+        # `ratios` row), or a `ratios` row with too few of the four metrics
+        # available to average into a composite.
+        scored = set(scores.dropna().index)
+        priced = set(prices)
+        has_ratio_row = set(ratios.index)
+        unscored: dict[str, str] = {}
+        for ticker in tickers:
+            if ticker in scored:
+                continue
+            if ticker not in priced:
+                unscored[ticker] = "missing price"
+            elif ticker not in has_ratio_row:
+                unscored[ticker] = "missing shares_outstanding"
+            else:
+                unscored[ticker] = "insufficient fundamentals for a composite score"
+
+        return TargetWeights(
+            asof=date, weights=weights, strategy_id=self.strategy_id, unscored=unscored
+        )

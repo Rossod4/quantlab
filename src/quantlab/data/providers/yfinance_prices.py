@@ -19,9 +19,12 @@ import pandas as pd
 import yfinance as yf
 
 from quantlab.data.cache import (
+    DEFAULT_RETRY_AFTER_DAYS,
     has_sufficient_price_cache,
     price_cache_path,
+    read_cache,
     write_price_cache_meta,
+    write_price_cache_no_data_meta,
 )
 from quantlab.data.interfaces import PriceProvider
 
@@ -80,8 +83,11 @@ class YFinancePriceProvider(PriceProvider):
     same scale (hundreds of tickers, not thousands).
     """
 
-    def __init__(self, cache_dir: Path):
+    def __init__(self, cache_dir: Path, retry_after_days: int = DEFAULT_RETRY_AFTER_DAYS):
         self._cache_dir = Path(cache_dir)
+        # M04b work packet item 3 - `PlatformConfig.retry_after_days`
+        # (core/config.py), wired through `data/interfaces.py.build_provider`.
+        self._retry_after_days = retry_after_days
 
     def get_prices(self, tickers: list[str], start: object, end: object) -> pd.DataFrame:
         start_ts = pd.Timestamp(start).normalize()
@@ -90,7 +96,9 @@ class YFinancePriceProvider(PriceProvider):
         to_fetch: list[str] = []
         cached_frames: dict[str, pd.DataFrame] = {}
         for ticker in tickers:
-            cached = has_sufficient_price_cache(ticker, start_ts, end_ts, self._cache_dir)
+            cached = has_sufficient_price_cache(
+                ticker, start_ts, end_ts, self._cache_dir, retry_after_days=self._retry_after_days
+            )
             if cached is not None:
                 cached_frames[ticker] = cached
             else:
@@ -120,16 +128,60 @@ class YFinancePriceProvider(PriceProvider):
                         ticker_df = raw
                     ticker_df = ticker_df.dropna(how="all")
                     if ticker_df.empty or "Adj Close" not in ticker_df:
+                        # M04b work packet item 3: the BATCH download itself
+                        # succeeded (we're inside the `try` for `_download_
+                        # batch`, past its own exception handler above) but
+                        # THIS ticker came back with no usable rows - a
+                        # vendor no longer serving it (a real, permanent
+                        # delisting) is indistinguishable here from a one-off
+                        # gap, so record a NEGATIVE-cache sidecar (TTL-bound,
+                        # never a parquet file) rather than silently doing
+                        # nothing - see cache.py's `write_price_cache_no_data_
+                        # meta` and `has_sufficient_price_cache`'s "no_data"
+                        # branch. Before this fix, nothing was recorded here
+                        # at all, so a ticker Yahoo no longer serves was
+                        # re-downloaded (and re-throttled) on EVERY single
+                        # call - the M04b work packet's profiled bug.
+                        #
+                        # M04b quant-gate VERDICT.md cycle 1 finding 1
+                        # (BLOCKING): this fetch attempt can be reached for a
+                        # ticker that ALREADY has real, healthy cached data
+                        # (e.g. a wider re-fetch triggered by a request that
+                        # exceeds the existing cache's covered range - see
+                        # `has_sufficient_price_cache`) - a transient empty
+                        # result inside that call must NEVER overwrite the
+                        # ticker's sidecar with `no_data`, which would mask
+                        # the real parquet on every future read. Only write
+                        # the negative-cache sidecar when there is no usable
+                        # parquet for this ticker at all.
+                        if read_cache(price_cache_path(ticker, self._cache_dir)) is None:
+                            write_price_cache_no_data_meta(
+                                ticker, start_ts, end_ts, self._cache_dir
+                            )
                         continue
                     write_path = price_cache_path(ticker, self._cache_dir)
                     write_path.parent.mkdir(parents=True, exist_ok=True)
                     ticker_df.to_parquet(write_path)
                     # Record what range this fetch was FOR, so future calls
                     # can trust the cache even when the data legitimately
-                    # stops early (delisted ticker) - see cache.py.
+                    # stops early (delisted ticker) - see cache.py. This also
+                    # OVERWRITES any stale negative-cache sidecar (a ticker
+                    # that previously came back empty but now succeeded) -
+                    # `write_json_meta` replaces the file wholesale, so the
+                    # "no_data" flag never lingers once a real download
+                    # succeeds (M04b acceptance test (c)).
                     write_price_cache_meta(ticker, start_ts, end_ts, self._cache_dir)
                     downloaded_frames[ticker] = ticker_df
-                except (KeyError, ValueError):
+                except KeyError:
+                    # The ticker key is entirely absent from a MultiIndex
+                    # batch result - yfinance's equivalent of "no rows for
+                    # this ticker" for a batch shape rather than an empty
+                    # frame; same negative-cache treatment as above (and the
+                    # same "never mask an existing healthy parquet" guard).
+                    if read_cache(price_cache_path(ticker, self._cache_dir)) is None:
+                        write_price_cache_no_data_meta(ticker, start_ts, end_ts, self._cache_dir)
+                    continue
+                except ValueError:
                     continue
 
             if i + BATCH_SIZE < len(to_fetch):

@@ -278,14 +278,31 @@ def apply_asof_adjustment(
         return result
 
     adjustable_columns = [c for c in _ADJUSTABLE_PRICE_COLUMNS if c in result.columns]
-    adjusted = {col: result[col].to_numpy(dtype=float).copy() for col in adjustable_columns}
+    # M04b work packet perf fix (plans/M04b-engine-perf.md): precompute EVERY
+    # adjustable column's raw numpy array ONCE, here, outside the per-ticker
+    # loop below - a PURE performance change, not a numerical one. The
+    # previous code called `result[col].to_numpy(dtype=float)` INSIDE the
+    # loop (once for "close" on every ticker, plus once per adjustable
+    # column on the assignment at the bottom of the loop), re-converting the
+    # panel's FULL column from pandas to numpy on every single iteration -
+    # O(tickers x rows) redundant conversions where O(rows) suffices, since
+    # nothing in this function ever mutates `result`'s own columns mid-loop
+    # (`adjusted` is a separate, freshly-copied array, written to but never
+    # read back before this fix would have re-read the still-untouched raw
+    # column). Profiled on the real 2012-2026 momentum run: ~35,000
+    # `Series.to_numpy()` calls and ~550,000 `numpy.asarray` calls, together
+    # over 160s of a ~213s run, for a strategy requesting the FULL universe
+    # (~500 tickers) every rebalance.
+    raw_arrays = {col: result[col].to_numpy(dtype=float) for col in adjustable_columns}
+    close_array = raw_arrays["close"]
+    adjusted = {col: raw_arrays[col].copy() for col in adjustable_columns}
     dates = result.index.to_numpy()
     tickers = result["ticker"].to_numpy()
 
     for ticker in pd.unique(tickers):
         mask = tickers == ticker
         ticker_dates = dates[mask]
-        ticker_closes = result["close"].to_numpy(dtype=float)[mask]
+        ticker_closes = close_array[mask]
 
         ticker_actions = actions_by_ticker.get(ticker)
         if ticker_actions is None or ticker_actions.empty:
@@ -324,7 +341,7 @@ def apply_asof_adjustment(
         # close, so open/high/low stay on the same scale as close (and
         # `low <= close <= high` survives a gated ex-date).
         for col in adjustable_columns:
-            adjusted[col][mask] = result[col].to_numpy(dtype=float)[mask] * applied
+            adjusted[col][mask] = raw_arrays[col][mask] * applied
 
     for col in adjustable_columns:
         result[col] = adjusted[col]

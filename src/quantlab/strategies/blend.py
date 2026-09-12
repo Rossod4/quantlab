@@ -195,6 +195,13 @@ class BlendStrategy(Strategy):
     def generate_targets(self, ctx: PITDataContext, date: pd.Timestamp) -> TargetWeights:
         date = normalize_timestamp(date)
         blended: dict[str, float] = {}
+        # M04b quant-gate VERDICT.md cycle 1 finding 3: the union of every
+        # child's OWN `unscored` (a name a child could not score - never a
+        # set-difference inference here either). A name unscored by more
+        # than one child keeps the FIRST child's reason (children are
+        # visited in their configured order) rather than concatenating -
+        # this is a coarse per-rebalance flag, not a per-sleeve breakdown.
+        unscored: dict[str, str] = {}
         for child, weight in self._children():
             if self._context_factory is not None:
                 child_ctx = self._context_factory(child.requires())
@@ -205,5 +212,9 @@ class BlendStrategy(Strategy):
             child_targets = child.generate_targets(child_ctx, date)
             for ticker, w in child_targets.weights.items():
                 blended[ticker] = blended.get(ticker, 0.0) + weight * w
+            for ticker, reason in child_targets.unscored.items():
+                unscored.setdefault(ticker, reason)
 
-        return TargetWeights(asof=date, weights=blended, strategy_id=self.strategy_id)
+        return TargetWeights(
+            asof=date, weights=blended, strategy_id=self.strategy_id, unscored=unscored
+        )

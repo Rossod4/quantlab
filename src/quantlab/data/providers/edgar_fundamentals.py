@@ -584,16 +584,34 @@ class EdgarFundamentalsProvider(FundamentalsProvider):
     def __init__(self, cache_dir: Path):
         self._cache_dir = Path(cache_dir)
         self._cik_map: dict[str, int] | None = None
+        # M04b work packet item 4: per-run, per-ticker in-memory cache of
+        # each ticker's flattened facts DataFrame (additive - the point-in-
+        # time EXTRACTION below, `get_point_in_time_fundamentals`, is
+        # unchanged and still re-run for every `asof`, since a fact visible
+        # at one asof may not be at another). Before this, every call re-ran
+        # `get_company_facts`, which - even on a cache hit - re-reads and
+        # re-parses the ticker's full parquet filing history from disk. This
+        # provider instance is constructed ONCE per `run_backtest` call
+        # (`backtest/engine.py`'s `build_backtest_providers`) and reused for
+        # every rebalance, so this dict naturally scopes to one run's
+        # lifetime - exactly like `self._cik_map` above, just per-ticker
+        # rather than run-wide. `None` is cached too (a ticker with no CIK
+        # match or no XBRL data - a normal, expected outcome per this
+        # module's docstring) so a permanently-uncovered ticker isn't
+        # re-probed on every rebalance either.
+        self._facts_cache: dict[str, pd.DataFrame | None] = {}
 
     def get_pit_fundamentals(self, ticker: str, asof: object) -> dict[str, Any]:
         if self._cik_map is None:
             self._cik_map = load_ticker_cik_map(self._cache_dir)
 
-        cik = self._cik_map.get(ticker)
-        if cik is None:
-            return asdict(_EMPTY_FUNDAMENTALS)
+        if ticker not in self._facts_cache:
+            cik = self._cik_map.get(ticker)
+            self._facts_cache[ticker] = (
+                None if cik is None else get_company_facts(ticker, cik, self._cache_dir)
+            )
 
-        facts = get_company_facts(ticker, cik, self._cache_dir)
+        facts = self._facts_cache[ticker]
         if facts is None:
             return asdict(_EMPTY_FUNDAMENTALS)
 

@@ -188,15 +188,22 @@ any exception it raises propagates naturally, which already satisfies "a
 failure of the benchmark ... aborts the run with a clear error."
 
 Separately, `unscored_by_date` catches the OTHER kind of drop (M03 verdict,
-value-leg silent drops, generalized to any strategy): after
-`generate_targets` returns, this engine diffs the strategy's declared
-`ctx.universe()` against `TargetWeights.weights.keys()` - any ticker in the
-declared universe that never made it into the weights (whether dropped by
-the value leg's own `not shares_outstanding` check or any other strategy's
-internal filtering) is recorded, never silently absorbed.
+value-leg silent drops, generalized to any strategy). M04b quant-gate
+VERDICT.md cycle 1 finding 3 (BLOCKING) changed HOW this is populated: this
+engine used to diff the strategy's declared `ctx.universe()` against
+`TargetWeights.weights.keys()` after `generate_targets` returned, which
+conflates "the strategy tried to score this name and couldn't" with "the
+strategy scored it fine and didn't select it into a top-N book" - measured
+at the gate on a real ~500-name universe with a 30-name momentum book, that
+made the flag ~473 names wide at EVERY rebalance, indistinguishable from
+noise. This engine now reads `TargetWeights.unscored` (core/types.py) -
+additive, ticker -> reason - directly: the strategy itself (momentum.py,
+value.py, blend.py) reports only names it could not establish a score for
+(a missing lookback price, missing shares_outstanding, etc.), never a mere
+non-selection.
 
 **Why `unscored_by_date` is a separate `quality_flags` entry, not merged into
-`coverage_report` (REVIEW.md finding 5, iteration 2):** the packet's own
+`coverage_report`:** the packet's own
 wording ("counts them into the coverage report") was considered, but
 `data.survivorship.CoverageReport`/`coverage_gap` model PRICE-DATA
 availability, per TICKER, over a whole YEAR (`PriceAvailability.has_data`/
@@ -224,6 +231,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -232,10 +240,22 @@ import pandas as pd
 from quantlab.backtest import costs as costs_mod
 from quantlab.backtest.accounting import Ledger
 from quantlab.backtest.config import BacktestConfig, ExtremeReturnPolicy
+from quantlab.backtest.panel_store import PricePanelStore
 from quantlab.backtest.result import BacktestResult, QualityFlags
-from quantlab.core.calendar import RebalanceFreq, next_trading_day, rebalance_dates, trading_days
+from quantlab.core.calendar import (
+    RebalanceFreq,
+    calendar_first_session,
+    next_trading_day,
+    rebalance_dates,
+    trading_days,
+)
 from quantlab.core.config import PlatformConfig
-from quantlab.core.errors import ActionsFetchError, QuantLabError, StaleActionsCacheError
+from quantlab.core.errors import (
+    ActionsFetchError,
+    LookaheadError,
+    QuantLabError,
+    StaleActionsCacheError,
+)
 from quantlab.core.semantics import DATA_SEMANTICS_VERSION
 from quantlab.core.types import PortfolioSnapshot, TargetWeights, normalize_timestamp
 from quantlab.data.interfaces import (
@@ -246,6 +266,7 @@ from quantlab.data.interfaces import (
     build_provider,
 )
 from quantlab.data.pit import PITDataContext
+from quantlab.data.quality import membership_start_by_ticker
 from quantlab.data.requirements import DataRequirements
 from quantlab.data.survivorship import coverage_gap, price_availability_from_cache
 from quantlab.strategies.base import Strategy
@@ -410,13 +431,21 @@ class _FilteringConstituentsProvider(ConstituentsProvider):
 
 
 def _accounting_context(
-    providers: BacktestProviders, asof: pd.Timestamp, lookback_days: int
+    providers: BacktestProviders,
+    asof: pd.Timestamp,
+    lookback_days: int,
+    panel_store: PricePanelStore | None = None,
 ) -> PITDataContext:
     """The engine's OWN context for fill/settlement/benchmark bookkeeping -
     `accounting=True` (data/pit.py) is what actually authorizes calling
     `prices_for_returns()` below; this context is never handed to a
     strategy (see `context_factory` in `run_backtest`, which always
-    constructs the DECISION-path context with the default `accounting=False`)."""
+    constructs the DECISION-path context with the default `accounting=False`).
+
+    `panel_store` (M04b work packet item 4, default None): the run-level
+    `PricePanelStore` `run_backtest` builds once, threaded through every
+    accounting call site below so they slice an in-memory panel instead of
+    each independently calling `providers.price.get_prices()` again."""
     return PITDataContext(
         asof=asof,
         requirements=DataRequirements(price_lookback_days=lookback_days),
@@ -425,11 +454,15 @@ def _accounting_context(
         fundamentals_provider=providers.fundamentals,
         corporate_actions_provider=providers.corporate_actions,
         accounting=True,
+        panel_store=panel_store,
     )
 
 
 def _rows_at_exact_session(
-    providers: BacktestProviders, tickers: list[str], asof: pd.Timestamp
+    providers: BacktestProviders,
+    tickers: list[str],
+    asof: pd.Timestamp,
+    panel_store: PricePanelStore | None = None,
 ) -> dict[str, pd.Series]:
     """Each ticker's row on the EXACT trading session `asof` snaps to (via
     `prices_for_returns(tickers, 1)`) - absent if the ticker has no bar
@@ -438,27 +471,34 @@ def _rows_at_exact_session(
     missing here needs `_last_available_row` instead)."""
     if not tickers:
         return {}
-    panel = _accounting_context(providers, asof, 1).prices_for_returns(tickers, 1)
+    panel = _accounting_context(providers, asof, 1, panel_store).prices_for_returns(tickers, 1)
     return {
         t: panel[panel["ticker"] == t].iloc[-1] for t in tickers if (panel["ticker"] == t).any()
     }
 
 
 def _last_available_row(
-    providers: BacktestProviders, ticker: str, asof: pd.Timestamp
+    providers: BacktestProviders,
+    ticker: str,
+    asof: pd.Timestamp,
+    panel_store: PricePanelStore | None = None,
 ) -> pd.Series | None:
     """The most recent bar for `ticker` on or before `asof`, searched over a
     generous lookback - used ONLY once `_rows_at_exact_session` has already
     shown the ticker has no bar exactly at `asof` (a forced-exit candidate),
     to find the actual last-traded price to book the exit at."""
-    ctx = _accounting_context(providers, asof, _LAST_PRICE_SEARCH_LOOKBACK_DAYS)
+    ctx = _accounting_context(providers, asof, _LAST_PRICE_SEARCH_LOOKBACK_DAYS, panel_store)
     panel = ctx.prices_for_returns([ticker], _LAST_PRICE_SEARCH_LOOKBACK_DAYS)
     sub = panel[panel["ticker"] == ticker]
     return sub.iloc[-1] if not sub.empty else None
 
 
 def _corwin_schultz_one_way_bps(
-    providers: BacktestProviders, tickers: list[str], asof: pd.Timestamp, lookback_days: int
+    providers: BacktestProviders,
+    tickers: list[str],
+    asof: pd.Timestamp,
+    lookback_days: int,
+    panel_store: PricePanelStore | None = None,
 ) -> dict[str, float]:
     """Per-ticker one-way cost (bps) from the Corwin-Schultz spread
     estimator, over the trailing `lookback_days` sessions ending at `asof`.
@@ -469,7 +509,7 @@ def _corwin_schultz_one_way_bps(
     packet)."""
     if not tickers:
         return {}
-    panel = _accounting_context(providers, asof, lookback_days).prices_for_returns(
+    panel = _accounting_context(providers, asof, lookback_days, panel_store).prices_for_returns(
         tickers, lookback_days
     )
     result: dict[str, float] = {}
@@ -484,7 +524,7 @@ def _corwin_schultz_one_way_bps(
 
 
 def _benchmark_returns(
-    providers: BacktestProviders, benchmark: str, fill_dates: list[pd.Timestamp]
+    panel_store: PricePanelStore, benchmark: str, fill_dates: list[pd.Timestamp]
 ) -> pd.Series:
     """Buy-and-hold benchmark returns over the EXACT SAME (entry, exit) date
     pairs the strategy's own realized returns use (old repo Fix 2: first
@@ -492,18 +532,42 @@ def _benchmark_returns(
     construction here, not just by a regression test). Raises
     `BacktestAbortError` if the benchmark is missing a price on any fill
     date - "a failure of the benchmark ... aborts the run with a clear
-    error"."""
-    # Enough TRADING SESSIONS to span from the first to the last fill date
-    # (not just "one session per fill date" - consecutive fill dates are
-    # typically weeks/months apart, not adjacent sessions).
-    lookback_days = len(trading_days(fill_dates[0], fill_dates[-1])) + 30
-    panel = _accounting_context(providers, fill_dates[-1], lookback_days).prices_for_returns(
-        [benchmark], lookback_days
-    )
-    panel = panel[panel["ticker"] == benchmark]
+    error".
+
+    M04b work packet item 5 ("Benchmark computation reads from the store,
+    no giant context"): this used to build ONE `PITDataContext` with
+    `lookback_days` sized to the ENTIRE run's trading-session count (a
+    single call spanning the whole run, deliberately - one fetch instead of
+    one per fill date) - which `PITDataContext._sliced_price_panel`'s own
+    calendar-day buffer then roughly DOUBLED, so a real 2012-2026 run
+    requested a window reaching back to ~2006. Before this milestone pinned
+    `core/calendar.py`'s bounds, that raised `DateOutOfBounds` outright (the
+    crash plans/M04b-engine-perf.md profiles); even with pinned bounds, a
+    request that wide would have missed the panel store's own (deliberately
+    tight - see `run_backtest`'s sizing) preloaded window and fallen back to
+    a live, whole-history re-fetch for the benchmark ticker. Reading a plain
+    [fill_dates[0], fill_dates[-1]] date-range slice directly from the store
+    avoids the giant lookback-count arithmetic entirely - it needs exactly
+    the dates this function already knows it wants, no more - while still
+    being ONE call, not one per fill date. Still untrusted like any other
+    store/provider access in this module: `_assert_no_lookahead` below
+    mirrors data/pit.py's own hard-slice-then-assert discipline for this,
+    the one price access in this file that does not go through a
+    `PITDataContext` at all (this is realized, already-past accounting
+    bookkeeping over KNOWN historical fill dates, never a strategy decision -
+    see this module's own docstring's "Two parallel tracks" section)."""
+    raw = panel_store.get_prices([benchmark], fill_dates[0], fill_dates[-1])
+    raw = raw[raw["ticker"] == benchmark]
+    violations = raw.index[raw.index > fill_dates[-1]]
+    if len(violations) > 0:
+        raise LookaheadError(
+            f"_benchmark_returns: {len(violations)} row(s) for {benchmark!r} dated after "
+            f"the last fill date {fill_dates[-1].date()} (first violation: "
+            f"{violations.min().date()})"
+        )
     prices: dict[pd.Timestamp, float] = {}
     for d in fill_dates:
-        row = panel.loc[panel.index == d]
+        row = raw.loc[raw.index == d]
         if row.empty:
             raise BacktestAbortError(f"benchmark {benchmark!r} has no price data on {d.date()}")
         prices[d] = float(row["adj_close"].iloc[0])
@@ -513,6 +577,111 @@ def _benchmark_returns(
         for i in range(len(fill_dates) - 1)
     }
     return pd.Series(returns, dtype=float).sort_index()
+
+
+# -- run-level stores (M04b work packet item 4) ------------------------------
+
+
+def _full_universe_from_history(universe_history: pd.DataFrame) -> set[str]:
+    """Every ticker that appears in ANY row of `membership_history`'s
+    `tickers` column - i.e. every point-in-time constituent over the whole
+    window that history spans, not just the current/latest membership. Used
+    to size the run-level `PricePanelStore`'s preload (a superset of every
+    ticker `ctx.universe()` could ever hand a strategy is sufficient; a
+    ticker this misses for some reason - e.g. a membership change recorded
+    strictly before the queried window - still works correctly, just via
+    `PricePanelStore`'s per-ticker provider fallback rather than the
+    in-memory fast path)."""
+    if "tickers" not in universe_history.columns:
+        return set()
+    tickers: set[str] = set()
+    for members in universe_history["tickers"]:
+        tickers.update(members)
+    return tickers
+
+
+def _panel_store_warmup_start(config_start: pd.Timestamp, max_lookback_days: int) -> pd.Timestamp:
+    """The run-level panel store's own preload window start: exactly
+    `max_lookback_days` TRADING sessions before `config_start` (mirroring
+    `PITDataContext._sliced_price_panel`'s own SESSION-COUNT-based window,
+    not a padded calendar-day buffer), clamped to the calendar's pinned
+    first session (`core/calendar.py`).
+
+    Sizing this by trading SESSIONS rather than a generous calendar-day
+    multiplier matters in practice, not just in theory: a shared prefetched
+    price cache's sidecar metadata records the EXACT range it was populated
+    for (data/cache.py's `write_price_cache_meta`), and requesting further
+    back than that - even by a seemingly modest calendar-day margin - reads
+    as a WIDER request than the cache covers, silently falling back to a
+    live re-fetch for the ENTIRE preloaded universe on this store's very
+    first build call. That is the opposite of this milestone's point, and
+    was confirmed against the real shared cache during development (its
+    metadata was fetched for exactly [2010-06-01, 2026-09-11]; the momentum
+    strategy's own ~368-trading-session lookback lands at 2010-08-17 from a
+    2012-01-31 first rebalance - safely inside that window - while even a
+    modest calendar-day-multiplier version of this same calculation lands
+    outside it and would have triggered exactly the mass re-fetch this
+    function exists to avoid)."""
+    if max_lookback_days <= 0:
+        return calendar_first_session()
+    prior_sessions = trading_days(calendar_first_session(), config_start)
+    if len(prior_sessions) > max_lookback_days:
+        return prior_sessions[-max_lookback_days]
+    return calendar_first_session()
+
+
+def _build_panel_store(
+    providers: BacktestProviders,
+    config: BacktestConfig,
+    requirements: DataRequirements,
+    universe_history: pd.DataFrame,
+) -> PricePanelStore:
+    """Build the run-level `PricePanelStore` covering every point-in-time
+    universe member (plus the benchmark) over the whole backtest window -
+    see this module's docstring and `panel_store.py`'s own docstring."""
+    max_lookback_days = max(
+        requirements.price_lookback_days,
+        _LAST_PRICE_SEARCH_LOOKBACK_DAYS,
+        config.corwin_schultz_lookback_days,
+        1,
+    )
+    warmup_start = _panel_store_warmup_start(config.start, max_lookback_days)
+    # A small pad past `config.end`: `next_open` execution's final fill date
+    # is one session AFTER the last rebalance date, which can fall a few
+    # calendar days past `config.end` itself.
+    store_end = config.end + pd.Timedelta(days=10)
+    tickers = sorted(_full_universe_from_history(universe_history) | {config.benchmark})
+    return PricePanelStore.build(providers.price, tickers, warmup_start, store_end)
+
+
+def _build_actions_store(
+    providers: BacktestProviders, tickers: set[str], end: pd.Timestamp
+) -> dict[str, pd.DataFrame]:
+    """Best-effort run-level actions pre-fetch (M04b work packet item 4):
+    each ticker's full actions history through the run's END date, fetched
+    ONCE via the provider (itself cache-backed - a disk hit past the first
+    fetch, but still real per-call I/O plus a staleness re-check) rather
+    than being re-fetched by every fresh `PITDataContext` at every
+    rebalance that touches it (data/pit.py's `_gated_actions_by_ticker` -
+    its OWN per-context memoisation, unaffected by this, only covers ONE
+    context's lifetime, i.e. one rebalance).
+
+    A ticker whose fetch fails (`StaleActionsCacheError`/`ActionsFetchError`)
+    is simply left OUT of the store: `_gated_actions_by_ticker`'s existing
+    fallback then calls the provider directly for it, at whatever `asof`
+    actually needs it, preserving the EXACT per-rebalance staleness/failure
+    semantics `_FilteringConstituentsProvider` (and the M02b/M03b staleness
+    contract) already depend on - a failure fetching through `end` must
+    never be silently treated as "this ticker is unusable for the whole
+    run", since an EARLIER `asof` might not be stale at all. Never retried
+    here; this is a best-effort perf pre-fetch, not a new failure policy."""
+    store: dict[str, pd.DataFrame] = {}
+    for ticker in sorted(tickers):
+        try:
+            store[ticker] = providers.corporate_actions.get_actions(ticker, _EPOCH, end)
+        except (StaleActionsCacheError, ActionsFetchError):
+            continue
+    return store
 
 
 def _weighted_return_excluding(
@@ -606,6 +775,31 @@ def _git_sha() -> str:
     return "unknown"
 
 
+def _git_dirty() -> bool | None:
+    """Whether `git status --porcelain` in the repo root was non-empty at
+    run time (M04 verdict carried item, plans/QUANT-NOTES.md: M04 itself ran
+    from an uncommitted working tree, so `quantlab_git_sha` alone named a
+    commit that did NOT contain the code that actually produced the result -
+    M06's trials registry needs this to avoid keying a trial to the wrong
+    code). `None` - never a silent `False` - when git itself is unavailable
+    or errors; `run_backtest` adds a `known_caveats` note in that case so a
+    missing signal is never misread as "clean"."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=_repo_root(),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            return bool(result.stdout.strip())
+    except OSError:
+        pass
+    return None
+
+
 def _actions_fetched_at(cache_dir: Path, tickers: set[str]) -> dict[str, str | None]:
     """Read the `fetched_at` sidecar (data/corporate_actions.py's staleness
     metadata) for each ticker directly, for provenance's fetched_at min/max
@@ -627,6 +821,7 @@ def _actions_fetched_at(cache_dir: Path, tickers: set[str]) -> dict[str, str | N
 def run_backtest(
     strategy: Strategy, config: BacktestConfig, providers: BacktestProviders
 ) -> BacktestResult:
+    _run_start = time.perf_counter()  # provenance.run_seconds, M04b work packet item 6
     requirements = strategy.requires()
 
     raw_dates = rebalance_dates(config.start, config.end, config.rebalance_freq)
@@ -656,6 +851,18 @@ def run_backtest(
     # from_cache` regardless of its real, complete cache on disk.
     all_universe_tickers: set[str] = set()
 
+    # M04b work packet item 4: run-level stores, built ONCE before the
+    # rebalance loop starts. `universe_history` is computed here (rather
+    # than at the bottom of this function, where a pre-M04b version of this
+    # code computed it again for `coverage_gap` below) so BOTH the panel
+    # store's sizing and the final coverage report reuse the identical
+    # single call to `membership_history` - see `_build_panel_store`.
+    universe_history = providers.constituents.membership_history(config.start, config.end)
+    panel_store = _build_panel_store(providers, config, requirements, universe_history)
+    actions_store = _build_actions_store(
+        providers, _full_universe_from_history(universe_history), config.end
+    )
+
     asof_box: dict[str, pd.Timestamp] = {"value": reb_dates[0]}
 
     def context_factory(reqs: DataRequirements) -> PITDataContext:
@@ -684,6 +891,8 @@ def run_backtest(
             constituents_provider=constituents,
             fundamentals_provider=providers.fundamentals,
             corporate_actions_provider=providers.corporate_actions,
+            panel_store=panel_store,
+            actions_store=actions_store,
         )
 
     if hasattr(strategy, "set_context_factory"):
@@ -764,14 +973,14 @@ def run_backtest(
         mark_prices: dict[str, float] = {}
         exit_return_prices: dict[str, float] = {}
         excluded: set[str] = set()
-        exact = _rows_at_exact_session(providers, sorted(prior_weights), fill_date)
+        exact = _rows_at_exact_session(providers, sorted(prior_weights), fill_date, panel_store)
         for ticker in prior_weights:
             row = exact.get(ticker)
             entry_return = prior_return_prices[ticker]
             is_forced_exit = row is None
             if is_forced_exit:
                 entry_fill = prior_fill_prices[ticker]
-                last = _last_available_row(providers, ticker, fill_date)
+                last = _last_available_row(providers, ticker, fill_date, panel_store)
                 last_price_raw = float(last["close"]) if last is not None else entry_fill
                 last_price_adj = float(last["adj_close"]) if last is not None else entry_return
                 ledger.force_exit(
@@ -857,9 +1066,19 @@ def run_backtest(
             # ever seen, separately from `all_encountered_tickers` (held
             # names, used for provenance's actions-fetched_at range).
             all_universe_tickers.update(declared)
-            unscored = sorted(declared - set(targets.weights.keys()))
-            if unscored:
-                unscored_by_date[str(t.date())] = unscored
+
+        # quant-gate VERDICT.md cycle 1 finding 3 (BLOCKING): read ONLY
+        # `TargetWeights.unscored` - names the STRATEGY ITSELF says it tried
+        # to score and could not (core/types.py) - never infer "unscored"
+        # from `declared universe - weights.keys()`, which conflates a
+        # genuinely unscoreable name with one merely not selected into a
+        # top-N book (measured at the gate: ~473 of ~500 names on a real
+        # 30-name momentum book, useless as a data-quality signal). A
+        # record-and-hold-prior `targets` (built above, not by the strategy)
+        # has no strategy-reported `unscored` at all - correctly empty,
+        # since nothing was actually attempted that rebalance.
+        if targets.unscored:
+            unscored_by_date[str(t.date())] = sorted(targets.unscored)
 
         holdings_history[t] = targets
         all_encountered_tickers.update(targets.weights)
@@ -867,7 +1086,7 @@ def run_backtest(
 
         # -- entry prices for the new target book ----------------------------
         needed = sorted(set(targets.weights) - set(mark_prices))
-        fresh = _rows_at_exact_session(providers, needed, fill_date) if needed else {}
+        fresh = _rows_at_exact_session(providers, needed, fill_date, panel_store) if needed else {}
         fill_prices = dict(mark_prices)
         fill_prices.update({t2: float(row[fill_column]) for t2, row in fresh.items()})
         return_prices = dict(settled_return_prices)
@@ -891,7 +1110,7 @@ def run_backtest(
         else:
             names = sorted(set(prior_weights) | set(tradeable_weights))
             cost_rate = _corwin_schultz_one_way_bps(
-                providers, names, fill_date, config.corwin_schultz_lookback_days
+                providers, names, fill_date, config.corwin_schultz_lookback_days, panel_store
             )
         cost_fraction = costs_mod.transaction_cost_fraction(
             prior_weights, tradeable_weights, cost_rate
@@ -929,19 +1148,51 @@ def run_backtest(
     gross_equity = _equity_with_start(gross_returns_s, reb_dates[0])
     net_equity = _equity_with_start(net_returns_s, reb_dates[0])
 
-    benchmark_returns_s = _benchmark_returns(providers, config.benchmark, fill_dates)
+    benchmark_returns_s = _benchmark_returns(panel_store, config.benchmark, fill_dates)
     benchmark_equity = _equity_with_start(benchmark_returns_s, reb_dates[0])
 
-    universe_history = providers.constituents.membership_history(config.start, config.end)
+    # `universe_history` was already fetched once, before the rebalance loop
+    # (M04b work packet item 4 - see the panel/actions store setup above);
+    # reused here rather than calling `membership_history` a second time.
     # quant-gate VERDICT.md finding 1: coverage over the UNIVERSE the
     # strategy could see (falls back to held names for a strategy that
     # never declares `needs_universe` at all, the best available proxy).
     coverage_tickers = all_universe_tickers | all_encountered_tickers
+    # M04b quant-gate cycle-2 review: membership START dates need the FULL
+    # membership record (from the epoch), not `universe_history` above
+    # (bounded to [config.start, config.end]) - a ticker that joined the
+    # index well before this run's own window would otherwise look like it
+    # "joined" at whatever date first happens to fall inside the window.
+    full_membership_history = providers.constituents.membership_history(_EPOCH, config.end)
+    membership_starts = membership_start_by_ticker(full_membership_history)
     price_availability = price_availability_from_cache(
-        sorted(coverage_tickers), providers.cache_dir
+        sorted(coverage_tickers), providers.cache_dir, membership_starts
     )
     report = coverage_gap(
         universe_history, price_availability, config.start, config.end, sample_dates=reb_dates
+    )
+    # M04b quant-gate VERDICT.md cycle 1 finding 2: provenance records the
+    # quarantined count and ticker list for this run - a quarantined
+    # ticker's data-quality issue is otherwise invisible outside
+    # `coverage_report.quarantined_tickers`'s per-year breakdown.
+    quarantined_tickers = sorted(t for t, av in price_availability.items() if av.quarantined)
+    # M04b quant-gate cycle-2 review: tickers whose EARLY, pre-cache
+    # membership span is masked (`PriceAvailability.masked_start`) AND that
+    # masking actually falls within THIS backtest's own [start, end] window -
+    # read from `report.masked_start_tickers` (per-year), NOT from a raw
+    # "avail.masked_start is not None" count. The two differ hugely in
+    # practice: this shared cache's prefetch floor (2010-06-01) predates
+    # nearly every long-standing constituent's OWN index-membership start
+    # (IBM since 1996, etc.), so `masked_start` is technically populated for
+    # ~300 completely healthy, non-quarantined tickers whose gap is entirely
+    # BEFORE any window this backtest ever queries - a benign, pre-existing
+    # fact about the shared cache's own scope, not a symbol-reuse finding,
+    # and reporting that raw count as "quarantined as new listings" would be
+    # false. The per-year breakdown already excludes exactly these
+    # never-actually-queried gaps (see `coverage_gap`'s `year_end <
+    # avail.masked_start` condition).
+    masked_start_tickers = sorted(
+        {t for names in report.masked_start_tickers.values() for t in names}
     )
 
     quality_flags = QualityFlags(
@@ -956,9 +1207,17 @@ def run_backtest(
         degenerate_excluded_book_dates=degenerate_excluded_book_dates,
     )
 
+    git_dirty = _git_dirty()
+
     known_caveats = []
     if "ttm_eps" in requirements.fundamental_fields:
         known_caveats.append(_TTM_EPS_CAVEAT)
+    if git_dirty is None:
+        known_caveats.append(
+            "provenance.dirty could not be determined (git unavailable, or `git status "
+            "--porcelain` errored, in the repo root) - quantlab_git_sha alone cannot be "
+            "trusted to name the exact code that produced this result."
+        )
     if extreme_returns_short > 0 and config.extreme_return_policy == "exclude_legacy":
         known_caveats.append(
             f"The extreme-return guard (upside-only, inherited from the old repo's "
@@ -968,6 +1227,23 @@ def run_backtest(
             "position could take from a squeeze, not just a data glitch. See engine.py's "
             "module docstring; set extreme_return_policy='flag_only' to count without "
             "excluding."
+        )
+    if masked_start_tickers:
+        known_caveats.append(
+            f"{len(masked_start_tickers)} point-in-time constituent(s) had already joined "
+            "the index before this run's cached price history for them begins, within this "
+            "run's own [start, end] window - their early membership span is invisible to "
+            "every strategy (PriceAvailability.masked_start; counted in the coverage bound "
+            "above, not a second, separate deduction) - see coverage_report."
+            "masked_start_tickers for the per-year breakdown and per-ticker reasons."
+        )
+    if quarantined_tickers:
+        known_caveats.append(
+            f"Yahoo symbol reuse erases delisted history; {len(quarantined_tickers)} "
+            "historical constituent(s) in this run's tracked universe were quarantined "
+            "because their cached price series belongs to a DIFFERENT, later company now "
+            "trading under the same symbol (data/quality.py's scan_price_cache) - see "
+            "provenance.quarantined_tickers."
         )
 
     fetched_at = _actions_fetched_at(providers.cache_dir, all_encountered_tickers)
@@ -988,9 +1264,27 @@ def run_backtest(
             "max": known_fetched_at[-1] if known_fetched_at else None,
         },
         "quantlab_git_sha": _git_sha(),
+        # M04b work packet item 7 (orchestrator-added, folded in mid-loop):
+        # whether the working tree was dirty at RUN time - see `_git_dirty`'s
+        # docstring. `None` (git unavailable/errored) is surfaced as a
+        # `known_caveats` note above, never silently read as "clean".
+        "dirty": git_dirty,
         "run_timestamp": pd.Timestamp.now("UTC").isoformat(),
         "data_semantics_version": DATA_SEMANTICS_VERSION,
         "known_caveats": known_caveats,
+        # M04b quant-gate VERDICT.md cycle 1 finding 2: how many, and which,
+        # tickers this run's coverage-tracked universe had quarantined by
+        # the quality scan (data/quality.py's scan_price_cache) - see
+        # coverage_report.quarantined_tickers for the per-year breakdown.
+        "quarantined_count": len(quarantined_tickers),
+        "quarantined_tickers": quarantined_tickers,
+        "masked_start_count": len(masked_start_tickers),
+        "masked_start_tickers": masked_start_tickers,
+        # M04b work packet item 6: wall-clock seconds for this ENTIRE
+        # `run_backtest` call, measured from its very first line - the
+        # acceptance-criterion timing number belongs in the artifact a real
+        # run actually produces, not just in a human-typed handoff note.
+        "run_seconds": time.perf_counter() - _run_start,
     }
 
     return BacktestResult(

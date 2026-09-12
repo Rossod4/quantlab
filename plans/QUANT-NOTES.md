@@ -395,6 +395,12 @@ only ones that do not close.
   later gate.
 
 ## Orchestrator decisions (recorded for the gate; Alex delegated these)
+- **Capacity gate at retail stake, 2026-09-12 (M06 cycle-3 carried item, decided for M09):**
+  Alex's real stake is £100–500. `intended_capital_usd` stays 1000; the capacity gate is
+  demoted to a new `informational` class in configs/validation.yaml — always reported with
+  the AUM ceiling, spread percentiles and the old repo's $95M–$335M context, never affecting
+  the verdict. Flip back to soft in config if institutional size is ever traded.
+
 - **M06 loop cap, 2026-09-12:** M06 exhausted the two quant-gate cycles; escalated to Alex
   with a one-screen summary; Alex approved ONE narrow third cycle scoped to VERDICT.2.md
   (headline pinning in the overlap resolver, exception-path exclusion capture, DSR

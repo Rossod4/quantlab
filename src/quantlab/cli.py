@@ -517,10 +517,183 @@ def report(
         typer.echo(f"wrote {kind}: {path}")
 
 
-@app.command()
-def paper() -> None:
-    """Run paper trading."""
-    _not_implemented("M0X")
+paper_app = typer.Typer(help="Paper trading: run a strategy against a paper broker on a schedule.")
+app.add_typer(paper_app, name="paper")
+
+
+def _make_broker(name: str):
+    if name == "mock":
+        from quantlab.paper.broker import BrokerCapabilities
+        from quantlab.paper.mock import MockBroker
+
+        return MockBroker(capabilities_=BrokerCapabilities(True, False, False), prices={})
+    if name == "alpaca":
+        from quantlab.paper.alpaca import AlpacaPaperBroker
+
+        return AlpacaPaperBroker()
+    raise typer.BadParameter(f"unknown broker {name!r} (choose 'mock' or 'alpaca')")
+
+
+@paper_app.command("run")
+def paper_run(
+    strategy: Path = typer.Option(
+        ..., "--strategy", exists=True, readable=True, help="Strategy config YAML."
+    ),
+    broker: str = typer.Option("mock", "--broker", help="'mock' or 'alpaca'."),
+    asof: str | None = typer.Option(
+        None, "--asof", help="Decision date override (default: last completed session)."
+    ),
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Plan orders but never call broker.submit()."
+    ),
+    force_research: bool = typer.Option(
+        False,
+        "--force-research",
+        help="Bypass the promotion gate (no ELIGIBLE_FOR_PAPER report card required) - for "
+        "testing the plumbing only, never for real money.",
+    ),
+) -> None:
+    """Run one paper-trading cycle for `--strategy` against `--broker`."""
+    from quantlab.core.config import load_platform_config
+    from quantlab.paper.runner import run_once
+
+    platform_config = load_platform_config(platform)
+    broker_instance = _make_broker(broker)
+
+    if dry_run:
+        from quantlab.backtest.context import DecisionProviders, build_decision_context
+        from quantlab.backtest.engine import build_backtest_providers
+        from quantlab.paper.rebalancer import plan_orders
+        from quantlab.paper.runner import _last_prices_with_dates, _today, resolve_asof
+        from quantlab.strategies.registry import load_strategy
+
+        providers = build_backtest_providers(platform_config)
+        strategy_obj = load_strategy(strategy)
+        effective_asof = resolve_asof(_today(), asof, providers, platform_config.benchmark)
+        decision_providers = DecisionProviders(
+            price=providers.price,
+            constituents=providers.constituents,
+            fundamentals=providers.fundamentals,
+            corporate_actions=providers.corporate_actions,
+        )
+        ctx = build_decision_context(
+            asof=effective_asof,
+            requirements=strategy_obj.requires(),
+            providers=decision_providers,
+            max_dropped_fraction=0.05,
+            on_drop=lambda ticker, exc: None,
+        )
+        targets = strategy_obj.generate_targets(ctx, effective_asof)
+        account = broker_instance.account()
+        tickers = sorted(set(targets.weights) | set(account.positions))
+        prices, _ = _last_prices_with_dates(providers, tickers, effective_asof)
+        orders = plan_orders(targets, account, prices, broker_instance.capabilities())
+        typer.echo(f"dry-run: asof={effective_asof.date()} strategy_id={strategy_obj.strategy_id}")
+        for order in orders:
+            typer.echo(f"  {order.side} {order.qty} {order.ticker} ({order.client_order_id})")
+        if not orders:
+            typer.echo("  (no orders - already within drift bands)")
+        return
+
+    record = run_once(
+        strategy, platform_config, broker_instance, asof=asof, force_research=force_research
+    )
+    if record.refused_reason:
+        typer.echo(f"REFUSED: {record.refused_reason}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"asof={record.asof} strategy_id={record.strategy_id} "
+        f"planned_orders={len(record.planned_orders)} results={len(record.results)}"
+    )
+
+
+@paper_app.command("status")
+def paper_status(
+    strategy: Path = typer.Option(
+        ..., "--strategy", exists=True, readable=True, help="Strategy config YAML."
+    ),
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+) -> None:
+    """Print the most recent journal entry for `--strategy`."""
+    from quantlab.core.config import load_platform_config
+    from quantlab.paper.journal import read_journal
+    from quantlab.strategies.registry import load_strategy
+
+    platform_config = load_platform_config(platform)
+    strategy_obj = load_strategy(strategy)
+    records = read_journal(platform_config.reports_dir, strategy_obj.strategy_id)
+    if not records:
+        typer.echo(f"no journal entries yet for {strategy_obj.strategy_id}")
+        return
+    last = records[-1]
+    typer.echo(
+        f"strategy_id={strategy_obj.strategy_id} last_run={last['asof']} "
+        f"refused={last['refused_reason'] is not None} "
+        f"n_planned_orders={len(last['planned_orders'])} n_results={len(last['results'])}"
+    )
+
+
+@paper_app.command("journal")
+def paper_journal(
+    strategy: Path = typer.Option(
+        ..., "--strategy", exists=True, readable=True, help="Strategy config YAML."
+    ),
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+) -> None:
+    """Print the full journal history for `--strategy` as a table."""
+    from quantlab.core.config import load_platform_config
+    from quantlab.paper.journal import journal_to_frame
+    from quantlab.strategies.registry import load_strategy
+
+    platform_config = load_platform_config(platform)
+    strategy_obj = load_strategy(strategy)
+    frame = journal_to_frame(platform_config.reports_dir, strategy_obj.strategy_id)
+    if frame.empty:
+        typer.echo(f"no journal entries yet for {strategy_obj.strategy_id}")
+        return
+    typer.echo(frame.to_string())
+
+
+@paper_app.command("rebaseline")
+def paper_rebaseline(
+    strategy: Path = typer.Option(
+        ..., "--strategy", exists=True, readable=True, help="Strategy config YAML."
+    ),
+    broker: str = typer.Option("mock", "--broker", help="'mock' or 'alpaca'."),
+    reason: str = typer.Option(
+        ..., "--reason", help="Why this re-baseline is happening (recorded verbatim, required)."
+    ),
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+) -> None:
+    """Explicitly accept the broker's CURRENT account as the new reconcile
+    baseline (quant-gate VERDICT.md M08 cycle-1 finding 1) - for a mismatch
+    `run_once`'s automatic corporate-action roll-forward cannot explain (a
+    manual trade, a transfer, an action this platform's data does not
+    carry). Writes a loud, journaled `kind="rebaseline"` record with the
+    diff against what was previously expected; never trades."""
+    from quantlab.core.config import load_platform_config
+    from quantlab.paper.runner import accept_broker_state
+
+    platform_config = load_platform_config(platform)
+    broker_instance = _make_broker(broker)
+
+    record = accept_broker_state(strategy, platform_config, broker_instance, reason=reason)
+    typer.echo(f"re-baselined asof={record.asof} strategy_id={record.strategy_id}: {reason}")
+    if record.reconcile_report:
+        diff = record.reconcile_report
+        typer.echo(
+            f"  cash_diff={diff['cash_diff']:.2f}  "
+            f"position_mismatches={len(diff['position_mismatches'])}"
+        )
 
 
 if __name__ == "__main__":

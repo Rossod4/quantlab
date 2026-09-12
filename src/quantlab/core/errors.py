@@ -50,3 +50,62 @@ class ConfigError(QuantLabError):
 
 class UnknownStrategyError(QuantLabError):
     """Raised when a requested strategy id has no registered implementation."""
+
+
+class BacktestAbortError(QuantLabError):
+    """Raised to abort an ENTIRE run outright - never caught or retried by
+    the caller's rebalance/decision loop. Lives here (not in
+    `backtest/engine.py`, where it originated) so `backtest/context.py`'s
+    shared decision-context builder - used by both `backtest.engine.
+    run_backtest` and `paper.runner.run_once` - can raise it without either
+    module importing the other (quant-gate VERDICT.md M08 cycle-1 finding
+    2). `backtest/engine.py` re-exports this name for backward
+    compatibility with existing `from quantlab.backtest.engine import
+    BacktestAbortError` call sites."""
+
+
+class BrokerError(QuantLabError):
+    """Raised for a paper/live broker adapter-level failure (network, auth,
+    an unexpected account state) - see paper/broker.py's `Broker` ABC."""
+
+
+class NotPaperAccountError(BrokerError):
+    """Raised by a broker adapter's constructor when the resolved trading
+    endpoint is not a paper-trading endpoint. `paper/alpaca.py`'s
+    `AlpacaPaperBroker` raises this unconditionally rather than ever
+    constructing a client pointed at a live endpoint - there is no code
+    path in this platform to live money."""
+
+
+class ReconcileError(QuantLabError):
+    """Raised by `paper/reconcile.py`'s `reconcile()` when a broker
+    account's actual cash/positions disagree with what the platform's own
+    journal expected, beyond the supplied tolerances. The paper runner
+    refuses to trade for the day when this is raised - a human must resolve
+    the discrepancy before the next scheduled run.
+
+    `report` (default `None`) carries the full `paper.reconcile.
+    ReconcileReport` that triggered this error, so a caller (the runner) can
+    record complete mismatch detail in the journal without recomputing it.
+    Typed as `object` here (not `ReconcileReport`) deliberately: importing
+    the `paper` package from `core/errors.py` would invert this platform's
+    layering (core has no dependency on paper), mirroring the same
+    core-errors-stay-dependency-free convention `StaleActionsCacheError`
+    etc. already follow."""
+
+    def __init__(self, message: str, report: object = None) -> None:
+        super().__init__(message)
+        self.report = report
+
+
+class PromotionGateError(QuantLabError):
+    """Raised by `paper/runner.py`'s `run_once()` when no `report_card.json`
+    with verdict `ELIGIBLE_FOR_PAPER`, matching both this strategy's
+    `strategy_id` and the platform's current `DATA_SEMANTICS_VERSION`, can
+    be found under `PlatformConfig.reports_dir`. This is the promotion gate
+    the work packet requires: paper trading a strategy that was never
+    validated (or was validated against a data-semantics version this
+    platform no longer represents) is refused, not merely warned about.
+    `--force-research` (CLI) / `force_research=True` (`run_once`) bypasses
+    this specific check - never any other safety gate - and leaves a loud,
+    unmissable flag in the journal precisely because it was bypassed."""

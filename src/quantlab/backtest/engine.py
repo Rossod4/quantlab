@@ -9,8 +9,9 @@ CLAUDE.md/QUANT-NOTES M00 item):
 1. Build a fresh `PITDataContext` at `asof=t_k` from the strategy's own
    `requires()` and call `strategy.generate_targets(ctx, t_k)`. The strategy
    never sees anything else - no raw provider, no future data (see
-   `_FilteringConstituentsProvider` below for how a per-ticker data failure
-   is kept OUT of what the strategy sees, not silently degraded).
+   `backtest/context.py`'s `_FilteringConstituentsProvider` for how a
+   per-ticker data failure is kept OUT of what the strategy sees, not
+   silently degraded).
 2. Determine this rebalance's FILL DATE: `t_k` itself in `close` mode
    (parity with the old repo - both plugin and engine act on the same
    month-end print), or `next_trading_day(t_k)` in `next_open` mode (a
@@ -240,6 +241,7 @@ import pandas as pd
 from quantlab.backtest import costs as costs_mod
 from quantlab.backtest.accounting import Ledger
 from quantlab.backtest.config import BacktestConfig, ExtremeReturnPolicy
+from quantlab.backtest.context import DecisionProviders, actions_fetched_at, build_decision_context
 from quantlab.backtest.panel_store import PricePanelStore
 from quantlab.backtest.result import BacktestResult, QualityFlags
 from quantlab.core.calendar import (
@@ -250,14 +252,20 @@ from quantlab.core.calendar import (
     trading_days,
 )
 from quantlab.core.config import PlatformConfig
+
+# BacktestAbortError now lives in core/errors.py (quant-gate VERDICT.md M08
+# cycle-1 finding 2 - see backtest/context.py's module docstring for why);
+# re-exported here under its original name so every existing `from
+# quantlab.backtest.engine import BacktestAbortError` call site (including
+# tests/test_engine.py) is unaffected.
 from quantlab.core.errors import (
     ActionsFetchError,
+    BacktestAbortError,
     LookaheadError,
-    QuantLabError,
     StaleActionsCacheError,
 )
 from quantlab.core.semantics import DATA_SEMANTICS_VERSION
-from quantlab.core.types import PortfolioSnapshot, TargetWeights, normalize_timestamp
+from quantlab.core.types import PortfolioSnapshot, TargetWeights
 from quantlab.data.interfaces import (
     ConstituentsProvider,
     CorporateActionsProvider,
@@ -295,14 +303,6 @@ _TTM_EPS_CAVEAT = (
     "after M06; until then, treat any value/blend result touching ttm_eps with this "
     "caveat in mind."
 )
-
-
-class BacktestAbortError(QuantLabError):
-    """Raised to abort an ENTIRE run outright - never caught or retried
-    inside `run_backtest`. Distinct from an unscoreable-date event (a
-    strategy-raised `ValueError`), which is recorded and, per
-    `BacktestConfig.abort_on_unscoreable`, either also aborts or is
-    tolerated (record-and-hold-prior)."""
 
 
 @dataclass(frozen=True)
@@ -380,51 +380,13 @@ def _drop_terminal_partial_period(dates: pd.DatetimeIndex, freq: RebalanceFreq) 
 
 
 # -- per-ticker data-failure filtering (M02b/M03b verdict carried items) -----
-
-
-class _FilteringConstituentsProvider(ConstituentsProvider):
-    """See module docstring's "Per-ticker data failure" section. Wraps a
-    real `ConstituentsProvider`; `membership()` drops any ticker whose
-    corporate-actions fetch fails, recording each drop via `on_drop` and
-    aborting the whole run if drops exceed `max_dropped_fraction`."""
-
-    def __init__(
-        self,
-        inner: ConstituentsProvider,
-        corporate_actions_provider: CorporateActionsProvider,
-        max_dropped_fraction: float,
-        on_drop,
-    ):
-        self._inner = inner
-        self._actions = corporate_actions_provider
-        self._max_dropped_fraction = max_dropped_fraction
-        self._on_drop = on_drop
-
-    def membership(self, asof: object) -> list[str]:
-        asof_ts = normalize_timestamp(asof)
-        raw = self._inner.membership(asof_ts)
-        good: list[str] = []
-        dropped: list[str] = []
-        for ticker in raw:
-            try:
-                self._actions.get_actions(ticker, _EPOCH, asof_ts)
-            except (StaleActionsCacheError, ActionsFetchError) as exc:
-                dropped.append(ticker)
-                self._on_drop(ticker, exc)
-                continue
-            good.append(ticker)
-
-        if raw and len(dropped) / len(raw) > self._max_dropped_fraction:
-            raise BacktestAbortError(
-                f"{len(dropped)}/{len(raw)} tickers "
-                f"({100 * len(dropped) / len(raw):.1f}%) failed a data-availability probe "
-                f"at asof={asof_ts.date()}, exceeding max_dropped_fraction="
-                f"{self._max_dropped_fraction:.0%}: {sorted(dropped)[:10]}"
-            )
-        return good
-
-    def membership_history(self, start: object, end: object) -> pd.DataFrame:
-        return self._inner.membership_history(start, end)
+#
+# `_FilteringConstituentsProvider` now lives in `backtest/context.py`
+# (quant-gate VERDICT.md M08 cycle-1 finding 2), shared verbatim with
+# `paper/runner.py` via `build_decision_context` below - see that module's
+# docstring. This section header and the module docstring's "Per-ticker
+# data failure" cross-reference are kept for readers landing here from
+# either.
 
 
 # -- accounting-path price helpers (prices_for_returns() only - never prices()) --
@@ -800,21 +762,6 @@ def _git_dirty() -> bool | None:
     return None
 
 
-def _actions_fetched_at(cache_dir: Path, tickers: set[str]) -> dict[str, str | None]:
-    """Read the `fetched_at` sidecar (data/corporate_actions.py's staleness
-    metadata) for each ticker directly, for provenance's fetched_at min/max
-    - a documented, read-only duplication of that module's private path
-    convention (`<cache_dir>/actions/<ticker>.meta.json`), not a second
-    caching implementation."""
-    from quantlab.data.cache import read_json_meta
-
-    result: dict[str, str | None] = {}
-    for ticker in tickers:
-        meta = read_json_meta(Path(cache_dir) / "actions" / f"{ticker}.meta.json")
-        result[ticker] = meta.get("fetched_at") if meta else None
-    return result
-
-
 # -- the engine ---------------------------------------------------------------
 
 
@@ -865,32 +812,35 @@ def run_backtest(
 
     asof_box: dict[str, pd.Timestamp] = {"value": reb_dates[0]}
 
+    decision_providers = DecisionProviders(
+        price=providers.price,
+        constituents=providers.constituents,
+        fundamentals=providers.fundamentals,
+        corporate_actions=providers.corporate_actions,
+    )
+
     def context_factory(reqs: DataRequirements) -> PITDataContext:
         asof = asof_box["value"]
-        constituents: ConstituentsProvider = providers.constituents
-        if reqs.needs_universe and (reqs.price_lookback_days > 0 or reqs.fundamental_fields):
 
-            def _on_drop(ticker: str, exc: Exception, _asof=asof) -> None:
-                dropped_tickers_by_date.setdefault(str(_asof.date()), []).append(ticker)
+        def _on_drop(ticker: str, exc: Exception, _asof=asof) -> None:
+            dropped_tickers_by_date.setdefault(str(_asof.date()), []).append(ticker)
 
-            constituents = _FilteringConstituentsProvider(
-                inner=providers.constituents,
-                corporate_actions_provider=providers.corporate_actions,
-                max_dropped_fraction=config.max_dropped_fraction,
-                on_drop=_on_drop,
-            )
         # `accounting` omitted (defaults False, data/pit.py): this is the
         # DECISION-path context - the only one a strategy, or a blend
         # child via `set_context_factory`, ever receives. Calling
         # `prices_for_returns()` on it now raises `UndeclaredDataError` by
         # construction (M04 HANDOFF.3 follow-up to quant-gate VERDICT.md).
-        return PITDataContext(
+        # `build_decision_context` (backtest/context.py, quant-gate
+        # VERDICT.md M08 cycle-1 finding 2) is now the ONE shared builder
+        # `paper/runner.py` also calls - the filtering wrapper and its
+        # `max_dropped_fraction` abort policy can no longer silently diverge
+        # between the two callers.
+        return build_decision_context(
             asof=asof,
             requirements=reqs,
-            price_provider=providers.price,
-            constituents_provider=constituents,
-            fundamentals_provider=providers.fundamentals,
-            corporate_actions_provider=providers.corporate_actions,
+            providers=decision_providers,
+            max_dropped_fraction=config.max_dropped_fraction,
+            on_drop=_on_drop,
             panel_store=panel_store,
             actions_store=actions_store,
         )
@@ -1246,7 +1196,7 @@ def run_backtest(
             "provenance.quarantined_tickers."
         )
 
-    fetched_at = _actions_fetched_at(providers.cache_dir, all_encountered_tickers)
+    fetched_at = actions_fetched_at(providers.cache_dir, all_encountered_tickers)
     known_fetched_at = sorted(v for v in fetched_at.values() if v is not None)
 
     provenance = {

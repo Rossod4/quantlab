@@ -395,6 +395,12 @@ only ones that do not close.
   later gate.
 
 ## Orchestrator decisions (recorded for the gate; Alex delegated these)
+- **M08 loop cap, 2026-09-12:** M08 exhausted the two quant-gate cycles (cycle 2 rejected on a
+  regression introduced by the shared-filter fix: staleness swallowed → refresh never runs; plus
+  an unjournaled broker.account failure). Escalated to Alex; Alex approved ONE narrow third
+  cycle scoped to VERDICT.2.md (proactive sidecar-driven refresh per the packet's own text,
+  guarded account fetch in _refuse, three non-blocking notes).
+
 - **M06 loop cap, 2026-09-12:** M06 exhausted the two quant-gate cycles; escalated to Alex
   with a one-screen summary; Alex approved ONE narrow third cycle scoped to VERDICT.2.md
   (headline pinning in the overlap resolver, exception-path exclusion capture, DSR
@@ -1230,3 +1236,240 @@ re-reading the handoff.
   closable by date comparison alone — it needs a second signal, if it is ever worth doing.
 - **→ M09 (reconciliation):** the 17.66% vs 15.7% reconciliation remains M09's. The cycle-1
   scope note stands, with the contamination channel now quantified above rather than open-ended.
+
+## From M08 verdict (plans/state/M08/VERDICT.md) — REJECT, cycle 1
+
+### Closure of the carried M02b/M04 runner items
+
+- **M02b/M04, "the paper/live runner needs an explicit actions-cache refresh policy"
+  (lines 109-112, restated as M04 closure item 7) — CLOSED.** `paper/runner.py`'s
+  `_generate_targets_with_actions_refresh` catches `StaleActionsCacheError` on the first
+  `generate_targets` attempt, force-refreshes every ticker in the strategy's declared
+  universe via `refresh_actions_cache`, logs the refreshed list into the journal record
+  (`refreshed_actions_tickers`), and retries exactly once. A second failure is journaled
+  as a refusal and re-raised — no loop, no deciding on stale data. Verified by reading and
+  by the developer's and reviewer's independent reproduction; the one gap code review
+  flagged (no regression test for the second-failure path) was fixed before this gate.
+- **M02b/M04/M09, "`refresh_actions_cache()` has no operational caller" — PARTIALLY
+  CLOSED.** The paper runner is now a real caller, which is what that note asked for in
+  the runner's own direction. The M09 half stands unchanged: there is still no
+  `quantlab data refresh` command, and still no force-clear for the quarantine or
+  negative-cache sidecars (`clear_quarantine_meta` still has no caller).
+- **M06, promotion-gate keying on `strategy_id` + `DATA_SEMANTICS_VERSION` — CLOSED.**
+  Probed directly at this gate: a `REJECTED` card, a `RESEARCH_ONLY` card, an
+  `ELIGIBLE_FOR_PAPER` card carrying a stale semantics version, and a `REJECTED`-plus-stale
+  -`ELIGIBLE` pair all raise `PromotionGateError`; only a current-semantics
+  `ELIGIBLE_FOR_PAPER` card trades, and a semantics bump invalidates every old card.
+  `--force-research` leaves `force_research: true`, a null `promoting_report_card`, and a
+  `known_caveats` entry beginning `FORCE-RESEARCH:`.
+
+### Blocking findings — must be fixed in M08 cycle 2, not carried
+
+Full detail in `plans/state/M08/VERDICT.md`. Summarised here only so a later reader of
+this file sees why M08 did not pass on cycle 1:
+
+1. Reconciliation baselines on the last NON-refused journal record, so the first ordinary
+   dividend or split refuses the run and every run after it, forever. The recovery
+   `docs/paper-trading.md:123` prescribes is impossible.
+2. The runner's decision context omits the engine's `_FilteringConstituentsProvider` and
+   has no counterpart to `max_dropped_fraction` or `abort_on_unscoreable`. Targets are
+   byte-identical to the engine's on healthy data and diverge on degraded data.
+3. A delisted holding raises an unhandled `ValueError` out of `plan_orders` and writes
+   zero journal records, against both the runner's own docstring and CLAUDE.md
+   invariant #3.
+4. A partial fill can never be topped up, and the replayed duplicate fill is journaled as
+   this run's result; resting remainders are never cancelled.
+5. Blend strategies lose the M04 per-child context guard — the runner never calls
+   `set_context_factory`.
+
+### → M09 items
+
+- **→ M09 (drift check), must-fix before any forward-vs-backtest number is quoted:** the
+  paper runner decides as of the previous completed session and submits market orders that
+  fill at the next open, roughly one and a half sessions after the backtest's `close`
+  execution convention books the same rebalance. Undocumented today. M09 must model this
+  lag explicitly or it will report it as strategy drift. Either compare against a
+  `next_open`-mode backtest or state the residual as a known, quantified offset.
+- **→ M09 (drift check):** the journal has no per-ticker data-asof, and `resolve_asof`'s
+  staleness ceiling watches only the benchmark ticker
+  (`paper/runner.py:122-137`). A universe name whose overnight sync lagged is decided on a
+  stale bar with nothing recorded, and the drift check cannot separate that from a signal
+  change. Record, per run, the last bar date actually seen for each traded name.
+- **→ M09 (drift dashboard):** `journal_to_frame` omits `promoting_report_card`,
+  `known_caveats`, `refreshed_actions_tickers` and `targets`
+  (`paper/journal.py:109-125`). They are in the raw JSONL and the docstring says so, so
+  this is a convenience gap — but the drift check needs all four, so widen the frame
+  rather than re-parsing the file in M09.
+- **→ M09 (canaries):** canary (k) pins only `asof == prev_trading_day(today)`
+  (`tests/canaries/test_lookahead.py:802-803`). Deleting `resolve_asof`'s data-cache
+  ceiling clamp entirely leaves the canary green; only a unit test catches it. Extend the
+  canary to the second half the M08 packet specified — `asof` never later than the data's
+  last cached bar — so the guard survives a refactor of `runner.py`.
+- **→ M09 (canaries), carried unchanged from M04/M05:** a strategy that deliberately does
+  `object.__setattr__(ctx, "_accounting", True)` can still reach `prices_for_returns()`.
+  Unchanged by M08.
+
+
+## M08 gate cycle 2 — REJECT (plans/state/M08/VERDICT.2.md)
+
+All five cycle-1 findings are fixed and independently re-verified (see below). The
+rejection is for ONE new finding, a regression introduced by the cycle-2 fix itself.
+
+### Cycle-1 items — CLOSED
+
+- **Reconcile bricking — CLOSED.** `reconcile.roll_forward_expected` explains dividends
+  and splits between two runs; `accept_broker_state` / `quantlab paper rebaseline` is a
+  loud, journaled human escape hatch; a refused run still never becomes the baseline.
+  Probed independently: a dividend on a name the prior run sold to zero is correctly not
+  credited, and an unbacked cash credit still refuses. The fix explains the ordinary case
+  rather than loosening the check.
+- **Shared decision context — CLOSED.** `backtest/context.build_decision_context` is the
+  only construction site for either `run_backtest` or `run_once`. The gate's own 40-name
+  probe now agrees byte-identically in BOTH the healthy case (0.025 each) and the degraded
+  case (0.025641 across 39). `tests/parity`, `tests/canaries` and `tests/test_engine.py`
+  are 83/83 green after the extraction — the goldens are undisturbed.
+- **Delisted holding — CLOSED.** Force-exited with no price needed, `forced_exits`
+  journaled, the broker's rejection recorded honestly, exactly one record, no crash.
+- **Partial fills — CLOSED.** Converges 247.5 → 433.125 → 572.34375 across three runs at a
+  25% fill fraction, cancelling each prior attempt's resting remainder (journaled) and
+  planning the residual under a distinct `-aN` client order id.
+- **Blend per-child context — CLOSED.** `run_once` calls `set_context_factory` with the
+  shared-context closure; an over-reaching child raises and is journaled at
+  `stage='targets'`.
+- **Canary (k) second half — CLOSED.** Now pins the data-cache ceiling as well; both halves
+  were mutation-checked by the developer and the reviewer.
+- **`journal_to_frame` width — CLOSED.** Carries `kind`, `promoting_report_card`,
+  `known_caveats`, `refreshed_actions_tickers`, `dropped_tickers`, `dropped_fraction`,
+  `unscored_tickers`, `forced_exits`, `targets`, `assumed_fill_session`.
+- **Paper-vs-backtest fill timing — CLOSED as documented.** `assumed_fill_session` is
+  journaled per run and the ~1.5-session lag is documented. The M09 drift check must still
+  model it (carried below).
+
+### M02b/M04 actions-cache refresh policy — RE-OPENED
+
+Closed at cycle 1, re-opened here. The cycle-2 shared-filter fix makes the refresh policy
+UNREACHABLE for every shipped strategy. `_FilteringConstituentsProvider` converts a
+per-ticker `StaleActionsCacheError` into a drop, so staleness can no longer escape
+`generate_targets`, which is the only thing that triggers
+`_generate_targets_with_actions_refresh`. The filter is active for every shipped
+declaration shape (`needs_universe` plus a price lookback or fundamental fields).
+
+Probed at `fetched_at=2023-12-02`, `asof=2023-12-29`: with all 40 universe tickers stale
+(the ordinary monthly state, since the cache is fetch-once-forever and paper `asof` always
+advances past it) the run raises `BacktestAbortError` and `refresh_actions_cache` is called
+zero times; with 1 of 40 stale the run trades but drops that ticker silently and
+permanently, again refreshing nothing. The regression test passes because
+`tests/test_runner.py`'s `_ActionsProbeStrategy` declares `price_lookback_days=0`, a shape
+no shipped strategy uses.
+
+**Remedy is the packet's own wording**, which specifies a PROACTIVE policy — "call
+`refresh_actions_cache` for the universe when `fetched_at < asof`, log it"
+(`plans/M08-paper-trading.md:46-47`). What shipped is a reactive catch-and-retry, which was
+only equivalent while nothing intercepted the exception. Read the sidecar directly
+(`backtest/engine.py`'s `_actions_fetched_at` already does this) for the declared universe
+AND every held ticker, refresh what is stale, then build the context.
+
+### → M09 items
+
+- **→ M09 (data refresh), unchanged and now more urgent:** there is still no
+  `quantlab data refresh` command and still no force-clear for the quarantine or
+  negative-cache sidecars (`clear_quarantine_meta` has no caller). Until the re-opened item
+  above is fixed, that command is the ONLY way an operator could clear a stale actions
+  cache, and it does not exist.
+- **→ M09 (drift check), must-fix before any forward-vs-backtest number is quoted:** the
+  paper runner decides at the prior completed session's close and fills at the next open,
+  roughly 1.5 sessions after the backtest's `close` convention. `assumed_fill_session` is
+  journaled; M09 must compare against a `next_open`-mode backtest or quantify the offset.
+- **→ M09 (drift check):** `price_asof_by_ticker` is now in the raw JSONL but not in the
+  frame. The drift check needs it to tell a lagging data sync from a signal change.
+- **→ M09 (canaries), carried unchanged:** `object.__setattr__(ctx, "_accounting", True)`
+  still reaches `prices_for_returns()`.
+
+### Gate rulings recorded (no action wanted)
+
+- **`KeyboardInterrupt` leaves zero journal records — ACCEPTED, deliberate.** `except
+  Exception` does not catch `BaseException`. Catching it would delay an operator's Ctrl-C
+  and would write a record from a partially unwound stack, possibly mid-`submit`, asserting
+  an account state nobody verified. A killed Windows scheduled task raises nothing at all.
+  One documentation clause should note the exclusion explicitly.
+- **Roll-forward compares a ticker unadjusted when its actions fetch fails — ACCEPTED,
+  conservative.** It can only cause a refusal, never a silently accepted wrong position.
+  Caveat: it is currently the DEFAULT state rather than a rare edge, because nothing
+  refreshes the actions cache; fixing the re-opened item above collapses it back to rare.
+
+
+## M08 gate cycle 3 — ACCEPT (plans/state/M08/VERDICT.3.md)
+
+Both cycle-2 blockers fixed and independently re-verified. M08 is accepted.
+
+### Cycle-2 items — CLOSED
+
+- **M02b/M04 actions-cache refresh policy — CLOSED (finally).** Re-opened at cycle 2 when
+  the shared filter made the reactive policy unreachable; now implemented PROACTIVELY as
+  the packet always specified. `_proactive_actions_refresh` reads the `fetched_at` sidecar
+  via `backtest.context.actions_fetched_at` (the same helper the engine's provenance uses —
+  still one implementation) for the declared universe AND every held ticker, refreshes what
+  is stale, and only then builds the context; the reactive catch-and-retry is kept as a
+  second line. Re-ran the gate's own cycle-2 probes on the SHIPPED declaration shape with
+  real sidecar files: all-40-stale now trades with 40 refreshes and nothing dropped;
+  1-of-40-stale refreshes exactly that one and includes it; a refresh that itself fails
+  drops that ticker, journals it, and the run proceeds on 39.
+- **Held-but-no-longer-in-universe tickers — CLOSED.** Refreshed too, which is what
+  collapses the roll-forward residual.
+- **`_refuse`'s own `broker.account()` call — CLOSED.** Guarded; a broker outage now leaves
+  exactly one record with `account_before={"unavailable": "<Class>: <msg>"}` and both
+  causes in the reason. The exactly-one-record guarantee holds for every `Exception` the
+  gate could construct.
+- **Non-blocking cycle-2 notes — ALL DONE.** `planned_orders` preserved on a submit-stage
+  refusal; `_next_attempt_number` ignores refusals; `cancel_open_before_plan=False`
+  documented as able to stack a live order; `KeyboardInterrupt` exclusion documented.
+
+### Gate rulings recorded
+
+- **The proactive refresh introduces NO look-ahead — verified, not assumed.** A refresh at
+  `asof` legitimately pulls actions dated after `asof` into the cache. Planted a 10:1 split
+  five days after `asof`: `ctx.prices` last close stayed at the raw 100.0, its max index was
+  exactly `asof`, and the sized order was unchanged at 990 shares (a leak would have moved
+  it ~10x). Canaries 24/24, including (f) and both halves of (k).
+- **Roll-forward residual — CLOSED as a rare edge.** A dividend on a held name that left the
+  index is now explained rather than refusing. The unadjusted-comparison fallback remains,
+  still conservative (refusal only, never a silently accepted wrong position).
+- **Autouse `_no_real_actions_refresh` fixture — ACCEPTED.** Required by CLAUDE.md invariant
+  #5 and scoped to one file. Verified it hides nothing: the FULL suite passes with
+  `socket.connect` replaced by a hard failure, so no test reaches the network, guarded or
+  not; and the three refresh tests override it locally. Recommendation for the next time
+  that file is touched: have the shared fixtures write fresh sidecars so the proactive pass
+  honestly concludes "nothing to refresh", leaving the autouse no-op as a safety net rather
+  than the thing that quiets the default path.
+
+### → M09 items
+
+- **→ M09 (or a fast follow), MUST FIX before `--dry-run` is trusted:** `cli.py:552-585`'s
+  dry-run branch is a hand-rolled second decide-and-plan path. It wires none of
+  `set_context_factory`, `_proactive_actions_refresh`, forced exits, `attempt`, cancellation,
+  or `PaperRunConfig`. Measured on one stale-cache fixture: `--dry-run` raises
+  `BacktestAbortError` where the real run refreshes 41 tickers and trades. Worst of it is
+  that the blend per-child context guard (cycle-1 finding 5) is still OFF there, and
+  `blend_50_50.yaml` ships, so a previewed blend book can differ from the real one. Remedy:
+  give `run_once` a `dry_run` flag that stops after planning and have the CLI call it. The
+  gate would have made this blocking had it been raised in cycle 1 or 2; it was left out of
+  cycle 3's scope, cannot cause a trade, and fails loudly in its two likeliest forms.
+- **→ M09 (data refresh), narrowed but still open:** the paper runner is now a real
+  operational caller of `refresh_actions_cache`, so the actions half of this item is served
+  for the paper path. Still missing: a `quantlab data refresh` command for the backtest
+  path, and a force-clear for the quarantine and negative-cache sidecars
+  (`clear_quarantine_meta` still has no caller).
+- **→ M09 (drift check), must-fix before any forward-vs-backtest number is quoted:** the
+  paper runner decides at the prior completed session's close and fills at the next open,
+  roughly 1.5 sessions after the backtest's `close` convention. `assumed_fill_session` is
+  journaled per run; compare against a `next_open`-mode backtest or quantify the offset.
+- **→ M09 (drift check):** `price_asof_by_ticker` is in the raw JSONL but not in
+  `journal_to_frame`; the drift check needs it to separate a lagging data sync from a real
+  signal change.
+- **→ M09 (canaries), carried unchanged:** `object.__setattr__(ctx, "_accounting", True)`
+  still reaches `prices_for_returns()`.
+- **Operational note for Alex:** a paper run now force-refreshes the actions cache for the
+  whole declared universe whenever the sidecar is stale — roughly 500 vendor downloads on
+  the first run after a gap, writing into the shared `data/cache`. Expected and correct for
+  a live runner, but it is the first routine writer to that cache, so the first scheduled
+  run will be slow and should not be interrupted.

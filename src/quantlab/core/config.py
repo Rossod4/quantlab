@@ -31,6 +31,47 @@ class PlatformConfig(BaseModel):
     providers: ProvidersConfig
     calendar: str = "XNYS"
     benchmark: str = "SPY"
+    # M04b work packet item 3: how many days a negative price-cache sidecar
+    # (`no_data: true` - data/cache.py) is trusted before being retried. The
+    # M01 hazard this guards against: a ticker download returning zero rows
+    # could be a genuine delisting (permanent - Yahoo will never serve it
+    # again) or a one-off transient vendor hiccup (temporary). Never caching
+    # "no data" at all re-fetches every failed ticker on every rebalance
+    # (the M04b-fixed bug); caching it forever would silently freeze a
+    # transient blip as permanent. A TTL is the middle ground: skip
+    # re-fetching for `retry_after_days`, then try again once.
+    retry_after_days: int = 30
+    # M04b quant-gate VERDICT.md cycle 1 finding 2: thresholds for
+    # `data/quality.py`'s `scan_price_cache` cache-level quarantine checks -
+    # see that module's docstring for what each one guards against
+    # (zero-volume sessions, unexplained day-over-day price jumps, and a
+    # price-level jump across a gap in trading days, evidence of a reused
+    # ticker symbol).
+    quality_zero_volume_fraction_threshold: float = 0.20
+    # Cycle 2: a HIGH bar that quarantines on zero-volume fraction ALONE
+    # (CCE/MHS-style genuinely dead series), and the ratio a price level
+    # must differ from its own trailing-year median by to count as
+    # "implausible" - the companion condition for the softer threshold
+    # above (a live large cap's yfinance-padding-inflated fraction, e.g.
+    # EA/EQR/FERG/AMCR, must NOT quarantine on the soft threshold alone).
+    quality_zero_volume_hard_threshold: float = 0.50
+    quality_level_implausible_ratio: float = 20.0
+    quality_jump_ratio_threshold: float = 4.0
+    # Cycle 2: a genuine corporate action can be recorded by the vendor's
+    # actions feed a session or two off from where its price effect lands;
+    # a split within this many sessions of a jump excuses it.
+    quality_jump_excuse_window_sessions: int = 3
+    # Cycle 2: a single unexplained jump is as often a real, un-split
+    # corporate event (KDP's 2018 merger) as contamination; require several.
+    quality_min_unexplained_jumps: int = 3
+    quality_jump_gap_sessions: int = 5
+    # Cycle 2 (second review round): a ticker whose cached price history
+    # starts more than this many TRADING SESSIONS after its point-in-time
+    # index membership began is presumed to belong to a DIFFERENT, newly
+    # listed company reusing a delisted constituent's symbol (Yahoo silently
+    # reassigns delisted ticker symbols) - see data/quality.py's
+    # `symbol_reuse_new_listing_reason`.
+    quality_new_listing_tolerance_sessions: int = 400
 
 
 def _repo_root() -> Path:

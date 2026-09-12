@@ -172,6 +172,46 @@ def test_generate_targets_is_pure():
     assert strat.generate_targets(ctx, ASOF) == strat.generate_targets(ctx, ASOF)
 
 
+# -- TargetWeights.unscored (M04b quant-gate VERDICT.md cycle 1 finding 3) --
+
+
+def test_unscored_is_empty_when_every_declared_name_has_full_history():
+    """A top-N selection out of a larger, FULLY-scorable universe must not
+    flag any of the non-selected names as unscored - only names lacking a
+    valid formation/lookback price are unscored, never a mere non-selection."""
+    strat = MomentumStrategy({"book": "long_only", "n_long": 2})
+    sessions = _sessions(strat.requires().price_lookback_days)
+    panel = _stepped_panel(sessions, rates={"A": 1.05, "B": 1.02, "C": 0.99, "D": 1.01, "E": 1.00})
+    ctx = _context(strat.requires(), panel, ["A", "B", "C", "D", "E"])
+
+    result = strat.generate_targets(ctx, ASOF)
+
+    assert result.unscored == {}
+    # Sanity: this really is a top-2-of-5 selection, not "everyone selected".
+    assert len(result.weights) == 2
+
+
+def test_unscored_records_exactly_the_name_missing_a_lookback_price():
+    """M04b quant-gate VERDICT.md cycle 1 finding 3 regression: a universe
+    member present in `ctx.universe()` but whose price history doesn't reach
+    back to the lookback month must be reported as unscored - exactly that
+    name, not the whole non-selected remainder."""
+    strat = MomentumStrategy({"book": "long_only", "n_long": 2})
+    sessions = _sessions(strat.requires().price_lookback_days)
+    full_panel = _stepped_panel(sessions, rates={"A": 1.05, "B": 1.02, "C": 0.99, "D": 1.01})
+    # GAPPY only has data for its last handful of sessions - no valid price
+    # at the lookback (12 months back) or even the skip (1 month back) date.
+    recent_sessions = sessions[-40:]
+    gappy_panel = _stepped_panel(recent_sessions, rates={"GAPPY": 1.10})
+    panel = pd.concat([full_panel, gappy_panel]).sort_index()
+    ctx = _context(strat.requires(), panel, ["A", "B", "C", "D", "GAPPY"])
+
+    result = strat.generate_targets(ctx, ASOF)
+
+    assert result.unscored == {"GAPPY": "missing formation or lookback price"}
+    assert "GAPPY" not in result.weights
+
+
 def test_undersized_context_raises_undeclared_data_error():
     strat = MomentumStrategy({"book": "long_only", "n_long": 1})
     too_small = DataRequirements(price_lookback_days=5, needs_universe=True)

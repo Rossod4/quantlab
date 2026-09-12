@@ -1,0 +1,181 @@
+$CVC: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$HCBK: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$CMCSK: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$ANRZQ: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$ADS: possibly delisted; no timezone found
+$CTXS: possibly delisted; no timezone found
+$FRX: possibly delisted; no timezone found
+$CHK: possibly delisted; no timezone found
+$CELG: possibly delisted; no timezone found
+$DO: possibly delisted; no timezone found
+$CDAY: possibly delisted; no timezone found
+$ALXN: possibly delisted; no timezone found
+$AABA: possibly delisted; no timezone found
+$DISH: possibly delisted; no timezone found
+$ESV: possibly delisted; no timezone found
+$COG: possibly delisted; no timezone found
+$DISCK: possibly delisted; no timezone found
+$ALTR: possibly delisted; no timezone found
+$CTRA: possibly delisted; no timezone found
+$CPGX: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$CFN: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$BCR: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$BRCM: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$BXLT: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$ATVI: possibly delisted; no timezone found
+$FLIR: possibly delisted; no timezone found
+$ABMD: possibly delisted; no timezone found
+$CERN: possibly delisted; no timezone found
+$BK: possibly delisted; no timezone found
+$DRE: possibly delisted; no timezone found
+$ARNC: possibly delisted; no timezone found
+$CTLT: possibly delisted; no timezone found
+$DWDP: possibly delisted; no timezone found
+$DTV: possibly delisted; no timezone found
+$CXO: possibly delisted; no timezone found
+$BLL: possibly delisted; no timezone found
+$ANSS: possibly delisted; no timezone found
+$CBS: possibly delisted; no timezone found
+$ARG: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$GAS: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: GPS"}}}
+$COV: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$APOL: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$FII: possibly delisted; no timezone found
+$ANTM: possibly delisted; no timezone found
+$DFS: possibly delisted; no timezone found
+$FRC: possibly delisted; no timezone found
+$DAY: possibly delisted; no timezone found
+$ATGE: possibly delisted; no timezone found
+$BHGE: possibly delisted; no timezone found
+$FBHS: possibly delisted; no timezone found
+$DF: possibly delisted; no timezone found
+$FLT: possibly delisted; no timezone found
+$DISCA: possibly delisted; no timezone found
+$CTL: possibly delisted; no timezone found
+$GGP: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$GMCR: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$FDO: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$CVH: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$FI: possibly delisted; no timezone found
+$ETFC: possibly delisted; no timezone found
+$DNR: possibly delisted; no timezone found
+$FTR: possibly delisted; no timezone found
+$AVP: possibly delisted; no timezone found
+$HBI: possibly delisted; no timezone found
+$ABC: possibly delisted; no timezone found
+$CMA: possibly delisted; no timezone found
+$FL: possibly delisted; no timezone found
+$ENDP: possibly delisted; no timezone found
+$CA: possibly delisted; no timezone found
+$BIG: possibly delisted; no timezone found
+$DNB: possibly delisted; no timezone found
+$AGN: possibly delisted; no timezone found
+$BTUUQ: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$GPS: possibly delisted; no timezone found
+
+74 Failed downloads:
+['CVC', 'HCBK', 'CMCSK', 'ANRZQ', 'CPGX', 'CFN', 'BCR', 'BRCM', 'BXLT', 'ARG', 'GAS', 'COV', 'APOL', 'GGP', 'GMCR', 'FDO', 'CVH', 'BTUUQ']: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+['ADS', 'CTXS', 'FRX', 'CHK', 'CELG', 'DO', 'CDAY', 'ALXN', 'AABA', 'DISH', 'ESV', 'COG', 'ALTR', 'DISCK', 'CTRA', 'ATVI', 'FLIR', 'ABMD', 'CERN', 'BK', 'DRE', 'ARNC', 'CTLT', 'DWDP', 'DTV', 'CXO', 'BLL', 'ANSS', 'CBS', 'FII', 'ANTM', 'DFS', 'FRC', 'DAY', 'ATGE', 'BHGE', 'FBHS', 'DF', 'FLT', 'DISCA', 'CTL', 'FI', 'ETFC', 'DNR', 'FTR', 'AVP', 'HBI', 'ABC', 'FL', 'CMA', 'ENDP', 'CA', 'BIG', 'DNB', 'AGN', 'GPS']: possibly delisted; no timezone found
+$KRFT: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$KORS: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$LVLT: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$JOY: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$NYX: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$SIAL: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$STJ: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$HSP: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$TMK: possibly delisted; no timezone found
+$PEAK: possibly delisted; no timezone found
+$LSI: possibly delisted; no timezone found
+$SWN: possibly delisted; no timezone found
+$NBL: possibly delisted; no timezone found
+$TIF: possibly delisted; no timezone found
+$SYMC: possibly delisted; no timezone found
+$HFC: possibly delisted; no timezone found
+$JWN: possibly delisted; no timezone found
+$HCP: possibly delisted; no timezone found
+$MXIM: possibly delisted; no timezone found
+$PKI: possibly delisted; no timezone found
+$RRD: possibly delisted; no timezone found
+$HES: possibly delisted; no timezone found
+$MJN: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$RAI: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$TWC: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$SNI: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$MWV: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$NVLS: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$KSU: possibly delisted; no timezone found
+$TSS: possibly delisted; no timezone found
+$JNPR: possibly delisted; no timezone found
+$MMC: possibly delisted; no timezone found
+$QEP: possibly delisted; no timezone found
+$NLOK: possibly delisted; no timezone found
+$MYL: possibly delisted; no timezone found
+$UTX: possibly delisted; no timezone found
+$LM: possibly delisted; no timezone found
+$VIAB: possibly delisted; no timezone found
+$PX: possibly delisted; no timezone found
+$RDC: possibly delisted; no timezone found
+$MRO: possibly delisted; no timezone found
+$HOLX: possibly delisted; no timezone found
+$JEC: possibly delisted; no timezone found
+$TGNA: possibly delisted; no timezone found
+$VAR: possibly delisted; no timezone found
+$LO: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$PGN: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$HSH: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$SWY: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$LLTC: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$PCP: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$LXK: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$PETM: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$PBCT: possibly delisted; no timezone found
+$PDCO: possibly delisted; no timezone found
+$PXD: possibly delisted; no timezone found
+$SEE: possibly delisted; no timezone found
+$PLL: possibly delisted; no timezone found
+$JCP: possibly delisted; no timezone found
+$LLL: possibly delisted; no timezone found
+$SATS: possibly delisted; no timezone found
+$SIVB: possibly delisted; no timezone found
+$NLSN: possibly delisted; no timezone found
+$SRCL: possibly delisted; no timezone found
+$MON: possibly delisted; no timezone found
+$IGT: possibly delisted; no timezone found
+$IPG: possibly delisted; no timezone found
+$TWTR: possibly delisted; no timezone found
+$HNZ: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$K: possibly delisted; no timezone found
+$MNK: possibly delisted; no timezone found
+$HRS: possibly delisted; no timezone found
+$RE: possibly delisted; no timezone found
+$RTN: possibly delisted; no timezone found
+Failed to get ticker 'RHT' reason: Failed to perform, curl: (28) Operation timed out after 10013 milliseconds with 0 bytes received. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.
+$RHT: possibly delisted; no timezone found
+
+75 Failed downloads:
+['KRFT', 'KORS', 'LVLT', 'JOY', 'NYX', 'SIAL', 'STJ', 'HSP', 'MJN', 'RAI', 'TWC', 'SNI', 'MWV', 'NVLS', 'LO', 'PGN', 'HSH', 'SWY', 'LLTC', 'PCP', 'LXK', 'PETM', 'HNZ']: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+['TMK', 'PEAK', 'LSI', 'SWN', 'NBL', 'TIF', 'SYMC', 'HFC', 'JWN', 'HCP', 'MXIM', 'PKI', 'RRD', 'HES', 'KSU', 'TSS', 'JNPR', 'MMC', 'NLOK', 'QEP', 'MYL', 'UTX', 'VIAB', 'LM', 'PX', 'RDC', 'MRO', 'HOLX', 'JEC', 'TGNA', 'VAR', 'PBCT', 'PDCO', 'PXD', 'SEE', 'PLL', 'JCP', 'LLL', 'SATS', 'SIVB', 'NLSN', 'SRCL', 'MON', 'IGT', 'IPG', 'TWTR', 'K', 'MNK', 'HRS', 'RE', 'RTN', 'RHT']: possibly delisted; no timezone found
+$WFM: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+$WRK: possibly delisted; no timezone found
+$XLNX: possibly delisted; no timezone found
+$WPX: possibly delisted; no timezone found
+$WLTW: possibly delisted; no timezone found
+$VIAC: possibly delisted; no timezone found
+$XL: possibly delisted; no timezone found
+$WCG: possibly delisted; no timezone found
+$WBA: possibly delisted; no timezone found
+$XEC: possibly delisted; no timezone found
+$WIN: possibly delisted; no timezone found
+$WYND: possibly delisted; no timezone found
+$X: possibly delisted; no timezone found
+
+13 Failed downloads:
+['WFM']: possibly delisted; no price data found  (1d 2010-06-03 00:00:00 -> 2026-07-10 00:00:00)
+['WRK', 'XLNX', 'WPX', 'WLTW', 'VIAC', 'XL', 'WCG', 'WBA', 'XEC', 'WIN', 'WYND', 'X']: possibly delisted; no timezone found
+net CAGR=17.84%  Sharpe=0.99  maxDD=-23.26%  coverage_bound=22.3%  forced_exits=1  extreme_returns=0  unscoreable_dates=0
+
+real	31m56.425s
+user	0m0.015s
+sys	0m0.031s

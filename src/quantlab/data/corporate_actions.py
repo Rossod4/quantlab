@@ -105,6 +105,21 @@ def _actions_cache_path(ticker: str, cache_dir: Path) -> Path:
     return Path(cache_dir) / ACTIONS_CACHE_SUBDIR / f"{ticker}.parquet"
 
 
+def read_cached_actions(ticker: str, cache_dir: Path) -> pd.DataFrame | None:
+    """Read `ticker`'s on-disk actions cache directly, bypassing the
+    staleness check `get_actions` enforces - `None` if nothing is cached yet.
+
+    For OFFLINE, READ-ONLY consumers that need a ticker's known corporate
+    actions but are not making a point-in-time decision (M04b's
+    `data/quality.py` price-jump scan: "was there a split on this ex-date"
+    is a historical-fact lookup over the WHOLE cached history, not a
+    look-ahead-sensitive `asof` gate) - using the staleness-checked
+    `get_actions` here would be the wrong tool (and could raise
+    `StaleActionsCacheError` for a scan that has nothing to do with any
+    decision date)."""
+    return read_cache(_actions_cache_path(ticker, cache_dir))
+
+
 def _actions_meta_path(ticker: str, cache_dir: Path) -> Path:
     """Sidecar metadata recording the date `ticker`'s actions cache was last
     (re)fetched - see module docstring's staleness section."""
@@ -185,49 +200,96 @@ class YFinanceCorporateActionsProvider(CorporateActionsProvider):
 
     def __init__(self, cache_dir: Path):
         self._cache_dir = Path(cache_dir)
+        # M04b work packet perf fix (plans/M04b-engine-perf.md): per-instance
+        # in-memory read-through cache of each ticker's on-disk parquet +
+        # `fetched_at` sidecar, keyed by ticker - populated on this
+        # PROVIDER INSTANCE'S first `get_actions` call for a ticker and
+        # reused for the rest of its lifetime (one instance per
+        # `run_backtest` call - `backtest/engine.py`'s
+        # `build_backtest_providers`). Before this, EVERY `get_actions` call
+        # re-read the ticker's parquet file AND its JSON sidecar from disk,
+        # even though neither ever changes within one run - and this method
+        # is called for essentially the WHOLE universe on EVERY rebalance,
+        # both by `PITDataContext._gated_actions_by_ticker`'s provider
+        # fallback and by `backtest/engine.py`'s
+        # `_FilteringConstituentsProvider.membership()` probe (which does
+        # NOT go through the run-level `actions_store` at all - see that
+        # class's docstring). Profiled on the real 2012-2026 momentum run:
+        # ~17,000 `get_actions` calls driving ~19,000 `read_parquet` calls,
+        # ~58s cumulative. The STALENESS CHECK below is completely
+        # UNCHANGED - it still re-evaluates `end_ts > fetched_at` on every
+        # single call with that call's own `end` argument; only the DISK
+        # READ producing `cached`/`fetched_at` is memoised - and even that
+        # is invalidated and re-read once whenever the CACHED entry looks
+        # stale (see `get_actions` below), so an out-of-band
+        # `refresh_actions_cache()` call is still picked up correctly.
+        self._read_cache: dict[str, tuple[pd.DataFrame, pd.Timestamp | None]] = {}
 
     def get_actions(self, ticker: str, start: object, end: object) -> pd.DataFrame:
-        cache_path = _actions_cache_path(ticker, self._cache_dir)
-        cached = read_cache(cache_path)
-        if cached is None:
-            try:
-                cached = _download_actions(ticker)
-            except (requests.RequestException, OSError) as exc:
-                # A failed download must NOT be written to the cache: doing
-                # so would freeze a transient network error as "this ticker
-                # has no actions, ever" - exactly the frozen-truncation
-                # hazard plans/QUANT-NOTES.md's M01 note flags (and which
-                # data/survivorship.py exists to measure on the price side).
-                # Not caching means the next call re-attempts the fetch.
-                # Only network-level failures are swallowed here (
-                # requests.RequestException covers everything yfinance's
-                # requests-based transport raises; OSError covers raw
-                # socket/curl-level errors from alternate transports) - a
-                # genuine yfinance API/parsing bug still surfaces loudly.
-                #
-                # VERDICT.md (M02b re-review) finding 2: returning an empty
-                # frame here used to silently disable adjustment - before
-                # M02b, "no actions" was benign metadata; after M02b it
-                # means "no as-of adjustment", so a transient blip would
-                # make prices() return the raw, split-distorted series with
-                # no error. Raise instead of degrading silently.
-                raise ActionsFetchError(
-                    f"{ticker}: failed to fetch corporate actions ({exc!r}) - refusing to "
-                    'treat this as "no actions", which would silently disable the as-of '
-                    "adjustment replay for this ticker. Not cached; retry once the "
-                    "underlying failure clears."
-                ) from exc
-            write_cache(cached, cache_path)
-            _write_actions_cache_meta(ticker, self._cache_dir)
-
         end_ts = normalize_timestamp(end)
-        fetched_at = _read_actions_cache_fetched_at(ticker, self._cache_dir)
+
+        def _stale(fetched_at: pd.Timestamp | None) -> bool:
+            return fetched_at is None or end_ts > fetched_at
+
+        if ticker in self._read_cache:
+            cached, fetched_at = self._read_cache[ticker]
+            if _stale(fetched_at):
+                # The in-memory snapshot looks stale for THIS call's `end` -
+                # re-read from disk once before concluding it is genuinely
+                # stale, in case `refresh_actions_cache()` (a module-level
+                # function, independent of this instance's cache - see its
+                # own docstring) updated the sidecar since we cached this
+                # read. Only reached on the (rare, exceptional) stale path;
+                # every ordinary call is served straight from memory above.
+                refreshed = read_cache(_actions_cache_path(ticker, self._cache_dir))
+                if refreshed is not None:
+                    cached = refreshed
+                    fetched_at = _read_actions_cache_fetched_at(ticker, self._cache_dir)
+                    self._read_cache[ticker] = (cached, fetched_at)
+        else:
+            cache_path = _actions_cache_path(ticker, self._cache_dir)
+            cached = read_cache(cache_path)
+            if cached is None:
+                try:
+                    cached = _download_actions(ticker)
+                except (requests.RequestException, OSError) as exc:
+                    # A failed download must NOT be written to the cache, nor
+                    # to `self._read_cache`: doing so would freeze a
+                    # transient network error as "this ticker has no
+                    # actions, ever" - exactly the frozen-truncation hazard
+                    # plans/QUANT-NOTES.md's M01 note flags (and which
+                    # data/survivorship.py exists to measure on the price
+                    # side). Not caching means the next call re-attempts the
+                    # fetch. Only network-level failures are swallowed here
+                    # (requests.RequestException covers everything
+                    # yfinance's requests-based transport raises; OSError
+                    # covers raw socket/curl-level errors from alternate
+                    # transports) - a genuine yfinance API/parsing bug still
+                    # surfaces loudly.
+                    #
+                    # VERDICT.md (M02b re-review) finding 2: returning an
+                    # empty frame here used to silently disable adjustment -
+                    # before M02b, "no actions" was benign metadata; after
+                    # M02b it means "no as-of adjustment", so a transient
+                    # blip would make prices() return the raw,
+                    # split-distorted series with no error. Raise instead of
+                    # degrading silently.
+                    raise ActionsFetchError(
+                        f"{ticker}: failed to fetch corporate actions ({exc!r}) - refusing "
+                        'to treat this as "no actions", which would silently disable the '
+                        "as-of adjustment replay for this ticker. Not cached; retry once "
+                        "the underlying failure clears."
+                    ) from exc
+                write_cache(cached, cache_path)
+                _write_actions_cache_meta(ticker, self._cache_dir)
+            fetched_at = _read_actions_cache_fetched_at(ticker, self._cache_dir)
+            self._read_cache[ticker] = (cached, fetched_at)
+
         # See module docstring's staleness section: a missing fetch date is
         # treated the SAME as a known-stale one - never silently trusted.
-        if fetched_at is None or end_ts > fetched_at:
-            if fetched_at is None:
-                fetched_at_desc = "unknown (no fetch-time metadata recorded)"
-            else:
+        if _stale(fetched_at):
+            fetched_at_desc = "unknown (no fetch-time metadata recorded)"
+            if fetched_at is not None:
                 fetched_at_desc = str(fetched_at.date())
             raise StaleActionsCacheError(
                 f"{ticker}: actions cache staleness check failed for asof={end_ts.date()} "
@@ -247,7 +309,16 @@ def refresh_actions_cache(ticker: str, cache_dir: Path) -> pd.DataFrame:
     for a ticker - this provider is otherwise fetch-once-forever and never
     refreshes opportunistically. A download failure here propagates (unlike
     `get_actions`'s opportunistic first fetch): a caller explicitly asking
-    for a refresh needs to know it did not happen, not get a silent no-op."""
+    for a refresh needs to know it did not happen, not get a silent no-op.
+
+    A module-level function, deliberately independent of any
+    `YFinanceCorporateActionsProvider` instance's own per-instance
+    in-memory read cache (`__init__`'s `self._read_cache`, M04b perf fix) -
+    calling this while a live instance already holds a STALE in-memory
+    entry for the same ticker would not update that instance's view until
+    it is reconstructed. Not a hazard today (`refresh_actions_cache` has no
+    operational caller yet - see module docstring's M09 note), but worth
+    knowing before wiring one into a long-lived provider instance."""
     fresh = _download_actions(ticker)
     write_cache(fresh, _actions_cache_path(ticker, cache_dir))
     _write_actions_cache_meta(ticker, cache_dir)

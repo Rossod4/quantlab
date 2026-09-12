@@ -275,3 +275,122 @@ def test_price_availability_from_cache_surfaces_a_real_masked_truncation_end_to_
     assert "MASKED" in report.masked_tickers[2020]
     # Both names lack usable coverage by 2020 (one masked, one never cached).
     assert report.overall_bound == pytest.approx(100.0)
+
+
+# -- quant-gate VERDICT.md cycle 1 finding 2: quarantine ---------------------
+
+
+def test_price_availability_reports_quarantined_ticker_as_lacking_data(tmp_path):
+    """A quarantined ticker must report has_data=False, quarantined=True -
+    REGARDLESS of what its real parquet contains (the exact real-world case:
+    PTV/BMC/TIE all have healthy-looking parquet files; the DATA is corrupt)."""
+    from quantlab.data.cache import write_quarantine_meta
+
+    cached = pd.DataFrame(
+        {
+            "ticker": ["PTV"],
+            "open": [22_500.0],
+            "high": [22_500.0],
+            "low": [22_500.0],
+            "close": [22_500.0],
+            "adj_close": [22_500.0],
+            "volume": [1000],
+        },
+        index=pd.DatetimeIndex(["2020-06-30"], name="date"),
+    )
+    write_cache(cached, price_cache_path("PTV", tmp_path))
+    write_price_cache_meta("PTV", "2015-01-01", "2020-06-30", tmp_path)
+    write_quarantine_meta("PTV", ["zero_volume_fraction:47.7%"], tmp_path)
+
+    availability = price_availability_from_cache(["PTV"], tmp_path)
+
+    assert availability["PTV"].has_data is False
+    assert availability["PTV"].quarantined is True
+
+
+def test_coverage_gap_tracks_quarantined_tickers_separately_from_masked():
+    tickers = ["QUARANTINED", "CLEAN"]
+    universe_history = _universe_history(tickers, "2020-01-01")
+    availability = {
+        "QUARANTINED": PriceAvailability(has_data=False, quarantined=True),
+        "CLEAN": PriceAvailability(has_data=True, last_bar_date=pd.Timestamp("2020-12-31")),
+    }
+
+    report = coverage_gap(universe_history, availability, "2020-01-01", "2020-12-31")
+
+    assert report.quarantined_tickers[2020] == ["QUARANTINED"]
+    assert report.masked_tickers[2020] == []
+    assert report.overall_bound == pytest.approx(50.0)
+
+
+# -- masked_start (M04b quant-gate cycle-2 review) ---------------------------
+
+
+def test_price_availability_populates_masked_start_when_membership_predates_first_bar(tmp_path):
+    """A ticker whose point-in-time membership began before its cached
+    history's first bar (a reused-symbol new listing's own clean data
+    cannot stand in for the original constituent's earlier history)."""
+    cached = pd.DataFrame(
+        {
+            "ticker": ["EA"],
+            "open": [150.0],
+            "high": [150.0],
+            "low": [150.0],
+            "close": [150.0],
+            "adj_close": [150.0],
+            "volume": [50_000],
+        },
+        index=pd.DatetimeIndex(["2026-07-17"], name="date"),
+    )
+    write_cache(cached, price_cache_path("EA", tmp_path))
+    membership = {"EA": pd.Timestamp("2002-07-22")}
+
+    availability = price_availability_from_cache(["EA"], tmp_path, membership)
+
+    assert availability["EA"].has_data is True
+    assert availability["EA"].masked_start == pd.Timestamp("2026-07-17")
+
+
+def test_price_availability_masked_start_none_for_a_genuine_new_member(tmp_path):
+    cached = pd.DataFrame(
+        {
+            "ticker": ["AMTM"],
+            "open": [50.0],
+            "high": [50.0],
+            "low": [50.0],
+            "close": [50.0],
+            "adj_close": [50.0],
+            "volume": [10_000],
+        },
+        index=pd.DatetimeIndex(["2024-09-24"], name="date"),
+    )
+    write_cache(cached, price_cache_path("AMTM", tmp_path))
+    membership = {"AMTM": pd.Timestamp("2024-09-24")}
+
+    availability = price_availability_from_cache(["AMTM"], tmp_path, membership)
+
+    assert availability["AMTM"].masked_start is None
+
+
+def test_coverage_gap_tracks_masked_start_tickers_and_counts_them_as_lacking():
+    """REUSED was ALREADY a point-in-time member in 2019, but its cached
+    history (a reused-symbol new listing) doesn't start until mid-2020 - so
+    2019's reference date falls before real data exists (lacking), while
+    2020's reference date (year-end) falls after it (no longer lacking)."""
+    tickers = ["REUSED", "CLEAN"]
+    universe_history = _universe_history(tickers, "2019-01-01")
+    availability = {
+        "REUSED": PriceAvailability(
+            has_data=True,
+            last_bar_date=pd.Timestamp("2020-12-31"),
+            masked_start=pd.Timestamp("2020-06-01"),
+        ),
+        "CLEAN": PriceAvailability(has_data=True, last_bar_date=pd.Timestamp("2020-12-31")),
+    }
+
+    report = coverage_gap(universe_history, availability, "2019-01-01", "2020-12-31")
+
+    assert report.masked_start_tickers[2019] == ["REUSED"]
+    assert report.by_year.loc[2019] == pytest.approx(50.0)
+    assert report.masked_start_tickers[2020] == []
+    assert report.by_year.loc[2020] == pytest.approx(0.0)

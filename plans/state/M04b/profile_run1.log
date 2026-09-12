@@ -1,0 +1,5 @@
+net CAGR=18.76%  Sharpe=1.50  maxDD=-7.60%  coverage_bound=22.3%  forced_exits=0  extreme_returns=0  unscoreable_dates=0
+
+real	3m34.340s
+user	0m0.030s
+sys	0m0.000s

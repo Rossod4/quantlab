@@ -21,6 +21,7 @@ agents, enforce the protocol, and carry gate findings forward.
 | M05 validation I | ✅ merged 2026-09-11 (416 tests; gate REJECT→ACCEPT; sub-period first-return bug fixed) |
 | M06 validation II | ✅ merged 2026-09-12 (gate ACCEPT cycle 3 after Alex approved a third cycle; PSR/DSR footing, headline pinning, honest subperiod_oof_sharpe) |
 | **M07 reporting** | 🔵 **IN PROGRESS** on branch `m07-reporting` — packet plans/M07-reporting.md |
+| M08 paper trading | 🔵 IN PROGRESS in parallel worktree `..\quantlab-m08` (branch `m08-paper-trading`) — packet plans/M08-paper-trading.md; merge after M07 (overlap expected only in cli.py and plan docs) |
 | M04b engine perf | 🔵 in parallel worktree `..\quantlab-m04b` (branch `m04b-engine-perf`): calendar bounds, negative price cache, panel store, QualityGate wired with quarantine + membership-based symbol-reuse detector (42 names), unscored self-reported; full real run 8m32s; gate REJECT→ACCEPT cycle 2 (2026-09-12); ✅ merged to main 2026-09-12 (492 tests). Worktree can be removed after M06 merges. |
 | M04–M09 | packets not yet written — write each just-in-time from the template in PROTOCOL.md, folding in QUANT-NOTES items addressed to it |
 

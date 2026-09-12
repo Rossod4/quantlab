@@ -462,3 +462,168 @@ def test_assert_no_future_dates_raises_lookahead_error_on_violation():
 def test_assert_no_future_dates_passes_when_all_dates_le_asof():
     dates = pd.DatetimeIndex(["2020-01-01", "2020-01-10"])
     _assert_no_future_dates(dates, pd.Timestamp("2020-01-15"), context="test")  # no raise
+
+
+# -- window clamp to the calendar's pinned first session (M04b item 2) ------
+
+
+def test_prices_window_clamped_to_calendar_first_session_does_not_raise():
+    """A lookback generous enough that the naive (unclamped) window would
+    reach before the calendar's pinned first session (1990-01-02) must not
+    raise `DateOutOfBounds` - `_sliced_price_panel` clamps the window
+    instead, and the caller simply gets fewer sessions than requested."""
+    panel = _price_panel(pd.bdate_range("1990-01-02", "1990-06-29"))
+    ctx = _context("1990-06-01", DataRequirements(price_lookback_days=5000), panel=panel)
+
+    result = ctx.prices(["AAA"], 5000)  # would raise DateOutOfBounds without the M04b clamp
+
+    assert (result.index <= pd.Timestamp("1990-06-01")).all()
+    assert result.index.min() >= pd.Timestamp("1990-01-02")
+
+
+# -- run-level PricePanelStore (M04b work packet item 4) ---------------------
+
+
+def test_panel_store_backed_context_matches_provider_backed_context_byte_for_byte():
+    """M04b acceptance criterion 4(a): a `PITDataContext` given a
+    `PricePanelStore` built from the SAME provider must produce
+    byte-identical `prices()`, `prices_for_returns()`, `actions()` and
+    `fundamentals()` output to one using the provider directly."""
+    from quantlab.backtest.panel_store import PricePanelStore
+
+    panel = _price_panel(pd.bdate_range("2020-01-01", "2020-01-31"))
+    provider = _FakePriceProvider(panel)
+    store = PricePanelStore.build(provider, ["AAA", "BBB"], "2019-01-01", "2020-12-31")
+    requirements = DataRequirements(
+        price_lookback_days=5,
+        fundamental_fields=frozenset({"ttm_eps"}),
+        needs_actions=True,
+    )
+    actions = pd.DataFrame(
+        {"ticker": ["AAA"], "action_type": ["dividend"], "value": [0.5]},
+        index=pd.DatetimeIndex(["2020-01-10"], name="date"),
+    )
+
+    def _build(panel_store):
+        return PITDataContext(
+            asof="2020-01-15",
+            requirements=requirements,
+            price_provider=provider,
+            constituents_provider=_FakeConstituentsProvider(["AAA", "BBB"]),
+            fundamentals_provider=_FakeFundamentalsProvider(FUNDAMENTALS_FIXED),
+            corporate_actions_provider=_FakeCorporateActionsProvider(actions),
+            accounting=True,
+            panel_store=panel_store,
+        )
+
+    provider_ctx, store_ctx = _build(None), _build(store)
+
+    pd.testing.assert_frame_equal(provider_ctx.prices(["AAA"], 5), store_ctx.prices(["AAA"], 5))
+    pd.testing.assert_frame_equal(
+        provider_ctx.prices_for_returns(["AAA"], 5), store_ctx.prices_for_returns(["AAA"], 5)
+    )
+    pd.testing.assert_frame_equal(provider_ctx.actions("AAA"), store_ctx.actions("AAA"))
+    assert provider_ctx.fundamentals("AAA") == store_ctx.fundamentals("AAA")
+
+
+def test_panel_store_missing_ticker_falls_back_to_the_provider():
+    """A ticker the store was never built with must still work, transparently
+    falling back to a direct provider call (M04b work packet item 4)."""
+    from quantlab.backtest.panel_store import PricePanelStore
+
+    panel = _price_panel(pd.bdate_range("2020-01-01", "2020-01-31"), ticker="AAA")
+    provider = _FakePriceProvider(panel)
+    store = PricePanelStore.build(provider, ["BBB"], "2019-01-01", "2020-12-31")  # AAA never loaded
+    ctx = PITDataContext(
+        asof="2020-01-15",
+        requirements=DataRequirements(price_lookback_days=5),
+        price_provider=provider,
+        constituents_provider=_FakeConstituentsProvider(["AAA"]),
+        fundamentals_provider=_FakeFundamentalsProvider(FUNDAMENTALS_FIXED),
+        corporate_actions_provider=_FakeCorporateActionsProvider(_empty_actions()),
+        panel_store=store,
+    )
+
+    result = ctx.prices(["AAA"], 5)
+
+    assert not result.empty
+    assert set(result["ticker"]) == {"AAA"}
+
+
+def test_panel_store_is_untrusted_hostile_post_asof_rows_never_reach_prices():
+    """M04b acceptance criterion 6: a store containing rows dated AFTER
+    `asof` must produce a byte-identical `prices()` panel with or without
+    those rows - the store is untrusted exactly like a provider, since the
+    SAME hard-slice-then-assert in `_sliced_price_panel` runs regardless of
+    whether `raw` came from a provider or a store."""
+    from quantlab.backtest.panel_store import PricePanelStore
+
+    panel = _price_panel(pd.bdate_range("2020-01-01", "2020-01-31"))
+    hostile_rows = _price_panel(pd.bdate_range("2020-06-01", "2020-06-05"), start_price=9999.0)
+    hostile_panel = pd.concat([panel, hostile_rows]).sort_index()
+
+    clean_store = PricePanelStore.build(
+        _FakePriceProvider(panel), ["AAA"], "2019-01-01", "2020-12-31"
+    )
+    hostile_store = PricePanelStore.build(
+        _FakePriceProvider(hostile_panel), ["AAA"], "2019-01-01", "2020-12-31"
+    )
+    requirements = DataRequirements(price_lookback_days=5)
+
+    def _build(store):
+        return PITDataContext(
+            asof="2020-01-15",
+            requirements=requirements,
+            price_provider=_FakePriceProvider(panel),
+            constituents_provider=_FakeConstituentsProvider(["AAA"]),
+            fundamentals_provider=_FakeFundamentalsProvider(FUNDAMENTALS_FIXED),
+            corporate_actions_provider=_FakeCorporateActionsProvider(_empty_actions()),
+            panel_store=store,
+        )
+
+    clean_result = _build(clean_store).prices(["AAA"], 5)
+    hostile_result = _build(hostile_store).prices(["AAA"], 5)
+
+    pd.testing.assert_frame_equal(clean_result, hostile_result, check_freq=False)
+    assert pd.Timestamp("2020-06-01") not in hostile_result.index
+
+
+# -- run-level actions store (M04b work packet item 4) -----------------------
+
+
+def test_actions_store_hit_is_used_by_prices_and_the_provider_is_never_called():
+    """A ticker present in `actions_store` feeds `_gated_actions_by_ticker`
+    (used by `prices()`/`fundamentals()`, sliced to `<= asof` exactly as a
+    provider-fetched frame would be), and the real provider is never called
+    for it. `actions()` itself is a separate accessor that does not consult
+    `actions_store` (only `prices()`/`fundamentals()`'s shared gate does -
+    see data/pit.py's `_gated_actions_by_ticker`)."""
+    actions = pd.DataFrame(
+        {"ticker": ["AAA", "AAA"], "action_type": ["dividend", "split"], "value": [0.5, 2.0]},
+        index=pd.DatetimeIndex(["2020-01-10", "2020-02-01"], name="date"),
+    )
+    provider = _CountingCorporateActionsProvider(actions)
+    panel = _price_panel(pd.bdate_range("2020-01-01", "2020-01-31"))
+    ctx_with_store = PITDataContext(
+        asof="2020-01-15",
+        requirements=DataRequirements(price_lookback_days=5),
+        price_provider=_FakePriceProvider(panel),
+        constituents_provider=_FakeConstituentsProvider(["AAA"]),
+        fundamentals_provider=_FakeFundamentalsProvider(FUNDAMENTALS_FIXED),
+        corporate_actions_provider=provider,
+        actions_store={"AAA": actions},
+    )
+    ctx_without_store = PITDataContext(
+        asof="2020-01-15",
+        requirements=DataRequirements(price_lookback_days=5),
+        price_provider=_FakePriceProvider(panel),
+        constituents_provider=_FakeConstituentsProvider(["AAA"]),
+        fundamentals_provider=_FakeFundamentalsProvider(FUNDAMENTALS_FIXED),
+        corporate_actions_provider=_CountingCorporateActionsProvider(actions),
+    )
+
+    with_store_result = ctx_with_store.prices(["AAA"], 5)
+    without_store_result = ctx_without_store.prices(["AAA"], 5)
+
+    pd.testing.assert_frame_equal(with_store_result, without_store_result)
+    assert provider.call_count == 0

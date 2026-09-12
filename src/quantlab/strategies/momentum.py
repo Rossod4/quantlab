@@ -241,4 +241,20 @@ class MomentumStrategy(Strategy):
             for ticker in shorts:
                 weights[ticker] = per_short
 
-        return TargetWeights(asof=date, weights=weights, strategy_id=self.strategy_id)
+        # M04b quant-gate VERDICT.md cycle 1 finding 3: record ONLY names
+        # this strategy itself could not score - lacking a valid price at
+        # either the formation (skip) or lookback date, per
+        # `compute_momentum_signal`'s own `.notna()` guard (see that
+        # function's docstring). A declared-universe name absent from
+        # `scores.index` failed that guard; a name WITH a valid score that
+        # simply wasn't picked into the top/bottom N is NOT unscored - it
+        # was scored, just not selected.
+        unscored = {
+            ticker: "missing formation or lookback price"
+            for ticker in tickers
+            if ticker not in scores.index
+        }
+
+        return TargetWeights(
+            asof=date, weights=weights, strategy_id=self.strategy_id, unscored=unscored
+        )

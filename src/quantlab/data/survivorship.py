@@ -44,11 +44,30 @@ class PriceAvailability:
         REQUESTED through this date, but `last_bar_date` is earlier, the gap
         between them is a "masked truncation" (see module docstring). None
         if no such metadata is known, or it doesn't exceed `last_bar_date`.
+    `quarantined`: whether `data/quality.py`'s `scan_price_cache` judged this
+        ticker's cached history corrupt (a merged/reused-symbol series - see
+        that module's docstring) and quarantined it. A quarantined ticker
+        reports `has_data=False` here REGARDLESS of what its real parquet
+        contains (M04b quant-gate VERDICT.md cycle 1 finding 2) - its data
+        is judged untrustworthy, not merely absent, but the coverage-gap
+        effect on a strategy is identical: the name is invisible to it.
+    `masked_start`: the mirror of `masked_end` on the START side (M04b
+        quant-gate cycle-2 review): if the ticker was ALREADY a point-in-time
+        index member before its cached history's first bar, the ticker's
+        early membership span is invisible to any strategy even though
+        `has_data=True` and the cache is not otherwise flagged - e.g. a
+        symbol reused for a new listing (`data/quality.py`'s
+        `symbol_reuse_new_listing_reason`) reports real, clean-looking data
+        that nonetheless cannot cover the ORIGINAL constituent's own
+        history. `None` if the ticker's membership start is unknown, or
+        membership began on/after the first cached bar (nothing masked).
     """
 
     has_data: bool
     last_bar_date: pd.Timestamp | None = None
     masked_end: pd.Timestamp | None = None
+    quarantined: bool = False
+    masked_start: pd.Timestamp | None = None
 
 
 @dataclass(frozen=True)
@@ -65,11 +84,26 @@ class CoverageReport:
     `masked_tickers`: year -> sorted list of tickers whose coverage loss in
         that year comes specifically from a cache-metadata-masked
         truncation (see module docstring) rather than genuinely absent data.
+    `quarantined_tickers`: year -> sorted list of tickers whose coverage
+        loss in that year comes specifically from a quality-scan quarantine
+        (M04b quant-gate VERDICT.md cycle 1 finding 2 - `PriceAvailability.
+        quarantined`) rather than genuinely absent data or a masked
+        truncation. A ticker can appear here without appearing in
+        `masked_tickers` (or vice versa) - they are independent reasons a
+        member is "lacking".
+    `masked_start_tickers`: year -> sorted list of tickers whose coverage
+        loss in that year comes from a START-side masked truncation
+        (`PriceAvailability.masked_start` - cycle-2 review) - the ticker was
+        already a point-in-time member before its cached history begins
+        (commonly a reused-symbol new listing whose OWN clean data cannot
+        stand in for the original constituent's history).
     """
 
     by_year: pd.Series
     overall_bound: float
     masked_tickers: dict[int, list[str]] = field(default_factory=dict)
+    quarantined_tickers: dict[int, list[str]] = field(default_factory=dict)
+    masked_start_tickers: dict[int, list[str]] = field(default_factory=dict)
 
 
 def _as_of_membership(universe_history: pd.DataFrame, asof: pd.Timestamp) -> list[str]:
@@ -120,6 +154,8 @@ def coverage_gap(
 
     by_year: dict[int, float] = {}
     masked_tickers: dict[int, list[str]] = {}
+    quarantined_tickers: dict[int, list[str]] = {}
+    masked_start_tickers: dict[int, list[str]] = {}
 
     for year in range(start_ts.year, end_ts.year + 1):
         year_end = min(pd.Timestamp(year=year, month=12, day=31), end_ts)
@@ -134,14 +170,20 @@ def coverage_gap(
         if not members:
             by_year[year] = 0.0
             masked_tickers[year] = []
+            quarantined_tickers[year] = []
+            masked_start_tickers[year] = []
             continue
 
         lacking: set[str] = set()
         masked_this_year: list[str] = []
+        quarantined_this_year: list[str] = []
+        masked_start_this_year: list[str] = []
         for ticker in members:
             avail = price_availability.get(ticker)
             if avail is None or not avail.has_data:
                 lacking.add(ticker)
+                if avail is not None and avail.quarantined:
+                    quarantined_this_year.append(ticker)
                 continue
             if (
                 avail.masked_end is not None
@@ -150,19 +192,30 @@ def coverage_gap(
             ):
                 lacking.add(ticker)
                 masked_this_year.append(ticker)
+            if avail.masked_start is not None and year_end < avail.masked_start:
+                lacking.add(ticker)
+                masked_start_this_year.append(ticker)
 
         by_year[year] = 100.0 * len(lacking) / len(members)
         masked_tickers[year] = sorted(masked_this_year)
+        quarantined_tickers[year] = sorted(quarantined_this_year)
+        masked_start_tickers[year] = sorted(masked_start_this_year)
 
     by_year_series = pd.Series(by_year, name="pct_lacking_coverage", dtype=float).sort_index()
     overall_bound = float(by_year_series.max()) if not by_year_series.empty else 0.0
     return CoverageReport(
-        by_year=by_year_series, overall_bound=overall_bound, masked_tickers=masked_tickers
+        by_year=by_year_series,
+        overall_bound=overall_bound,
+        masked_tickers=masked_tickers,
+        quarantined_tickers=quarantined_tickers,
+        masked_start_tickers=masked_start_tickers,
     )
 
 
 def price_availability_from_cache(
-    tickers: list[str], cache_dir: Path
+    tickers: list[str],
+    cache_dir: Path,
+    membership_start_by_ticker_map: dict[str, pd.Timestamp] | None = None,
 ) -> dict[str, PriceAvailability]:
     """Build `coverage_gap`'s `price_availability` argument directly from the
     on-disk price cache (M04 work packet / plans/QUANT-NOTES.md's M02
@@ -177,23 +230,53 @@ def price_availability_from_cache(
     request that reached further than the data actually goes - the signature
     of a frozen truncation), else `None` (no metadata, or the metadata
     doesn't exceed the real last bar - nothing masked).
+
+    `membership_start_by_ticker_map` (optional, from `data/quality.py`'s
+    `membership_start_by_ticker`): when supplied, ALSO populates
+    `masked_start` - the START-side mirror of `masked_end` - whenever the
+    ticker's point-in-time membership began before its cached history's
+    first bar (a reused-symbol new listing's own clean data cannot stand in
+    for the original constituent's earlier history it displaced).
+
+    A ticker whose sidecar carries `quarantined: true` (M04b quant-gate
+    VERDICT.md cycle 1 finding 2 - `data/quality.py`'s `scan_price_cache`)
+    ALWAYS reports `has_data=False, quarantined=True` here, REGARDLESS of
+    what its parquet actually contains - quarantine means the cached data is
+    judged untrustworthy (a merged/reused-symbol series), and a strategy
+    genuinely cannot see it (`has_sufficient_price_cache` refuses to serve
+    it), so survivorship must count it exactly like "no data at all", not
+    "fully covered".
     """
     result: dict[str, PriceAvailability] = {}
     for ticker in tickers:
+        meta = read_json_meta(price_meta_path(ticker, cache_dir))
+        if meta is not None and meta.get("quarantined"):
+            result[ticker] = PriceAvailability(has_data=False, quarantined=True)
+            continue
+
         cached = read_cache(price_cache_path(ticker, cache_dir))
         if cached is None or cached.empty:
             result[ticker] = PriceAvailability(has_data=False)
             continue
 
         last_bar_date = pd.Timestamp(cached.index.max())
+        first_bar_date = pd.Timestamp(cached.index.min())
         masked_end: pd.Timestamp | None = None
-        meta = read_json_meta(price_meta_path(ticker, cache_dir))
         if meta is not None and "requested_end" in meta:
             requested_end = pd.Timestamp(meta["requested_end"])
             if requested_end > last_bar_date:
                 masked_end = requested_end
 
+        masked_start: pd.Timestamp | None = None
+        if membership_start_by_ticker_map is not None:
+            membership_start = membership_start_by_ticker_map.get(ticker)
+            if membership_start is not None and membership_start < first_bar_date:
+                masked_start = first_bar_date
+
         result[ticker] = PriceAvailability(
-            has_data=True, last_bar_date=last_bar_date, masked_end=masked_end
+            has_data=True,
+            last_bar_date=last_bar_date,
+            masked_end=masked_end,
+            masked_start=masked_start,
         )
     return result

@@ -184,6 +184,12 @@ class BacktestResult:
             "by_year": {str(y): v for y, v in self.coverage_report.by_year.items()},
             "overall_bound": self.coverage_report.overall_bound,
             "masked_tickers": {str(y): v for y, v in self.coverage_report.masked_tickers.items()},
+            "quarantined_tickers": {
+                str(y): v for y, v in self.coverage_report.quarantined_tickers.items()
+            },
+            "masked_start_tickers": {
+                str(y): v for y, v in self.coverage_report.masked_start_tickers.items()
+            },
         }
         (out / "coverage_report.json").write_text(json.dumps(coverage_json))
 
@@ -216,6 +222,12 @@ class BacktestResult:
             by_year=by_year,
             overall_bound=coverage_data["overall_bound"],
             masked_tickers={int(y): v for y, v in coverage_data["masked_tickers"].items()},
+            quarantined_tickers={
+                int(y): v for y, v in coverage_data.get("quarantined_tickers", {}).items()
+            },
+            masked_start_tickers={
+                int(y): v for y, v in coverage_data.get("masked_start_tickers", {}).items()
+            },
         )
 
         provenance = json.loads((out / "provenance.json").read_text())

@@ -14,8 +14,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from pydantic import BaseModel, ConfigDict
 
+from quantlab.backtest.panel_store import PricePanelStore
 from quantlab.core.calendar import prev_trading_day
 from quantlab.core.errors import UndeclaredDataError
 from quantlab.core.types import TargetWeights
@@ -30,6 +32,32 @@ from quantlab.data.providers.edgar_fundamentals import get_point_in_time_fundame
 from quantlab.data.providers.sp500_constituents import _membership_from_table
 from quantlab.data.requirements import DataRequirements
 from quantlab.strategies.base import Strategy
+
+# M04b work packet item 4, acceptance criterion 4(b): every canary below that
+# builds its own context via `_minimal_context` is parametrized over
+# `panel_store` None (the pre-M04b provider path) / built-from-the-same-
+# provider (the new store path) - a bias guard that only holds on one of the
+# two paths PITDataContext now supports is not really closed. `store_mode`
+# fixture params: "provider" (panel_store=None) and "panel_store" (a store
+# built from the SAME price provider the test already constructs, over a
+# deliberately wide range so it picks up every row that provider can ever
+# produce, adversarial rows included - see `_store_for`).
+
+
+@pytest.fixture(params=[False, True], ids=["provider", "panel_store"])
+def store_mode(request) -> bool:
+    return request.param
+
+
+def _store_for(use_store: bool, provider: PriceProvider, tickers: list[str]):
+    """`None` (provider path) or a `PricePanelStore` built from `provider`
+    over a deliberately wide date range - wide enough that every adversarial
+    fixed-panel provider in this file (which ignores the requested window
+    entirely) hands the WHOLE fixture panel, future-dated rows included, to
+    the store exactly as it would to a direct caller."""
+    if not use_store:
+        return None
+    return PricePanelStore.build(provider, tickers, "1900-01-01", "2100-01-01")
 
 
 class _AlwaysReturnsFullPanelPriceProvider(PriceProvider):
@@ -108,6 +136,7 @@ def _minimal_context(
     fundamentals_provider: FundamentalsProvider | None = None,
     constituents_provider: ConstituentsProvider | None = None,
     corporate_actions_provider: CorporateActionsProvider | None = None,
+    panel_store: PricePanelStore | None = None,
 ) -> PITDataContext:
     return PITDataContext(
         asof=asof,
@@ -119,13 +148,14 @@ def _minimal_context(
             pd.DataFrame(columns=["tag", "start", "end", "filed", "val"])
         ),
         corporate_actions_provider=corporate_actions_provider or _EmptyCorporateActionsProvider(),
+        panel_store=panel_store,
     )
 
 
 # -- (a) future-dated price row must be excluded ---------------------------
 
 
-def test_canary_future_dated_price_row_is_excluded_from_prices():
+def test_canary_future_dated_price_row_is_excluded_from_prices(store_mode):
     panel = pd.DataFrame(
         {
             "ticker": ["AAA", "AAA", "AAA"],
@@ -140,7 +170,10 @@ def test_canary_future_dated_price_row_is_excluded_from_prices():
     )
     provider = _AlwaysReturnsFullPanelPriceProvider(panel)
     ctx = _minimal_context(
-        "2020-01-15", DataRequirements(price_lookback_days=10), price_provider=provider
+        "2020-01-15",
+        DataRequirements(price_lookback_days=10),
+        price_provider=provider,
+        panel_store=_store_for(store_mode, provider, ["AAA"]),
     )
 
     result = ctx.prices(["AAA"], 10)
@@ -152,7 +185,7 @@ def test_canary_future_dated_price_row_is_excluded_from_prices():
 # -- (b) filing filed after asof, period before asof, must be excluded ------
 
 
-def test_canary_filing_filed_after_asof_is_excluded_from_fundamentals():
+def test_canary_filing_filed_after_asof_is_excluded_from_fundamentals(store_mode):
     facts = pd.DataFrame(
         [
             {
@@ -165,12 +198,14 @@ def test_canary_filing_filed_after_asof_is_excluded_from_fundamentals():
         ]
     )
     provider = _FactsBackedFundamentalsProvider(facts)
+    price_provider = _AlwaysReturnsFullPanelPriceProvider(pd.DataFrame())
     requirements = DataRequirements(fundamental_fields=frozenset({"stockholders_equity"}))
     ctx = _minimal_context(
         "2020-01-15",
         requirements,
-        price_provider=_AlwaysReturnsFullPanelPriceProvider(pd.DataFrame()),
+        price_provider=price_provider,
         fundamentals_provider=provider,
+        panel_store=_store_for(store_mode, price_provider, []),
     )
 
     result = ctx.fundamentals("AAA")
@@ -181,11 +216,13 @@ def test_canary_filing_filed_after_asof_is_excluded_from_fundamentals():
 # -- (c) universe() between membership rows returns the earlier row only ----
 
 
-def test_canary_universe_between_membership_rows_returns_earlier_row_only():
+def test_canary_universe_between_membership_rows_returns_earlier_row_only(store_mode):
+    price_provider = _AlwaysReturnsFullPanelPriceProvider(pd.DataFrame())
     ctx = _minimal_context(
         "2020-01-15",  # strictly between the 2020-01-01 and 2020-02-01 rows
         DataRequirements(needs_universe=True),
-        price_provider=_AlwaysReturnsFullPanelPriceProvider(pd.DataFrame()),
+        price_provider=price_provider,
+        panel_store=_store_for(store_mode, price_provider, []),
     )
 
     assert ctx.universe() == ["AAA"]
@@ -194,7 +231,7 @@ def test_canary_universe_between_membership_rows_returns_earlier_row_only():
 # -- (d) mutating a returned frame must not affect a fresh call -------------
 
 
-def test_canary_mutating_returned_frame_does_not_alter_fresh_call():
+def test_canary_mutating_returned_frame_does_not_alter_fresh_call(store_mode):
     panel = pd.DataFrame(
         {
             "ticker": ["AAA"],
@@ -209,7 +246,10 @@ def test_canary_mutating_returned_frame_does_not_alter_fresh_call():
     )
     provider = _AlwaysReturnsFullPanelPriceProvider(panel)
     ctx = _minimal_context(
-        "2020-01-15", DataRequirements(price_lookback_days=5), price_provider=provider
+        "2020-01-15",
+        DataRequirements(price_lookback_days=5),
+        price_provider=provider,
+        panel_store=_store_for(store_mode, provider, ["AAA"]),
     )
 
     first = ctx.prices(["AAA"], 5)
@@ -223,7 +263,7 @@ def test_canary_mutating_returned_frame_does_not_alter_fresh_call():
 # -- (e) signal-visible price access must not carry adj_close ---------------
 
 
-def test_canary_decision_path_prices_never_carry_adj_close():
+def test_canary_decision_path_prices_never_carry_adj_close(store_mode):
     panel = pd.DataFrame(
         {
             "ticker": ["AAA"],
@@ -238,7 +278,10 @@ def test_canary_decision_path_prices_never_carry_adj_close():
     )
     provider = _AlwaysReturnsFullPanelPriceProvider(panel)
     ctx = _minimal_context(
-        "2020-01-15", DataRequirements(price_lookback_days=5), price_provider=provider
+        "2020-01-15",
+        DataRequirements(price_lookback_days=5),
+        price_provider=provider,
+        panel_store=_store_for(store_mode, provider, ["AAA"]),
     )
 
     result = ctx.prices(["AAA"], 5)
@@ -250,7 +293,7 @@ def test_canary_decision_path_prices_never_carry_adj_close():
 # -- (f) action with ex-date AFTER asof must have zero effect on prices() ---
 
 
-def test_canary_future_dated_action_has_zero_effect_on_prices():
+def test_canary_future_dated_action_has_zero_effect_on_prices(store_mode):
     """M02b / VERDICT.md's actions-canary gap: a hostile
     CorporateActionsProvider returns a split dated AFTER asof (ignoring the
     requested window, like _AlwaysReturnsFullPanelPriceProvider does for
@@ -276,18 +319,21 @@ def test_canary_future_dated_action_has_zero_effect_on_prices():
         index=pd.DatetimeIndex(["2024-06-10"], name="date"),  # AFTER asof below
     )
     requirements = DataRequirements(price_lookback_days=2)
+    panel_store = _store_for(store_mode, price_provider, ["AAA"])
 
     ctx_with_future_split = _minimal_context(
         "2024-06-07",
         requirements,
         price_provider=price_provider,
         corporate_actions_provider=_AlwaysReturnsFullActionsProvider(future_split),
+        panel_store=panel_store,
     )
     ctx_without = _minimal_context(
         "2024-06-07",
         requirements,
         price_provider=price_provider,
         corporate_actions_provider=_EmptyCorporateActionsProvider(),
+        panel_store=panel_store,
     )
 
     with_split = ctx_with_future_split.prices(["AAA"], 2)
@@ -299,7 +345,7 @@ def test_canary_future_dated_action_has_zero_effect_on_prices():
 # -- (g) filing_lag_sessions can only ever RESTRICT visible filings ---------
 
 
-def test_canary_increasing_filing_lag_only_ever_narrows_visible_filings():
+def test_canary_increasing_filing_lag_only_ever_narrows_visible_filings(store_mode):
     """M03 orchestrator-authorised extension: `fundamentals(ticker, *,
     filing_lag_sessions=N)` steps its `filed <= effective_asof` gate back N
     further NYSE sessions. This exercises the REAL production extraction
@@ -339,11 +385,13 @@ def test_canary_increasing_filing_lag_only_ever_narrows_visible_filings():
             },
         ]
     )
+    price_provider = _AlwaysReturnsFullPanelPriceProvider(pd.DataFrame())
     ctx = _minimal_context(
         asof,
         DataRequirements(fundamental_fields=frozenset({"stockholders_equity"})),
-        price_provider=_AlwaysReturnsFullPanelPriceProvider(pd.DataFrame()),
+        price_provider=price_provider,
         fundamentals_provider=_FactsBackedFundamentalsProvider(facts),
+        panel_store=_store_for(store_mode, price_provider, []),
     )
 
     visible_by_lag = [
@@ -358,7 +406,7 @@ def test_canary_increasing_filing_lag_only_ever_narrows_visible_filings():
 # -- share-terms restatement -------------------------------------------------
 
 
-def test_canary_future_dated_split_has_zero_effect_on_fundamentals_share_terms():
+def test_canary_future_dated_split_has_zero_effect_on_fundamentals_share_terms(store_mode):
     """M03b (plans/M03b-share-terms.md): `fundamentals()` restates
     `shares_outstanding`/`ttm_eps` into as-of share terms using only split
     actions with ex-date in `(filed, asof]` (data/pit.py's
@@ -392,20 +440,24 @@ def test_canary_future_dated_split_has_zero_effect_on_fundamentals_share_terms()
         {"ticker": ["AAA"], "action_type": ["split"], "value": [4.0]},
         index=pd.DatetimeIndex([asof + pd.Timedelta(days=1)], name="date"),
     )
+    price_provider = _AlwaysReturnsFullPanelPriceProvider(pd.DataFrame())
+    panel_store = _store_for(store_mode, price_provider, [])
 
     ctx_with_future_split = _minimal_context(
         asof,
         requirements,
-        price_provider=_AlwaysReturnsFullPanelPriceProvider(pd.DataFrame()),
+        price_provider=price_provider,
         fundamentals_provider=_FactsBackedFundamentalsProvider(facts),
         corporate_actions_provider=_AlwaysReturnsFullActionsProvider(future_split),
+        panel_store=panel_store,
     )
     ctx_without = _minimal_context(
         asof,
         requirements,
-        price_provider=_AlwaysReturnsFullPanelPriceProvider(pd.DataFrame()),
+        price_provider=price_provider,
         fundamentals_provider=_FactsBackedFundamentalsProvider(facts),
         corporate_actions_provider=_EmptyCorporateActionsProvider(),
+        panel_store=panel_store,
     )
 
     with_split = ctx_with_future_split.fundamentals("AAA")

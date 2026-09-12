@@ -184,6 +184,78 @@ def test_equal_weight_across_all_holdings():
     assert sum(result.weights.values()) == pytest.approx(1.0, abs=1e-9)
 
 
+# -- TargetWeights.unscored (M04b quant-gate VERDICT.md cycle 1 finding 3) --
+
+
+def test_unscored_is_empty_when_every_declared_name_is_fully_scorable():
+    strat = ValueStrategy({"n_holdings": 1})
+    ctx = _basic_universe_ctx(strat)
+
+    result = strat.generate_targets(ctx, ASOF)
+
+    assert result.unscored == {}
+
+
+def test_unscored_records_missing_price():
+    strat = ValueStrategy({"n_holdings": 1})
+    tickers = ["CHEAP", "NOPRICE"]
+    price_panel = _price_row("CHEAP", ASOF, 10.0)  # NOPRICE has no price row at all
+    fundamentals = {
+        "CHEAP": _fundamentals(shares_outstanding=100.0),
+        "NOPRICE": _fundamentals(shares_outstanding=100.0),
+    }
+    ctx = _context(fundamentals, price_panel, tickers, strat.requires())
+
+    result = strat.generate_targets(ctx, ASOF)
+
+    assert result.unscored == {"NOPRICE": "missing price"}
+
+
+def test_unscored_records_missing_shares_outstanding():
+    strat = ValueStrategy({"n_holdings": 1})
+    tickers = ["CHEAP", "NOSHARES"]
+    price_panel = pd.concat([_price_row("CHEAP", ASOF, 10.0), _price_row("NOSHARES", ASOF, 20.0)])
+    fundamentals = {
+        "CHEAP": _fundamentals(shares_outstanding=100.0),
+        "NOSHARES": _fundamentals(shares_outstanding=None),
+    }
+    ctx = _context(fundamentals, price_panel, tickers, strat.requires())
+
+    result = strat.generate_targets(ctx, ASOF)
+
+    assert result.unscored == {"NOSHARES": "missing shares_outstanding"}
+
+
+def test_unscored_records_insufficient_fundamentals_for_a_composite_score():
+    """A ticker WITH a price and shares_outstanding (so it gets a `ratios`
+    row) but too few of the other three metrics available (< MIN_AVAILABLE_
+    METRICS=2) must still be reported as unscored, not silently dropped at
+    selection time."""
+    strat = ValueStrategy({"n_holdings": 1})
+    tickers = ["CHEAP", "THIN"]
+    price_panel = pd.concat([_price_row("CHEAP", ASOF, 10.0), _price_row("THIN", ASOF, 20.0)])
+    fundamentals = {
+        "CHEAP": _fundamentals(shares_outstanding=100.0),
+        # Only shares_outstanding known; every other ratio input is None/0,
+        # so pb/ev_ebitda/growth_adjusted_value are all NaN and pe is NaN
+        # too (ttm_eps=None) - zero of four metrics available.
+        "THIN": {
+            "shares_outstanding": 100.0,
+            "stockholders_equity": None,
+            "ttm_eps": None,
+            "ttm_ebitda": None,
+            "total_debt": 0.0,
+            "cash": None,
+            "annual_eps_growth": None,
+        },
+    }
+    ctx = _context(fundamentals, price_panel, tickers, strat.requires())
+
+    result = strat.generate_targets(ctx, ASOF)
+
+    assert result.unscored == {"THIN": "insufficient fundamentals for a composite score"}
+
+
 def test_fundamentals_declaration_matches_what_the_strategy_uses():
     strat = ValueStrategy({})
     assert strat.requires().fundamental_fields == FUNDAMENTAL_FIELDS

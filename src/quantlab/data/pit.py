@@ -91,11 +91,16 @@ degrading it to an unadjusted result; there is no silent fallback.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from quantlab.core.calendar import is_trading_day, prev_trading_day, trading_days
+from quantlab.core.calendar import (
+    calendar_first_session,
+    is_trading_day,
+    prev_trading_day,
+    trading_days,
+)
 from quantlab.core.errors import LookaheadError, UndeclaredDataError
 from quantlab.core.types import normalize_timestamp
 from quantlab.data.adjustment import apply_asof_adjustment
@@ -106,6 +111,13 @@ from quantlab.data.interfaces import (
     PriceProvider,
 )
 from quantlab.data.requirements import DataRequirements
+
+if TYPE_CHECKING:
+    # TYPE_CHECKING-only import (mirrors data/interfaces.py's own PlatformConfig
+    # pattern) so this module never depends on `backtest` at runtime - a
+    # panel store is a `backtest`-layer performance optimization, `data` is
+    # lower-level than that.
+    from quantlab.backtest.panel_store import PricePanelStore
 
 # "close" here is the M02b as-of adjustment replay (data/adjustment.py),
 # not the provider's raw value - see module docstring. "raw_close" carries
@@ -234,6 +246,8 @@ class PITDataContext:
         fundamentals_provider: FundamentalsProvider,
         corporate_actions_provider: CorporateActionsProvider,
         accounting: bool = False,
+        panel_store: PricePanelStore | None = None,
+        actions_store: dict[str, pd.DataFrame] | None = None,
     ):
         self._asof = normalize_timestamp(asof)
         self._requirements = requirements
@@ -241,6 +255,25 @@ class PITDataContext:
         self._constituents_provider = constituents_provider
         self._fundamentals_provider = fundamentals_provider
         self._corporate_actions_provider = corporate_actions_provider
+        # M04b work packet item 4 (run-level stores, additive, default None):
+        # `panel_store` is a run-level, in-memory `PricePanelStore`
+        # (backtest/panel_store.py) built ONCE per `run_backtest` call and
+        # handed to every `PITDataContext` the engine constructs for that
+        # run, so `_sliced_price_panel` below slices an in-memory panel
+        # instead of calling `price_provider.get_prices()` again for data
+        # that never changes within one run. `None` (every non-engine
+        # caller - tests/test_pit.py, tests/canaries/test_lookahead.py,
+        # anything constructing this class directly) preserves the exact
+        # pre-M04b behavior of always calling `price_provider` directly.
+        # UNTRUSTED exactly like `price_provider` itself - see
+        # `_sliced_price_panel`'s docstring: nothing about routing through
+        # the store changes the hard-slice-then-assert discipline below.
+        # `actions_store` is the equivalent run-level pre-fetch for
+        # `_gated_actions_by_ticker`'s provider fallback (a plain
+        # ticker -> full actions history dict, not a class, since its only
+        # consumer is that one method and it needs no other behavior).
+        self._panel_store = panel_store
+        self._actions_store = actions_store
         # M03b verdict carried item 9 (plans/QUANT-NOTES.md, closed in M04):
         # per-ticker gated actions, memoised for the lifetime of THIS
         # context instance - see `_gated_actions_by_ticker`.
@@ -314,7 +347,17 @@ class PITDataContext:
             if ticker in self._actions_cache:
                 gated[ticker] = self._actions_cache[ticker].copy()
                 continue
-            raw = self._corporate_actions_provider.get_actions(ticker, _EPOCH, self._asof)
+            if self._actions_store is not None and ticker in self._actions_store:
+                # Run-level pre-fetch hit (M04b item 4) - the SAME provider
+                # call this ticker would otherwise make on every rebalance
+                # that touches it, already done once for the whole run. A
+                # ticker absent from the store (never pre-fetched, or its
+                # pre-fetch failed - see backtest/engine.py's
+                # `_build_actions_store`) falls through to the provider
+                # below exactly as before this parameter existed.
+                raw = self._actions_store[ticker]
+            else:
+                raw = self._corporate_actions_provider.get_actions(ticker, _EPOCH, self._asof)
             sliced = raw.loc[raw.index <= self._asof]
             _assert_no_future_dates(
                 sliced.index, self._asof, context=f"PITDataContext.prices actions[{ticker}]"
@@ -367,6 +410,19 @@ class PITDataContext:
         # trimmed to exactly `lookback_days` below regardless.
         buffer_days = lookback_days * 2 + 30
         window_start = last_session - pd.Timedelta(days=buffer_days)
+        # M04b work packet item 2: clamp to the calendar's pinned first
+        # session rather than letting `trading_days` raise `DateOutOfBounds`
+        # for a lookback generous enough to reach before it (e.g. a long
+        # lookback near the start of a backtest's available history, or the
+        # accounting path's own generous multi-hundred-session search
+        # windows - backtest/engine.py's `_LAST_PRICE_SEARCH_LOOKBACK_DAYS`).
+        # Clamping (not raising) is correct here: `sessions` below is then
+        # simply SHORTER than `lookback_days` when the calendar itself can't
+        # go back further - callers already tolerate fewer sessions than
+        # requested (empty-panel handling immediately below), this is the
+        # same "give me everything you actually have" semantics, not a new
+        # failure mode.
+        window_start = max(window_start, calendar_first_session())
         sessions = trading_days(window_start, last_session)
         sessions = sessions[-lookback_days:]
 
@@ -375,7 +431,15 @@ class PITDataContext:
             empty.index = pd.DatetimeIndex([], name="date")
             return empty
 
-        raw = self._price_provider.get_prices(tickers, sessions.min(), sessions.max())
+        # M04b work packet item 4: a run-level `PricePanelStore`, when
+        # present, replaces the provider call below with an in-memory slice
+        # of a panel already loaded once for the whole run - untrusted
+        # exactly like `price_provider` (see class docstring's "M04
+        # HANDOFF.3" note and this method's own hard-slice-then-assert
+        # immediately below, which runs UNCHANGED regardless of which of
+        # the two supplied this `raw` frame).
+        source = self._panel_store if self._panel_store is not None else self._price_provider
+        raw = source.get_prices(tickers, sessions.min(), sessions.max())
 
         # Hard slice: never trust a provider to have honored the requested
         # window - a caching bug (or an adversarial fixture, see

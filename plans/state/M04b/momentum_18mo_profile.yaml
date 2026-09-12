@@ -1,0 +1,11 @@
+# Classic 12-1 momentum, long-only, `close` execution (parity mode - matches
+# the old repo's convention of acting and filling on the same month-end
+# print). This is the configuration tests/parity/test_engine_parity.py's
+# convention is checked against.
+start: 2012-01-01
+end: 2013-06-30
+strategy_config: configs/strategies/momentum_12_1.yaml
+rebalance_freq: month_end
+execution: close
+cost_model: flat_bps
+one_way_cost_bps: 10.0

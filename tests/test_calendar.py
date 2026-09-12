@@ -3,12 +3,35 @@ from __future__ import annotations
 import pandas as pd
 
 from quantlab.core.calendar import (
+    calendar_first_session,
     is_trading_day,
     next_trading_day,
     prev_trading_day,
     rebalance_dates,
     trading_days,
 )
+
+# -- pinned calendar bounds (M04b work packet item 1) ------------------------
+
+
+def test_trading_days_far_in_the_past_works_under_the_pinned_calendar() -> None:
+    """Before pinning, `xcals.get_calendar("XNYS")` defaulted to a MOVING
+    twenty-year window ending "today" - `trading_days("2000-01-03",
+    "2000-01-10")` would raise `DateOutOfBounds` once wall-clock time moved
+    far enough past 2000 (exactly the failure mode this milestone closes)."""
+    days = trading_days("2000-01-03", "2000-01-10")
+    assert len(days) == 6  # Mon 1/3 .. Fri 1/7, then Mon 1/10 (weekend skipped)
+    assert days[0] == pd.Timestamp("2000-01-03")
+    assert days[-1] == pd.Timestamp("2000-01-10")
+
+
+def test_calendar_first_session_is_fixed_and_independent_of_today() -> None:
+    """The calendar's `first_session` must be a genuine CONSTANT (see
+    core/calendar.py's module docstring), not a function of wall-clock time -
+    compared against the literal pinned bound, no monkeypatching of "today"
+    involved (there would be nothing to monkeypatch: nothing here reads the
+    clock at all)."""
+    assert calendar_first_session() == pd.Timestamp("1990-01-02")
 
 
 def test_thanksgiving_2020_is_not_a_trading_day() -> None:

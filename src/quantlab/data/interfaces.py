@@ -121,7 +121,9 @@ def build_provider(kind: str, name: str, config: PlatformConfig) -> object:
         if name == "yfinance":
             from quantlab.data.providers.yfinance_prices import YFinancePriceProvider
 
-            return YFinancePriceProvider(cache_dir=config.cache_dir)
+            return YFinancePriceProvider(
+                cache_dir=config.cache_dir, retry_after_days=config.retry_after_days
+            )
         if name == "norgate":
             from quantlab.data.providers.norgate_prices import NorgatePriceProvider
 

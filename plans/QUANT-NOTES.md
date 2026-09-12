@@ -682,3 +682,172 @@ follows; where an item is marked DISCHARGED it needs no action from a later mile
   requirement is documented in the helper's docstring, and the degraded output is
   conspicuously degenerate rather than plausibly wrong. A one-line guard raising when
   `first_pos == 0` would close it; worth doing if M06 or M07 adds a second caller.
+
+## From M04b verdict (plans/state/M04b/VERDICT.md) — REJECT
+
+Gate cycle 1 on M04b. Closures and new items below; findings 1–3 are blocking and are
+stated in full in the verdict.
+
+### Carried items this milestone DISCHARGES
+
+- **→ M06 dirty-tree sha (from the M04 verdict) — CLOSED.** `provenance.dirty` is present
+  and reads `True` on the real run, alongside `quantlab_git_sha`. The M06 trials registry
+  can now tell a clean-commit run from a working-tree run.
+- **M04b packet item 6 — CLOSED.** `provenance.run_seconds` present (557.19 s on the real
+  2012–2026 momentum run).
+- **M00 → M04 calendar item — CLOSED and extended.** `core/calendar.py` now pins
+  `get_calendar("XNYS", start="1990-01-01", end="2040-12-31")`, so a backtest's calendar no
+  longer changes bounds day by day, and `data/pit.py` clamps its window to
+  `calendar_first_session()` rather than raising `DateOutOfBounds`. Gate-verified: the
+  bounds are literals with no wall-clock input, and the clamp never binds for a 2012–2026
+  run (the widest lookback lands in 2010).
+- **M02b actions-cache staleness — PRESERVED under the new read-memo, gate-verified.** The
+  per-instance memo caches only the disk read; the staleness check still re-evaluates
+  `end > fetched_at` on every call with that call's own `end`. Probed directly: warming the
+  memo then asking beyond `fetched_at` still raises `StaleActionsCacheError`, and an
+  out-of-band sidecar refresh is picked up by the self-heal re-read. The memo can only err
+  toward raising an error a re-read would clear — the conservative direction.
+
+### Carried items this milestone does NOT discharge
+
+- **M00/M01 ingestion-quality item — STILL OPEN, and now demonstrably biting.**
+  `data/quality.py`'s `QualityGate` has no caller anywhere in `src/` (gate-verified: every
+  `quality` hit in `src/` is `quality_flags` or a docstring; only `tests/test_quality.py`
+  exercises it). See verdict finding 2 — the first real run ingested price series that are
+  merges of unrelated instruments under a reused ticker symbol, and two of them (TIE, BMC)
+  entered the portfolio. This is no longer a latent hazard.
+- **M01 frozen-transient-failure item — NOT closed; restated in a new form.** The negative
+  price cache removes the *permanent* freeze (a TTL, default 30 days) but introduces a
+  30-day *masking* path: a single transient empty download overwrites a healthy ticker's
+  sidecar, and `has_sufficient_price_cache` checks the `no_data` branch before it looks at
+  the parquet, so 14 years of real cached data are served as empty while
+  `price_availability_from_cache` reports `has_data=True, masked_end=None`. Gate-reproduced.
+  Currently latent: 162 `no_data` sidecars exist in the shared cache and zero sit on a
+  non-empty parquet.
+- **M09 `refresh_actions_cache()` operational caller — unchanged, still open**, now joined
+  by the negative-cache force-clear below.
+
+### New items
+
+- **→ M09 (data refresh), must-fix before any headline number is quoted:** wire
+  `data/quality.py`'s `QualityGate` into the price ingestion boundary and extend it with two
+  checks it does not have — a zero-volume bar on a date the calendar calls a session (a
+  listed US equity essentially never has one), and an adjacent-session close ratio beyond a
+  threshold that no split in the gated actions history explains. Then re-scan the shared
+  cache and quarantine the affected tickers. Gate-measured contamination: PTV spans 0.01 to
+  1,330,000 with 47.7% zero-volume bars against a real ~$33; BMC has a median close of
+  13,300 against a real ~$45 and rows running to 2022 for a company taken private in 2013;
+  TIE interleaves real ~$16 bars at ~1.7M volume with ~$8,000 bars at ~11,000 volume.
+  Controls NVR and AZO, both genuinely high-priced, are clean and continuous with 0%
+  zero-volume bars, so this is not a threshold artefact. Root cause is vendor reuse of
+  delisted ticker symbols, which concentrates the damage in exactly the delisted names the
+  platform's survivorship and delisting machinery exists for.
+- **→ M09 (data refresh):** a force-clear for the negative-cache sidecar, alongside the
+  `refresh_actions_cache()` wiring. `data/cache.py` documents the need; it is the only way
+  a human who knows a `no_data` verdict is wrong can override it before the TTL lapses.
+- **→ M06 (trials registry) / M09:** the negative-cache TTL makes a run's data visibility
+  wall-clock dependent — the same config run today and in 31 days can see a different set of
+  tickers. Neither `retry_after_days` nor any count of tickers suppressed by a live
+  `no_data` sidecar appears in provenance. Record both, or two runs of the same YAML are not
+  distinguishable after the fact. Note the irony worth preserving: this milestone pinned the
+  calendar for exactly this reproducibility reason and then introduced a new today-dependence
+  one layer down.
+- **→ M05 / M07 (reporting), reinforcing the M04 note:** `quality_flags.unscored_by_date` is
+  not usable as a data-quality signal for a selective strategy. Gate-measured on the real
+  run: 173 rebalance dates carrying 467–476 names each (median 473) against 30 holdings —
+  it is recording "not selected", not "could not be scored", roughly 82,000 entries. The
+  M03-verdict guard it implements (surface the value leg's silently dropped unpriceable
+  names) is undetectable in that. Either have the strategy declare its unscored names (the
+  additive `TargetWeights.unscored` field the M03 verdict contemplated) or rename the flag so
+  nothing downstream reads it as a quality measure.
+- **→ M09 (reconciliation), scope note:** the 17.84% vs 15.7% reconciliation is M09's. Of
+  the mechanisms introduced by M04b, the window clamp cannot have moved net CAGR (it never
+  binds for this window) and the benchmark-from-store cannot (it touches only the benchmark
+  series, and a full-engine A/B reproduced every series bit-identically). The negative cache
+  could have but did not. The contamination in the item above definitely did, by an amount
+  nobody can currently state. Separately, `coverage_report.overall_bound` of 22.3% needs no
+  explaining: the per-year series declines monotonically from 22.33% (2012) to 0.99% (2026),
+  its mean is 11.73% against the old repo's 12.6% no-price gap, and 22.3% is the worst single
+  year, which is exactly what the M04 verdict defined the bound to be.
+
+## M04b gate cycle 2 — ACCEPT (plans/state/M04b/VERDICT.2.md)
+
+M04b is **ACCEPTED**. Dispositions below supersede the cycle-1 block above where they
+conflict. Each closure was verified by re-running the cycle-1 reproduction unchanged, not by
+re-reading the handoff.
+
+### Closures
+
+- **M01 frozen-transient-failure item — NOW CLOSED**, reversing the cycle-1 "NOT closed".
+  `has_sufficient_price_cache` consults a real, non-empty parquet before any `no_data`
+  sidecar, and `yfinance_prices.py` no longer writes a `no_data` sidecar for a ticker that
+  already has a parquet. Both layers gate-verified independently: the cycle-1 repro now
+  serves all 3,781 real rows (was 0), and forcing an empty re-fetch on a ticker with a
+  parquet leaves the `no_data` flag absent.
+- **M00/M01 ingestion-quality item — NOW CLOSED.** `data/quality.py` is wired at the read
+  boundary and enforcement is automatic, total and fails closed. Gate-probed offline with any
+  download attempt raising: TIE (2,237 parquet rows), EA (6) and PTV (1,602) each serve zero
+  rows, while IBM, AAPL and NVR serve 1,131 each. 47 tickers quarantined cache-wide, 42 in
+  the run's tracked universe. The contaminated series identified at cycle 1 (TIE, BMC, PTV,
+  CBE, MEE, CPWR, MHS, CCE, GR) are all among them.
+- **M04b cycle-1 finding 3 (`unscored_by_date`) — CLOSED.** `TargetWeights.unscored` is
+  additive and self-reported by the plugins; the engine reads it instead of inferring
+  `universe − weights`. Gate-measured on the real run: 8–157 names per rebalance, median 87,
+  against 467–476 (median 473) at cycle 1. The spread across dates is itself the evidence it
+  now measures something.
+- **Detection-vs-enforcement policy — RULED ACCEPTABLE.** The gate's "wire into the ingestion
+  boundary" is satisfied by automatic enforcement; detection (`scan_price_cache`,
+  `heal_or_flag_new_listings`) staying a disclosed manual pass is the better design, since a
+  full-cache scan needs a membership provider and, on the healing path, live network — neither
+  belongs inside an offline, deterministic backtest. See the residual item below.
+
+### Gate-verified properties worth keeping on record
+
+- **The membership-reuse detector holds in BOTH failure directions.** Eleven synthetic
+  boundary cases all match expectation: a first bar sitting at the cache's own 2010-06-01
+  floor is never flagged however old the membership (the IBM/MSFT/JNJ over-flagging fix), a
+  genuine new member is never flagged whether its data starts before or shortly after
+  joining, the tolerance boundary is exact (399 sessions clean, 400 flagged), and EA/EQR-like
+  reuse is flagged. Against the real cache: IBM, MSFT, JNJ, AAPL, XOM, PG, KO, JPM, SPY and
+  the genuinely high-priced NVR/AZO/FICO are all clean; the genuine recent listings SNDK and
+  AMTM are clean despite late first bars; every confirmed reuse case is quarantined. TIE, BMC
+  and PTV were caught by the price-arithmetic detectors rather than the membership one, which
+  is the correct division of labour.
+- **The round-2 sidecar repair is sound.** 664 parquets, 826 sidecars, zero parquets without
+  a sidecar, zero sidecars missing `requested_start`. Only two distinct requested ranges exist
+  across the cache and the difference is one day, from the healing re-fetches. This matters
+  because a missing `requested_start` silently disables the reuse detector for that ticker.
+- **What moved the number.** Nine quarantined names were held in the withdrawn 17.84% run
+  across 22 name-rebalances of 5,190 (0.42% of position-periods): HAR 4, FOXA 4, COL 3, FOX 3,
+  TIE 2, SCG 2, IR 2, CBE 1, BMC 1. A 0.18pp CAGR reduction is proportionate, and downward is
+  the expected direction if contaminated series were manufacturing spurious momentum winners.
+- **Coverage bound 28.4% is the honest number and is decomposable.** Per-year falls
+  monotonically 28.37% (2012) → 2.2% (2026), mean 14.68%, up from 22.33%/11.73%. It rose
+  because 42 genuinely-corrupt names now count as lacking coverage instead of reading as
+  covered. Its meaning has WIDENED to cover three distinct causes, and the report keeps them
+  separable: `quarantined_tickers` (30 in 2012), `masked_tickers` (0), `masked_start_tickers`,
+  plus `provenance.quarantined_count=42` / `masked_start_count=0` and a plain-language
+  `known_caveats` entry. `masked_start` affects zero tickers for this window since every gap
+  it holds for predates 2012.
+
+### Residual items
+
+- **→ M09 (`quantlab data scan`), must-fix:** record scan COVERAGE, not just verdicts.
+  `checked_at` is stamped only on the 47 quarantined tickers, so 779 clean ones carry no scan
+  marker and a NEVER-SCANNED cache is indistinguishable from a scanned-and-clean one —
+  `provenance.quarantined_count` reads 0 in both cases. Stamp `checked_at` on every ticker the
+  scan visits, or write a cache-level scan manifest, and have the engine emit a
+  `known_caveats` entry when a run's universe contains tickers no scan has ever covered. This
+  is the third time in this project a guard has existed with no way to tell whether it ran.
+- **→ M09 (data refresh), carried unchanged:** force-clear CLI for both sidecar kinds
+  (`clear_quarantine_meta` exists, no caller), and the `refresh_actions_cache()` operational
+  caller.
+- **→ M06 / M09, carried unchanged from cycle 1:** `retry_after_days` and the count of
+  tickers suppressed by a live `no_data` sidecar are still absent from provenance, so the
+  negative-cache TTL's wall-clock dependence is still unrecorded.
+- **→ M09, documented under-detection:** the membership heuristic cannot catch a reuse case
+  where the new company's data start closely tracks its OWN recent index entry. Conservative
+  in direction (under- not over-quarantining), noted in the detector's docstring, and not
+  closable by date comparison alone — it needs a second signal, if it is ever worth doing.
+- **→ M09 (reconciliation):** the 17.66% vs 15.7% reconciliation remains M09's. The cycle-1
+  scope note stands, with the contamination channel now quantified above rather than open-ended.

@@ -17,6 +17,7 @@ from quantlab.backtest.engine import (
     BacktestAbortError,
     BacktestProviders,
     _drop_terminal_partial_period,
+    _git_dirty,
     _is_genuine_period_boundary,
     run_backtest,
 )
@@ -90,9 +91,13 @@ class _EqualWeightParams(BaseModel):
 
 @register_strategy("engine-test-equal-weight")
 class _EqualWeightStrategy(Strategy):
-    """Equal-weights the full point-in-time universe (minus `params.exclude`,
-    to exercise the unscored-name diff) - deliberately trivial so engine
-    tests exercise the ENGINE, not a real signal."""
+    """Equal-weights the full point-in-time universe (minus `params.exclude`)
+    - deliberately trivial so engine tests exercise the ENGINE, not a real
+    signal. `params.exclude` names are reported via `TargetWeights.unscored`
+    (M04b quant-gate VERDICT.md cycle 1 finding 3: the engine now reads that
+    field directly rather than inferring "unscored" from a universe/weights
+    set difference - a fixture wanting to exercise the wiring must report it
+    itself, exactly like a real strategy would)."""
 
     @classmethod
     def params_model(cls) -> type[BaseModel]:
@@ -102,9 +107,13 @@ class _EqualWeightStrategy(Strategy):
         return DataRequirements(price_lookback_days=1, needs_universe=True)
 
     def generate_targets(self, ctx: Any, date: pd.Timestamp) -> TargetWeights:
-        tickers = [t for t in ctx.universe() if t not in self._params.exclude]
+        universe = ctx.universe()
+        tickers = [t for t in universe if t not in self._params.exclude]
         weights = dict.fromkeys(tickers, 1.0 / len(tickers)) if tickers else {}
-        return TargetWeights(asof=date, weights=weights, strategy_id=self.strategy_id)
+        unscored = {t: "excluded by test fixture" for t in self._params.exclude if t in universe}
+        return TargetWeights(
+            asof=date, weights=weights, strategy_id=self.strategy_id, unscored=unscored
+        )
 
 
 class _FixedWeightParams(BaseModel):
@@ -311,6 +320,43 @@ def test_unscored_ticker_is_recorded_when_strategy_drops_a_declared_name():
     result = run_backtest(strategy, _config(), providers)
 
     assert any("BBB" in names for names in result.quality_flags.unscored_by_date.values())
+
+
+@register_strategy("engine-test-topn-no-unscored")
+class _TopNNeverReportsUnscoredStrategy(Strategy):
+    """Selects only a small subset of a larger universe and reports NOTHING
+    via `TargetWeights.unscored` - the negative-regression fixture for M04b
+    quant-gate VERDICT.md cycle 1 finding 3: a name merely not selected into
+    a top-N book must never show up in `unscored_by_date`."""
+
+    @classmethod
+    def params_model(cls) -> type[BaseModel]:
+        return _EqualWeightParams
+
+    def requires(self) -> DataRequirements:
+        return DataRequirements(price_lookback_days=1, needs_universe=True)
+
+    def generate_targets(self, ctx: Any, date: pd.Timestamp) -> TargetWeights:
+        selected = sorted(ctx.universe())[:1]
+        weights = dict.fromkeys(selected, 1.0 / len(selected)) if selected else {}
+        return TargetWeights(asof=date, weights=weights, strategy_id=self.strategy_id)
+
+
+def test_unscored_by_date_does_not_flag_names_merely_not_selected():
+    """M04b quant-gate VERDICT.md cycle 1 finding 3 (BLOCKING) regression: a
+    strategy selecting only a small subset of a larger universe, and
+    reporting nothing via `TargetWeights.unscored`, must leave
+    `unscored_by_date` EMPTY - the pre-fix engine inferred "unscored" from
+    `universe - weights.keys()`, which would have flagged every one of the
+    non-selected names here (real-scale measurement at the gate: ~473 of
+    ~500 names on a real top-30 momentum book)."""
+    sessions = trading_days("2019-06-01", "2020-05-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BBB": 20.0, "CCC": 30.0, "BENCH": 100.0})
+    providers = _providers(panel, ["AAA", "BBB", "CCC"])
+
+    result = run_backtest(_TopNNeverReportsUnscoredStrategy(), _config(), providers)
+
+    assert result.quality_flags.unscored_by_date == {}
 
 
 def test_per_ticker_data_failure_is_dropped_and_recorded():
@@ -833,6 +879,170 @@ def test_degenerate_book_is_recorded_when_every_name_in_a_sign_book_is_excluded(
 
 
 # -- finding 5: next_open must measure returns on an adjusted open basis ---
+
+
+# ============================================================================
+# M04b (plans/M04b-engine-perf.md): run-level PricePanelStore + run_seconds
+# ============================================================================
+
+
+def test_provenance_includes_run_seconds():
+    """M04b acceptance criterion / work packet item 6: the timing number
+    belongs in the artifact a real run produces, not just a hand-typed
+    handoff note."""
+    sessions = trading_days("2019-06-01", "2020-05-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BENCH": 100.0})
+    providers = _providers(panel, ["AAA"])
+
+    result = run_backtest(_EqualWeightStrategy(), _config(), providers)
+
+    assert "run_seconds" in result.provenance
+    assert result.provenance["run_seconds"] >= 0.0
+
+
+class _CountingPriceProvider(PriceProvider):
+    """Records how many times `get_prices` was actually called - the
+    fixture M04b acceptance criterion 4(d) asks for."""
+
+    def __init__(self, panel: pd.DataFrame):
+        self._panel = panel
+        self.call_count = 0
+
+    def get_prices(self, tickers: list[str], start: object, end: object) -> pd.DataFrame:
+        self.call_count += 1
+        return self._panel[self._panel["ticker"].isin(tickers)].copy()
+
+
+def test_git_dirty_true_when_status_porcelain_is_nonempty(monkeypatch):
+    """M04b work packet item 7 (orchestrator-added): `git status --porcelain`
+    returning output means the working tree is dirty."""
+    import subprocess
+
+    from quantlab.backtest import engine as engine_module
+
+    monkeypatch.setattr(
+        engine_module.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 0, stdout=" M some_file.py\n", stderr=""
+        ),
+    )
+
+    assert _git_dirty() is True
+
+
+def test_git_dirty_false_when_status_porcelain_is_empty(monkeypatch):
+    import subprocess
+
+    from quantlab.backtest import engine as engine_module
+
+    monkeypatch.setattr(
+        engine_module.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+
+    assert _git_dirty() is False
+
+
+def test_git_dirty_none_when_git_is_unavailable(monkeypatch):
+    """`None` - never a silent `False` - when git itself is unavailable or
+    errors, so a missing signal is never misread as "clean"."""
+    from quantlab.backtest import engine as engine_module
+
+    def _raise(cmd, **kw):
+        raise OSError("git not found")
+
+    monkeypatch.setattr(engine_module.subprocess, "run", _raise)
+
+    assert _git_dirty() is None
+
+
+def test_provenance_dirty_field_and_none_caveat_end_to_end(monkeypatch):
+    """`provenance.dirty` round-trips through a real `run_backtest` call, and
+    a `None` value (git unavailable) adds a `known_caveats` note rather than
+    being silently indistinguishable from "clean"."""
+    from quantlab.backtest import engine as engine_module
+
+    def _raise(cmd, **kw):
+        raise OSError("git not found")
+
+    monkeypatch.setattr(engine_module.subprocess, "run", _raise)
+    sessions = trading_days("2019-06-01", "2020-05-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BENCH": 100.0})
+    providers = _providers(panel, ["AAA"])
+
+    result = run_backtest(_EqualWeightStrategy(), _config(), providers)
+
+    assert result.provenance["dirty"] is None
+    assert any("provenance.dirty" in c for c in result.provenance["known_caveats"])
+
+
+def test_provenance_records_quarantined_tickers(tmp_path):
+    """M04b quant-gate VERDICT.md cycle 1 finding 2: provenance must record
+    the quarantined count and ticker list for the run."""
+    from quantlab.data.cache import (
+        price_cache_path,
+        write_cache,
+        write_price_cache_meta,
+        write_quarantine_meta,
+    )
+
+    sessions = trading_days("2019-06-01", "2020-05-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BBB": 20.0, "BENCH": 100.0})
+    providers = BacktestProviders(
+        price=_FakePriceProvider(panel),
+        constituents=_FakeConstituentsProvider(["AAA", "BBB"]),
+        fundamentals=_NoOpFundamentalsProvider(),
+        corporate_actions=_EmptyActionsProvider(),
+        cache_dir=tmp_path,
+    )
+    cached = pd.DataFrame(
+        {
+            "ticker": ["BBB"],
+            "open": [20.0],
+            "high": [20.0],
+            "low": [20.0],
+            "close": [20.0],
+            "adj_close": [20.0],
+            "volume": [1000],
+        },
+        index=pd.DatetimeIndex(["2020-05-29"], name="date"),
+    )
+    write_cache(cached, price_cache_path("BBB", tmp_path))
+    write_price_cache_meta("BBB", "2015-01-01", "2020-05-29", tmp_path)
+    write_quarantine_meta("BBB", ["zero_volume_fraction:50.0%"], tmp_path)
+
+    result = run_backtest(_EqualWeightStrategy(), _config(), providers)
+
+    assert result.provenance["quarantined_count"] == 1
+    assert result.provenance["quarantined_tickers"] == ["BBB"]
+    assert "BBB" in result.coverage_report.quarantined_tickers.get(2020, [])
+
+
+def test_price_provider_is_called_once_for_the_whole_run_not_once_per_rebalance():
+    """M04b acceptance criterion 4(d): over a 3-rebalance fixture, the
+    engine's provider call count is ONE `get_prices` per ticker SET (the
+    run-level `PricePanelStore`'s single upfront load), not one per
+    rebalance (nor one per accounting/settlement/benchmark call site within
+    each rebalance, which - before this milestone's `PricePanelStore` -
+    each independently called the provider again for data that never
+    changes within one run)."""
+    sessions = trading_days("2019-06-01", "2020-03-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BBB": 20.0, "BENCH": 100.0})
+    counting_provider = _CountingPriceProvider(panel)
+    providers = BacktestProviders(
+        price=counting_provider,
+        constituents=_FakeConstituentsProvider(["AAA", "BBB"]),
+        fundamentals=_NoOpFundamentalsProvider(),
+        corporate_actions=_EmptyActionsProvider(),
+        cache_dir=Path("__no_such_quantlab_test_cache__"),
+    )
+    config = _config(start="2020-01-01", end="2020-03-31")
+
+    run_backtest(_EqualWeightStrategy(), config, providers)
+
+    assert counting_provider.call_count == 1
 
 
 def test_next_open_return_excludes_the_fill_day_intraday_move_from_the_outgoing_book():

@@ -32,6 +32,7 @@ from quantlab.data.providers.edgar_fundamentals import get_point_in_time_fundame
 from quantlab.data.providers.sp500_constituents import _membership_from_table
 from quantlab.data.requirements import DataRequirements
 from quantlab.strategies.base import Strategy
+from quantlab.strategies.registry import register_strategy
 
 # M04b work packet item 4, acceptance criterion 4(b): every canary below that
 # builds its own context via `_minimal_context` is parametrized over
@@ -689,3 +690,206 @@ def test_canary_prices_for_returns_raises_on_the_context_the_engine_hands_the_st
         "prices_for_returns() succeeded on a context the engine handed the strategy - "
         "it must raise UndeclaredDataError unconditionally on the decision path"
     )
+
+
+# -- (k) the paper runner's decision context is never bound to today's -----
+# -- still-open session, and never later than the price cache's last bar ---
+#
+# M08 work packet: "the runner's context asof is the last COMPLETED session,
+# never today's partial session, and never later than the data's last
+# cached bar." Mutation-check performed manually during development
+# (recorded in plans/state/M08/HANDOFF.md): temporarily changing
+# paper/runner.py's `resolve_asof` to return `today` verbatim (instead of
+# clamping to `prev_trading_day(today)`) makes this canary fail (the
+# strategy is handed a context bound to "today" itself), confirming it has
+# real power against exactly the regression this function exists to
+# prevent.
+
+
+class _AsofSpyParams(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+_CANARY_K_STRATEGY_NAME = "canary-k-asof-spy"
+
+
+@register_strategy(_CANARY_K_STRATEGY_NAME)
+class _AsofSpyStrategy(Strategy):
+    """Records every `ctx.asof` it is handed - the fixture for canary (k)."""
+
+    def __init__(self, params: dict | None = None):
+        super().__init__(params)
+        self.observed_asofs: list[pd.Timestamp] = []
+
+    @classmethod
+    def params_model(cls):
+        return _AsofSpyParams
+
+    def requires(self):
+        return DataRequirements()
+
+    def generate_targets(self, ctx, date):
+        self.observed_asofs.append(ctx.asof)
+        return TargetWeights(asof=date, weights={}, strategy_id=self.strategy_id)
+
+
+def test_canary_paper_runner_never_hands_the_strategy_a_context_bound_to_today(
+    monkeypatch, tmp_path
+):
+    from quantlab.backtest.engine import BacktestProviders
+    from quantlab.core.calendar import trading_days
+    from quantlab.core.config import PlatformConfig, ProvidersConfig
+    from quantlab.paper.broker import BrokerCapabilities
+    from quantlab.paper.journal import read_journal
+    from quantlab.paper.mock import MockBroker
+    from quantlab.paper.runner import run_once
+
+    today = pd.Timestamp("2024-01-16")  # a Tuesday; 2024-01-15 was MLK Day
+    monkeypatch.setattr("quantlab.paper.runner._today", lambda: today)
+
+    sessions = trading_days("2023-06-01", "2024-01-20")
+    panel = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * len(sessions),
+            "open": [10.0] * len(sessions),
+            "high": [10.0] * len(sessions),
+            "low": [10.0] * len(sessions),
+            "close": [10.0] * len(sessions),
+            "adj_close": [10.0] * len(sessions),
+            "volume": [1000] * len(sessions),
+        },
+        index=sessions,
+    )
+    providers = BacktestProviders(
+        price=_AlwaysReturnsFullPanelPriceProvider(panel),
+        constituents=_TwoRowConstituentsProvider(),
+        fundamentals=_FactsBackedFundamentalsProvider(
+            pd.DataFrame(columns=["tag", "start", "end", "filed", "val"])
+        ),
+        corporate_actions=_EmptyCorporateActionsProvider(),
+        cache_dir=Path("__no_such_quantlab_canary_cache__"),
+    )
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _config: providers)
+
+    reports_dir = tmp_path / "reports"
+    platform_config = PlatformConfig(
+        cache_dir=tmp_path / "cache",
+        reports_dir=reports_dir,
+        providers=ProvidersConfig(
+            prices="yfinance", constituents="sp500_community", fundamentals="edgar"
+        ),
+        benchmark="AAA",
+    )
+    strategy = _AsofSpyStrategy()
+    strategy_config = {"strategy": _CANARY_K_STRATEGY_NAME, "params": {}}
+
+    run_once(
+        strategy_config,
+        platform_config,
+        MockBroker(capabilities_=BrokerCapabilities(True, False, False), prices={"AAA": 10.0}),
+        force_research=True,
+    )
+
+    # run_once constructs its OWN strategy instance from strategy_config (not
+    # the `strategy` object above, which has the same deterministic
+    # strategy_id since both share the same empty params) - read the asof it
+    # observed off the journal, the externally-observable record of what
+    # asof `generate_targets` actually saw for this run.
+    records = read_journal(reports_dir, strategy.strategy_id)
+    assert len(records) == 1
+    observed_asof = pd.Timestamp(records[0]["asof"])
+
+    assert observed_asof < today
+    assert observed_asof == prev_trading_day(today)
+
+
+# Quant-gate VERDICT.md M08 cycle-1 non-blocking carried item: the ORIGINAL
+# canary (k) above only pinned "never today's partial session"
+# (`prev_trading_day(today)`) - the packet's OTHER stated requirement,
+# "never later than the data's last cached bar", had no canary coverage at
+# all: the gate deleted `resolve_asof`'s data-ceiling clamp entirely and this
+# file's canary (k) stayed green (only `tests/test_runner.py::
+# test_resolve_asof_clamps_to_the_price_caches_actual_last_bar` caught it).
+# This second canary closes that gap using the SAME `run_once` path (not a
+# bare `resolve_asof` unit call), with a price provider that HONESTLY
+# respects its requested window (unlike `_AlwaysReturnsFullPanelPriceProvider`
+# above, which would defeat this specific check).
+
+
+class _HonestlyBoundedLaggingPriceProvider(PriceProvider):
+    """Respects the requested `end` bound, clamped to a fixed `cutoff` well
+    behind `today` - simulates a price cache whose overnight sync lagged."""
+
+    def __init__(self, panel: pd.DataFrame, cutoff: pd.Timestamp):
+        self._panel = panel
+        self._cutoff = cutoff
+
+    def get_prices(self, tickers: list[str], start: object, end: object) -> pd.DataFrame:
+        sub = self._panel[self._panel["ticker"].isin(tickers)]
+        return sub.loc[sub.index <= min(pd.Timestamp(end), self._cutoff)].copy()
+
+
+def test_canary_paper_runner_asof_never_exceeds_the_price_caches_last_bar(monkeypatch, tmp_path):
+    from quantlab.backtest.engine import BacktestProviders
+    from quantlab.core.calendar import trading_days
+    from quantlab.core.config import PlatformConfig, ProvidersConfig
+    from quantlab.paper.broker import BrokerCapabilities
+    from quantlab.paper.journal import read_journal
+    from quantlab.paper.mock import MockBroker
+    from quantlab.paper.runner import run_once
+
+    today = pd.Timestamp("2024-01-16")
+    monkeypatch.setattr("quantlab.paper.runner._today", lambda: today)
+    # The safety ceiling (prev_trading_day(today)) alone would land on
+    # 2024-01-12 - the cache-ceiling clamp must pull it back FURTHER still,
+    # to a cutoff well behind that.
+    cutoff = pd.Timestamp("2024-01-05")
+
+    sessions = trading_days("2023-06-01", "2024-01-20")
+    panel = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * len(sessions),
+            "open": [10.0] * len(sessions),
+            "high": [10.0] * len(sessions),
+            "low": [10.0] * len(sessions),
+            "close": [10.0] * len(sessions),
+            "adj_close": [10.0] * len(sessions),
+            "volume": [1000] * len(sessions),
+        },
+        index=sessions,
+    )
+    providers = BacktestProviders(
+        price=_HonestlyBoundedLaggingPriceProvider(panel, cutoff),
+        constituents=_TwoRowConstituentsProvider(),
+        fundamentals=_FactsBackedFundamentalsProvider(
+            pd.DataFrame(columns=["tag", "start", "end", "filed", "val"])
+        ),
+        corporate_actions=_EmptyCorporateActionsProvider(),
+        cache_dir=Path("__no_such_quantlab_canary_cache__"),
+    )
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _config: providers)
+
+    reports_dir = tmp_path / "reports"
+    platform_config = PlatformConfig(
+        cache_dir=tmp_path / "cache",
+        reports_dir=reports_dir,
+        providers=ProvidersConfig(
+            prices="yfinance", constituents="sp500_community", fundamentals="edgar"
+        ),
+        benchmark="AAA",
+    )
+    strategy = _AsofSpyStrategy()
+    strategy_config = {"strategy": _CANARY_K_STRATEGY_NAME, "params": {}}
+
+    run_once(
+        strategy_config,
+        platform_config,
+        MockBroker(capabilities_=BrokerCapabilities(True, False, False), prices={"AAA": 10.0}),
+        force_research=True,
+    )
+
+    records = read_journal(reports_dir, strategy.strategy_id)
+    assert len(records) == 1
+    observed_asof = pd.Timestamp(records[0]["asof"])
+
+    assert observed_asof <= cutoff

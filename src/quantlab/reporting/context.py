@@ -115,9 +115,11 @@ VERDICT_LEGEND = Markup(
     "REJECTED: at least one HARD gate failed. RESEARCH_ONLY: every hard gate passed but "
     "at least one SOFT gate failed. ELIGIBLE_FOR_PAPER: every hard and soft gate passed. "
     "Hard-gate failures cap the verdict at REJECTED; soft-gate failures cap it at "
-    "RESEARCH_ONLY; the informational notes beside min_psr and the Monte Carlo drawdown "
-    "gate never affect the verdict at all. A verdict is not evidence of edge; it states "
-    "which tests the result survived."
+    "RESEARCH_ONLY; gates of kind INFORMATIONAL (capacity, at Alex's retail stake - "
+    "orchestrator decision, plans/QUANT-NOTES.md) and the informational notes beside "
+    "min_psr and the Monte Carlo drawdown gate are always reported but never affect the "
+    "verdict at all. A verdict is not evidence of edge; it states which tests the result "
+    "survived."
 )
 # quant-gate VERDICT.md M07 cycle-1 finding 4: the unscored-names flag's own
 # MEANING changed at the M04b data-semantics boundary (QUANT-NOTES.md, M06
@@ -372,10 +374,15 @@ def _trust_section(result: BacktestResult, report_card: dict[str, Any] | None) -
 
 def _gates_section(report_card: dict[str, Any] | None) -> dict[str, Any]:
     if report_card is None:
-        return {"available": False, "hard": [], "soft": []}
+        return {"available": False, "hard": [], "soft": [], "informational": []}
     gates = report_card["gates"]
     hard = [_format_gate(g) for g in gates if g["kind"] == "hard"]
     soft = [_format_gate(g) for g in gates if g["kind"] == "soft"]
+    # M09: capacity is now an `informational` gate (orchestrator decision,
+    # plans/QUANT-NOTES.md "Capacity gate at retail stake") - always shown,
+    # kept in its own list so a reader never mistakes it for a hard/soft
+    # gate that could have moved the verdict.
+    informational = [_format_gate(g) for g in gates if g["kind"] == "informational"]
 
     rc, spa = report_card.get("rc"), report_card.get("spa")
     rc_detail = (
@@ -429,6 +436,7 @@ def _gates_section(report_card: dict[str, Any] | None) -> dict[str, Any]:
         "available": True,
         "hard": hard,
         "soft": soft,
+        "informational": informational,
         "n_trials": report_card["n_trials"],
         # carried M06 verdict item 7 (regression, quant-gate REVIEW.md finding 3):
         # N deduplicated must print SIDE BY SIDE with the raw record count and
@@ -534,7 +542,14 @@ def _sensitivity_section(
         surface_rows.append(
             {
                 "point_label": point_label,
-                "net_sharpe": _num(value, reason="NaN (excluded)"),
+                # quant-gate M07 cycle-1 carried item (cosmetic): a NaN cell
+                # used to render "n/a (NaN (excluded)) (excluded from
+                # no_cliff_score)" - nested parens and "excluded" three
+                # times, since this reason and the template's own suffix
+                # said the same thing. `_num`'s own reason now states only
+                # WHY the value is missing; the template alone states what
+                # that means for no_cliff_score.
+                "net_sharpe": _num(value, reason="grid point not scored"),
                 "is_base_point": point == base_tuple,
                 "is_nan": value is None or (isinstance(value, float) and math.isnan(value)),
             }
@@ -573,8 +588,21 @@ def _transpose_comparison_by_grid_point(
     return by_point
 
 
+def _ranking_agreement_line(agreement: dict[str, Any] | None) -> str:
+    if agreement is None:
+        return "ranking agreement under both cost conventions: not checked"
+    verb = "AGREES" if agreement["top_choice_agrees"] else "DISAGREES"
+    return (
+        "ranking agreement under both cost conventions (M09): Kendall tau="
+        f"{_num(agreement['kendall_tau'], digits=4)} over {agreement['n_points']} grid points - "
+        f"top choice {verb} between blend-of-net-returns and the engine's netted-book costing."
+    )
+
+
 def _walk_forward_section(
-    walk_forward: dict[str, Any] | None, gates: list[dict[str, Any]]
+    walk_forward: dict[str, Any] | None,
+    gates: list[dict[str, Any]],
+    ranking_agreement: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if walk_forward is None:
         return None
@@ -629,7 +657,7 @@ def _walk_forward_section(
         "comparison_rows": comparison_rows,
         "comparison_ported_convention_note": ROLLING_PORTED_CONVENTION_NOTE,
         "no_embargo_note": WALK_FORWARD_NO_EMBARGO_NOTE,
-        "ranking_agreement_line": "ranking agreement under both cost conventions: not checked",
+        "ranking_agreement_line": _ranking_agreement_line(ranking_agreement),
         "training_sharpes_note": WALK_FORWARD_TRAINING_SHARPES_UNAVAILABLE_NOTE,
         "stability_reason": stability_gate["reason"] if stability_gate else "",
     }
@@ -653,7 +681,9 @@ def _robustness_section(
         "rolling_ported_convention_note": ROLLING_PORTED_CONVENTION_NOTE,
         "subperiods": _subperiod_table(basic["subperiods"]),
         "sensitivity": _sensitivity_section(basic["sensitivity"], report_card["gates"]),
-        "walk_forward": _walk_forward_section(basic["walk_forward"], report_card["gates"]),
+        "walk_forward": _walk_forward_section(
+            basic["walk_forward"], report_card["gates"], report_card.get("ranking_agreement")
+        ),
         "flags": flags,
     }
 
@@ -710,7 +740,12 @@ def _provenance_section(result: BacktestResult) -> dict[str, Any]:
         "providers": prov.get("providers", {}),
         "actions_cache_fetched_at_min": fetched_at.get("min") or "n/a",
         "actions_cache_fetched_at_max": fetched_at.get("max") or "n/a",
-        "cache_dir": prov.get("cache_dir", "n/a (not recorded in this run's provenance)"),
+        # M07 review nit (plans/QUANT-NOTES.md): the bare apostrophe in this
+        # fallback rendered as `&#39;` in the HTML twin - reworded to avoid
+        # it entirely rather than Markup-wrap a string built from provenance
+        # data (which must stay escaped like any other external-adjacent
+        # value - see this module's own Markup-allowlist comment above).
+        "cache_dir": prov.get("cache_dir", "n/a (not recorded in the provenance for this run)"),
         "run_seconds": _num(prov.get("run_seconds"), digits=2, reason="not recorded"),
         "quantlab_version": __version__,
         "quarantined_count": prov.get("quarantined_count", 0),

@@ -178,6 +178,31 @@ def write_quarantine_meta(ticker: str, reasons: list[str], cache_dir: Path) -> N
     write_json_meta(path, existing)
 
 
+def clear_no_data_meta(ticker: str, cache_dir: Path) -> bool:
+    """Force-clear a `no_data` negative-cache verdict for `ticker` (M09
+    `quantlab data refresh --clear-negative-cache`, documented but not
+    implemented above as of M04b - see this module's docstring). Leaves any
+    OTHER sidecar metadata (`requested_start`/`requested_end`, a quarantine
+    verdict) untouched - only the `no_data`/`fetched_at` keys the TTL check
+    in `has_sufficient_price_cache` reads are removed, so a human who knows
+    a specific "no_data" verdict was wrong (a vendor outage, a delisted
+    ticker later relisted under the same symbol) can force an immediate
+    re-check instead of waiting out `retry_after_days`.
+
+    Returns `True` if a `no_data` flag was actually present and cleared,
+    `False` if there was nothing to clear (no sidecar, or the sidecar never
+    carried `no_data` in the first place) - callers use this to report which
+    tickers a clear actually touched."""
+    path = price_meta_path(ticker, cache_dir)
+    existing = read_json_meta(path)
+    if existing is None or not existing.get("no_data"):
+        return False
+    existing.pop("no_data", None)
+    existing.pop("fetched_at", None)
+    write_json_meta(path, existing)
+    return True
+
+
 def clear_quarantine_meta(ticker: str, cache_dir: Path) -> None:
     """Force-clear a quarantine verdict, leaving any other sidecar metadata
     (a real ticker's requested range) untouched. The mechanism M09's
@@ -232,19 +257,36 @@ def has_sufficient_price_cache(
 
     2. Negative-cache sidecar (M04b work packet item 3), reached ONLY when
        there is no usable parquet at all: if the last download attempt for
-       this ticker came back with ZERO rows (`write_price_cache_no_data_meta`),
-       and that attempt is still within `retry_after_days` AND its own
-       requested range already covers [start, end], treat the cache as
-       sufficient - return an EMPTY frame (never None) so the caller does
-       not re-fetch. Before this existed, a failed download was deliberately
-       never cached at all (see this module's docstring's M01 note on the
-       frozen-transient-failure hazard), which was safe but meant every
-       ticker Yahoo no longer serves (a genuine, permanent delisting) was
-       re-fetched - and re-throttled - on EVERY single call, the bug
-       plans/M04b-engine-perf.md profiles. A TTL is the middle ground: once
-       it lapses, this branch falls through to "insufficient" (None) below,
-       so a GENUINELY transient failure still gets retried - just not on
-       every call.
+       this ticker came back with ZERO rows (`write_price_cache_no_data_meta`)
+       and that attempt is still within `retry_after_days`, treat the cache
+       as sufficient for ANY requested range - return an EMPTY frame (never
+       None) so the caller does not re-fetch. Before this existed, a failed
+       download was deliberately never cached at all (see this module's
+       docstring's M01 note on the frozen-transient-failure hazard), which
+       was safe but meant every ticker Yahoo no longer serves (a genuine,
+       permanent delisting) was re-fetched - and re-throttled - on EVERY
+       single call, the bug plans/M04b-engine-perf.md profiles. A TTL is the
+       middle ground: once it lapses, this branch falls through to
+       "insufficient" (None) below, so a GENUINELY transient failure still
+       gets retried - just not on every call.
+
+       M09 fix (orchestrator-directed): this branch does NOT also require
+       the sidecar's own `requested_start`/`requested_end` to cover [start,
+       end], unlike branch 1's real-parquet check above. Yahoo's "no data"
+       verdict is per SYMBOL, not per date range - a ticker Yahoo does not
+       serve at all returns zero rows for ANY window, narrower or wider than
+       what was originally requested, so re-checking range coverage here
+       only ever produces a SPURIOUS re-fetch of a symbol already known to
+       be dead. Measured live: a real run whose sensitivity grid legitimately
+       widens its own lookback window (a longer `lookback_months` grid point)
+       re-triggered a live, network-throttled re-fetch of every one of ~160
+       long-delisted tickers on EACH such grid point, turning a multi-minute
+       backtest into a multi-HOUR one for no informational gain - the
+       eventual result was identical (still no data), just far slower to
+       reach. Real parquet coverage (branch 1) is NOT changed by this fix -
+       a ticker WITH data can still have a too-narrow cached range and must
+       still be re-fetched; only the negative (definitively-nothing-there)
+       case is range-independent.
     """
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
     meta = read_json_meta(price_meta_path(ticker, cache_dir))
@@ -275,12 +317,8 @@ def has_sufficient_price_cache(
     if meta is not None and meta.get("no_data"):
         fetched_at = pd.Timestamp(meta["fetched_at"])
         within_ttl = _today() - fetched_at < pd.Timedelta(days=retry_after_days)
-        requested_covers = (
-            pd.Timestamp(meta["requested_start"]) <= start_ts
-            and pd.Timestamp(meta["requested_end"]) >= end_ts
-        )
-        if within_ttl and requested_covers:
+        if within_ttl:
             return _empty_raw_price_frame()
-        return None  # TTL lapsed, or a wider range is now requested - retry.
+        return None  # TTL lapsed - retry.
 
     return None

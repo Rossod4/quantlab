@@ -24,7 +24,7 @@ import hashlib
 import json
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
 from typing import Any, Protocol
@@ -82,6 +82,22 @@ class SensitivityResult:
     # many were excluded, so a caller can tell "flat because the surface
     # is genuinely flat" from "flat because most of the sample was NaN".
     nan_points: int = 0
+    # M09 fix (orchestrator-directed): `record_sensitivity` (registry.py)
+    # can only store a grid point's return series when the CALLER supplies
+    # one via `net_returns_by_strategy_id` - before this field existed,
+    # `sensitivity_grid` (below) discarded each point's `result.net_returns`
+    # right after extracting its Sharpe, so every sensitivity trial was
+    # PERMANENTLY series-less and `build_trial_matrix` (reality_check.py)
+    # could never find enough trials WITH a series to run White's Reality
+    # Check / Hansen SPA (K stays 0 or 1 forever, regardless of how many
+    # grid points ran) - a silent, structural hard-gate failure, not a
+    # missing-data one. Populated automatically by `sensitivity_grid`
+    # (keyed by each trial's own `strategy_id`, matching `SensitivityTrial.
+    # strategy_id`); deliberately excluded from `to_json()` (a raw
+    # `pd.Series` per grid point, not meant for the report card's JSON) -
+    # `cli.py`'s `_record_sensitivity_result` reads this field directly and
+    # forwards it to `TrialsRegistry.record_sensitivity`.
+    net_returns_by_strategy_id: dict[str, pd.Series] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -226,6 +242,7 @@ def sensitivity_grid(
     surface_index: list[tuple[Any, ...]] = []
     surface_values: list[float] = []
     neighbourhood_sharpes: list[float] = []
+    net_returns_by_strategy_id: dict[str, pd.Series] = {}
 
     for point in points:
         strategy_id = _strategy_id_for_point(strategy_config, point, backtest_config)
@@ -234,6 +251,11 @@ def sensitivity_grid(
         trials.append(
             SensitivityTrial(strategy_id=strategy_id, params=point, net_sharpe=net_sharpe)
         )
+        # M09 fix: capture the series HERE, while `result` is still in hand
+        # - the whole point of `SensitivityResult.net_returns_by_strategy_id`
+        # (see its own docstring) is that this is the ONLY place a grid
+        # point's real return series is ever available at all.
+        net_returns_by_strategy_id[strategy_id] = result.net_returns
         surface_index.append(tuple(point[name] for name in param_axes))
         surface_values.append(net_sharpe)
         if _neighbourhood_mask(param_axes, base_point, point):
@@ -282,4 +304,5 @@ def sensitivity_grid(
         neighbourhood_size=len(neighbourhood_sharpes),
         neighbourhood_truncated=neighbourhood_truncated,
         nan_points=nan_points,
+        net_returns_by_strategy_id=net_returns_by_strategy_id,
     )

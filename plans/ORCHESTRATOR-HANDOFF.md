@@ -21,7 +21,7 @@ agents, enforce the protocol, and carry gate findings forward.
 | M05 validation I | ✅ merged 2026-09-11 (416 tests; gate REJECT→ACCEPT; sub-period first-return bug fixed) |
 | M06 validation II | ✅ merged 2026-09-12 (gate ACCEPT cycle 3 after Alex approved a third cycle; PSR/DSR footing, headline pinning, honest subperiod_oof_sharpe) |
 | M07 reporting | ✅ merged 2026-09-12 (735 tests; gate REJECT→ACCEPT; four rendered verdict fixtures) |
-| **M08 paper trading** | 🟡 **ESCALATED TO ALEX 2026-09-12 (gate cap): proactive actions refresh + journal on broker.account failure; recommended narrow cycle 3** — in parallel worktree `..\quantlab-m08` (branch `m08-paper-trading`) — packet plans/M08-paper-trading.md; merge after M07 (overlap expected only in cli.py and plan docs) |
+| M08 paper trading | ✅ merged 2026-09-12 (690 tests; gate REJECT, REJECT, ACCEPT — cycle 3 approved by Alex). Carried must-fix to M09: `paper run --dry-run` is a second decide-and-plan path (use run_once with a dry_run flag) |
 | M04b engine perf | 🔵 in parallel worktree `..\quantlab-m04b` (branch `m04b-engine-perf`): calendar bounds, negative price cache, panel store, QualityGate wired with quarantine + membership-based symbol-reuse detector (42 names), unscored self-reported; full real run 8m32s; gate REJECT→ACCEPT cycle 2 (2026-09-12); ✅ merged to main 2026-09-12 (492 tests). Worktree can be removed after M06 merges. |
 | M04–M09 | packets not yet written — write each just-in-time from the template in PROTOCOL.md, folding in QUANT-NOTES items addressed to it |
 
@@ -32,10 +32,9 @@ file. Task list state is also tracked in the harness task tools (M00/M01/M02 com
 A full data/cache (842 tickers, prices 2010-06..2026-09-11, actions with fetched_at=2026-09-11, EDGAR facts) was prefetched on 2026-09-11 via the orchestrator scratchpad script (M09 should formalise it as `quantlab data`). A real momentum backtest via `quantlab backtest` took >40 min on this machine — engine performance is a known M09 concern (per-ticker parquet reads per rebalance).
 
 ## Immediate next action
-M08 awaits Alex's decision (see table). M09 started on branch `m09-end-to-end` from main (M07 in,
-M08 not): packet plans/M09-end-to-end.md has a sequencing note — paper-dependent items last.
-When M08 is approved and accepted: merge main into m08 (cli.py conflict), m08 into main, then main
-into m09. Then the
+M09 is running on branch `m09-end-to-end` (branched before M08 merged). When dev-m09 hands off
+iteration 1: commit it, merge main (now containing M08) into m09, then run M09 iteration 2 for the
+paper-dependent tail (promotion-gating end-to-end, `quantlab paper drift`, the --dry-run fix). Then the
 real-data run of momentum / value / blend_50_50 through the report card — Alex's decision
 point. Post-M06 data follow-on: per-component TTM EPS share terms (QUANT-NOTES M03b).
 

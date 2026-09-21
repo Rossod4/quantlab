@@ -99,6 +99,7 @@ from quantlab.data.cache import (
     price_meta_path,
     read_cache,
     read_json_meta,
+    write_json_meta,
     write_quarantine_meta,
 )
 from quantlab.data.corporate_actions import read_cached_actions
@@ -613,6 +614,35 @@ class QuarantineReport:
     checked_at: pd.Timestamp = field(default_factory=lambda: pd.Timestamp.now().normalize())
 
 
+_SCAN_MANIFEST_FILENAME = "_scan_manifest.json"
+
+
+def scan_manifest_path(cache_dir: Path) -> Path:
+    """Cache-level scan-coverage manifest (M09, plans/QUANT-NOTES.md "M09
+    (quantlab data scan), must-fix": `checked_at` used to be stamped ONLY on
+    quarantined tickers' own sidecars, so a never-scanned cache was
+    indistinguishable from a scanned-and-clean one - `provenance.
+    quarantined_count` reads 0 in both cases). Written by `scan_price_cache`
+    on every run; read by `unscanned_tickers` below."""
+    return Path(cache_dir) / "prices" / _SCAN_MANIFEST_FILENAME
+
+
+def read_scan_manifest(cache_dir: Path) -> dict | None:
+    return read_json_meta(scan_manifest_path(cache_dir))
+
+
+def unscanned_tickers(cache_dir: Path, universe_tickers: list[str]) -> list[str]:
+    """Every ticker in `universe_tickers` that the most recent `scan_price_
+    cache` run (per the manifest) never visited - either because no scan has
+    ever run (manifest absent: every ticker is "unscanned"), or because the
+    ticker was added to the cache after the last scan. A backtest run whose
+    universe contains any of these cannot claim its quarantine coverage is
+    complete."""
+    manifest = read_scan_manifest(cache_dir)
+    scanned = set(manifest["scanned_tickers"]) if manifest else set()
+    return sorted(set(universe_tickers) - scanned)
+
+
 def scan_price_cache(
     cache_dir: Path,
     zero_volume_fraction_threshold: float = _DEFAULT_ZERO_VOLUME_FRACTION_THRESHOLD,
@@ -624,6 +654,7 @@ def scan_price_cache(
     gap_sessions_threshold: int = _DEFAULT_GAP_SESSIONS_THRESHOLD,
     membership_start_by_ticker_map: dict[str, pd.Timestamp] | None = None,
     new_listing_tolerance_sessions: int = _DEFAULT_NEW_LISTING_TOLERANCE_SESSIONS,
+    tickers: list[str] | None = None,
 ) -> QuarantineReport:
     """Scan every ticker with a cached price file under `cache_dir` against
     the three checks above; any ticker failing ONE OR MORE is quarantined
@@ -657,13 +688,36 @@ def scan_price_cache(
     caller that has no `ConstituentsProvider` handy (most direct tests) is
     unaffected.
 
+    `tickers` (M09, additive): restrict the scan to this explicit list
+    instead of every parquet under `cache_dir` - used for a cheap single-
+    ticker re-scan (`quantlab data refresh --unquarantine <ticker>`)
+    without re-scanning the whole cache. `None` (the default) scans every
+    cached ticker, as before.
+
     Read-only with respect to any parquet: only sidecar JSON files are
-    written (quarantine verdicts), never a price file itself - see
-    CLAUDE.md's "regenerable cache" principle. Offline: reads only what is
-    already on disk, never touches the network. No CLI caller yet - see
-    module docstring's closing paragraph (M09 scope)."""
+    written (quarantine verdicts, and the scan-coverage manifest below),
+    never a price file itself - see CLAUDE.md's "regenerable cache"
+    principle. Offline: reads only what is already on disk, never touches
+    the network. Wired to `quantlab data scan` (M09).
+
+    Scan-coverage manifest (M09, plans/QUANT-NOTES.md "M09 (quantlab data
+    scan), must-fix"): `checked_at` used to be stamped ONLY on quarantined
+    tickers' own sidecars, so a cache that had NEVER been scanned was
+    indistinguishable from one scanned-and-found-clean - `provenance.
+    quarantined_count` read 0 in both cases. Every ticker this call actually
+    visits is now recorded in a cache-level manifest
+    (`scan_manifest_path`/`read_scan_manifest`/`unscanned_tickers`), even
+    when `tickers` narrows the scan to one name - a caller doing a targeted
+    re-scan should read the OLD manifest first if it needs to preserve
+    coverage of names outside its narrowed list; this function itself always
+    writes exactly the set it was asked to scan, not a union with any prior
+    manifest, since it has no way to know whether an existing manifest is
+    still current."""
     prices_dir = Path(cache_dir) / "prices"
-    tickers = sorted(p.stem for p in prices_dir.glob("*.parquet")) if prices_dir.is_dir() else []
+    if tickers is None:
+        tickers = (
+            sorted(p.stem for p in prices_dir.glob("*.parquet")) if prices_dir.is_dir() else []
+        )
 
     quarantined: dict[str, list[str]] = {}
     for ticker in tickers:
@@ -719,8 +773,14 @@ def scan_price_cache(
             quarantined[ticker] = reasons
             write_quarantine_meta(ticker, reasons, cache_dir)
 
+    checked_at = pd.Timestamp.now().normalize()
+    write_json_meta(
+        scan_manifest_path(cache_dir),
+        {"checked_at": str(checked_at.date()), "scanned_tickers": sorted(tickers)},
+    )
+
     return QuarantineReport(
         quarantined=quarantined,
         scanned_count=len(tickers),
-        checked_at=pd.Timestamp.now().normalize(),
+        checked_at=checked_at,
     )

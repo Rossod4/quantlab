@@ -98,6 +98,12 @@ thresholds:
   min_subperiod_oof_sharpe: 0.0
   max_spa_pvalue: 0.10
   mc_max_prob_drawdown_worse_than_observed: 0.5
+  # M09 orchestrator decision (2026-09-12, plans/QUANT-NOTES.md "Capacity
+  # gate at retail stake"): the capacity gate's KIND is `informational` in
+  # code (report_card.py) at Alex's real GBP100-500 stake - this threshold
+  # is still read and the multiple still computed and shown, it just no
+  # longer gates the verdict. Flip the gate back to `soft` in report_card.py
+  # if institutional size is ever traded.
   capacity_min_multiple_of_intended_capital: 100.0
   min_walk_forward_stability_fraction: 0.5
   min_track_record_confidence: 0.95

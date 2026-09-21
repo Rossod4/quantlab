@@ -56,10 +56,176 @@ def _not_implemented(milestone: str) -> None:
     raise typer.Exit()
 
 
-@app.command()
-def data() -> None:
-    """Fetch and cache market data."""
-    _not_implemented("M0X")
+data_app = typer.Typer(name="data", help="Fetch, refresh, scan and inspect cached market data.")
+app.add_typer(data_app, name="data")
+
+
+@data_app.command("prefetch")
+def data_prefetch(
+    start: str = typer.Option(..., "--start", help="Window start date (YYYY-MM-DD)."),
+    end: str = typer.Option(..., "--end", help="Window end date (YYYY-MM-DD)."),
+    universe: str = typer.Option(
+        "sp500_history", "--universe", help="Universe to prefetch (only sp500_history today)."
+    ),
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+) -> None:
+    """Prefetch prices, corporate actions and EDGAR fundamentals for every
+    point-in-time constituent over [--start, --end] plus the benchmark -
+    formalises the orchestrator's ad hoc prefetch script
+    (`quantlab.data.ops.prefetch`). Idempotent; writes a per-ticker failure
+    summary to `<cache_dir>/prefetch_report.json`."""
+    from quantlab.core.config import load_platform_config
+    from quantlab.data.ops import prefetch as run_prefetch
+
+    platform_config = load_platform_config(platform)
+    report = run_prefetch(platform_config, start, end, universe=universe)
+    typer.echo(
+        f"prefetched {report.universe_size} ticker(s) over [{report.start}, {report.end}] "
+        f"in {report.wall_seconds:.1f}s - "
+        f"price failures: {len(report.price_failures)}, "
+        f"actions failures: {len(report.actions_failures)}, "
+        f"fundamentals failures: {len(report.fundamentals_failures)}"
+    )
+
+
+@data_app.command("refresh")
+def data_refresh(
+    tickers: str | None = typer.Option(
+        None, "--tickers", help="Comma-separated ticker list to act on."
+    ),
+    all_: bool = typer.Option(
+        False, "--all", help="Act on every ticker with any price sidecar in the cache."
+    ),
+    actions: bool = typer.Option(
+        False, "--actions", help="Force a fresh corporate-actions download (clears staleness)."
+    ),
+    prices: bool = typer.Option(
+        False, "--prices", help="Re-fetch prices through --as-of (default: today)."
+    ),
+    fundamentals: bool = typer.Option(
+        False, "--fundamentals", help="Force a fresh EDGAR companyfacts download."
+    ),
+    clear_negative_cache: bool = typer.Option(
+        False,
+        "--clear-negative-cache",
+        help="Force-clear a no_data sidecar (scoped to --tickers, else every no_data ticker).",
+    ),
+    unquarantine: str | None = typer.Option(
+        None, "--unquarantine", help="Clear one ticker's quarantine, re-fetch, and re-scan it."
+    ),
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="As-of date for --prices/--unquarantine (default: today)."
+    ),
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+) -> None:
+    """Operational data-refresh command - wires up `refresh_actions_cache`
+    (the only way to clear a StaleActionsCacheError), the negative-cache
+    force-clear, and quarantine re-scan (`quantlab.data.ops.refresh`)."""
+    from quantlab.core.config import load_platform_config
+    from quantlab.data.ops import refresh as run_refresh
+
+    platform_config = load_platform_config(platform)
+    ticker_list = [t.strip() for t in tickers.split(",") if t.strip()] if tickers else None
+    report = run_refresh(
+        platform_config,
+        tickers=ticker_list,
+        do_all=all_,
+        actions=actions,
+        prices=prices,
+        fundamentals=fundamentals,
+        clear_negative_cache=clear_negative_cache,
+        unquarantine=unquarantine,
+        as_of=as_of,
+    )
+    typer.echo(f"refreshed {len(report.tickers)} ticker(s)")
+    if actions:
+        typer.echo(
+            f"  actions: {len(report.actions_refreshed)} refreshed, "
+            f"{len(report.actions_failures)} failed"
+        )
+    if prices:
+        typer.echo(
+            f"  prices: {len(report.prices_refreshed)} refreshed, "
+            f"{len(report.prices_failures)} failed"
+        )
+    if fundamentals:
+        typer.echo(
+            f"  fundamentals: {len(report.fundamentals_refreshed)} refreshed, "
+            f"{len(report.fundamentals_failures)} failed"
+        )
+    if clear_negative_cache:
+        typer.echo(f"  negative-cache cleared: {len(report.negative_cache_cleared)}")
+    if unquarantine is not None:
+        typer.echo(f"  unquarantine {unquarantine}: {report.unquarantine_result}")
+
+
+@data_app.command("scan")
+def data_scan(
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+    with_membership: bool = typer.Option(
+        True,
+        "--with-membership/--no-membership",
+        help="Also run the membership-aware symbol-reuse detector (needs the constituents "
+        "provider; slower, more thorough).",
+    ),
+) -> None:
+    """Scan the on-disk price cache for corrupt/reused-symbol tickers
+    (`data/quality.py`'s `scan_price_cache`) and quarantine any that fail.
+    Offline; writes/updates each quarantined ticker's sidecar plus a
+    cache-level scan-coverage manifest."""
+    from quantlab.core.config import load_platform_config
+    from quantlab.data.interfaces import build_provider
+    from quantlab.data.ops import scan as run_scan
+
+    platform_config = load_platform_config(platform)
+    constituents_provider = None
+    if with_membership:
+        constituents_provider = build_provider(
+            "constituents", platform_config.providers.constituents, platform_config
+        )
+    report = run_scan(platform_config, constituents_provider=constituents_provider)
+    typer.echo(f"scanned {report.scanned_count} ticker(s); quarantined {len(report.quarantined)}")
+    for ticker, reasons in sorted(report.quarantined.items()):
+        typer.echo(f"  {ticker}: {'; '.join(reasons)}")
+
+
+@data_app.command("status")
+def data_status(
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+) -> None:
+    """Cache coverage report: per-kind ticker counts, the actions cache's
+    fetched_at range, negative-cache/quarantine/masked-truncation counts,
+    and how many cached tickers no scan has ever visited."""
+    from quantlab.core.config import load_platform_config
+    from quantlab.data.ops import status as run_status
+
+    platform_config = load_platform_config(platform)
+    report = run_status(platform_config)
+    typer.echo(
+        f"prices: {report.price_ticker_count}  actions: {report.actions_ticker_count}  "
+        f"fundamentals: {report.fundamentals_ticker_count}"
+    )
+    typer.echo(
+        f"actions fetched_at range: {report.actions_fetched_at_oldest} - "
+        f"{report.actions_fetched_at_newest}"
+    )
+    typer.echo(f"no_data (negative cache): {report.no_data_count}")
+    typer.echo(f"quarantined: {len(report.quarantined)}")
+    for ticker, reasons in sorted(report.quarantined.items()):
+        typer.echo(f"  {ticker}: {'; '.join(reasons)}")
+    typer.echo(f"masked truncations: {report.masked_truncation_count}")
+    typer.echo(
+        f"never scanned: {report.never_scanned_count} "
+        f"(last scan: {report.scan_checked_at or 'never'})"
+    )
 
 
 @app.command()
@@ -314,14 +480,26 @@ def _record_sensitivity_result(
 ) -> None:
     """Record every sensitivity grid point into the registry (quant-gate
     VERDICT.md M06 cycle-1 finding 5(c)) - `registry.record_sensitivity` is
-    never called from product code before this."""
+    never called from product code before this.
+
+    M09 fix (orchestrator-directed): forwards `sensitivity_result.
+    net_returns_by_strategy_id` (populated by `sensitivity_grid` itself,
+    from each grid point's OWN return series, not re-derived here) into
+    `record_sensitivity`'s `net_returns_by_strategy_id` - before this fix,
+    every sensitivity trial was recorded Sharpe-only (no stored series),
+    which permanently starved `build_trial_matrix` (reality_check.py) of
+    enough series-bearing trials to ever run White's Reality Check / Hansen
+    SPA at all, regardless of how many grid points had actually run."""
     from quantlab.validation.metrics import PERIODS_PER_YEAR
 
     backtest_config_dict = bt_result.provenance.get("backtest_config", {})
     rebalance_freq = backtest_config_dict.get("rebalance_freq")
     periods_per_year = PERIODS_PER_YEAR.get(rebalance_freq) if rebalance_freq else None
     registry.record_sensitivity(
-        sensitivity_result, family=family or "unknown", periods_per_year=periods_per_year
+        sensitivity_result,
+        family=family or "unknown",
+        periods_per_year=periods_per_year,
+        net_returns_by_strategy_id=sensitivity_result.net_returns_by_strategy_id,
     )
 
 
@@ -370,16 +548,32 @@ def _build_walk_forward_result(
 
     try:
         from quantlab.backtest.result import BacktestResult
+        from quantlab.validation.metrics import PERIODS_PER_YEAR
         from quantlab.validation.walk_forward import walk_forward_blend
 
         children = [BacktestResult.load(d) for d in child_result_dirs]
         _check_child_rebalance_frequencies(children, child_result_dirs)
         wf = validation_config.walk_forward
+        # M09 fix: this used to default to `walk_forward_blend`'s own
+        # QUARTERS_PER_YEAR=4 unconditionally - correct for the OLD repo's
+        # quarterly blend sweep (this module's own docstring), but WRONG
+        # whenever the children actually rebalance monthly (quantlab's own
+        # shipped momentum_12_1_2012_2026.yaml / value_composite_2012_2026.yaml
+        # both use rebalance_freq: month_end) - `train_len`/`test_len` would
+        # then count MONTHS as if they were quarters (a 5-year training
+        # window becomes 20 months, not 20 quarters) and the Sharpe
+        # annualization would use sqrt(4) instead of sqrt(12).
+        # `_check_child_rebalance_frequencies` above already guarantees every
+        # child shares ONE frequency, so deriving it from the first child is
+        # exact, not a guess.
+        rebalance_freq = children[0].provenance.get("backtest_config", {}).get("rebalance_freq")
+        periods_per_year = PERIODS_PER_YEAR.get(rebalance_freq, 4)
         return walk_forward_blend(
             [c.net_returns for c in children],
             weight_grid=[tuple(w) for w in wf.weight_grid],
             train_years=wf.train_years,
             test_years=wf.test_years,
+            periods_per_year=periods_per_year,
             child_labels=tuple(d.name for d in child_result_dirs),
         )
     except Exception as exc:  # noqa: BLE001 - degrade to "no walk-forward", never crash --full
@@ -515,6 +709,111 @@ def report(
     written = render_report(result, out, card_dir=card, config=validation_config, fmt=format)
     for kind, path in written.items():
         typer.echo(f"wrote {kind}: {path}")
+
+
+_VERDICT_EXIT_CODES = {"ELIGIBLE_FOR_PAPER": 0, "RESEARCH_ONLY": 2, "REJECTED": 3}
+
+
+@app.command()
+def run(
+    backtest: Path = typer.Option(..., "--backtest", exists=True, help="Backtest config YAML."),
+    strategy: Path | None = typer.Option(
+        None,
+        "--strategy",
+        exists=True,
+        help="Strategy YAML - overrides the --backtest config's own strategy_config.",
+    ),
+    validation: Path = typer.Option(
+        Path("configs/validation.yaml"), "--validation", help="Path to validation.yaml."
+    ),
+    out: Path = typer.Option(..., "--out", help="Directory for all three artefacts."),
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+) -> None:
+    """One command: backtest -> validate --full -> report, writing the
+    BacktestResult, `validation_basic.json`, `report_card.json`/`.md` and
+    the rendered report into `--out`, and updating the trials registry.
+
+    Exit code reflects the verdict, so a scheduler can branch on it:
+    0 = ELIGIBLE_FOR_PAPER, 2 = RESEARCH_ONLY, 3 = REJECTED.
+
+    Does NOT wire a walk-forward honesty check (that needs a blend's own
+    CHILD sleeve result directories - run `quantlab validate --full
+    --child-result <dir> --child-result <dir>` on the blend's own `--out`
+    afterward for that; see the README)."""
+    import json
+    import time
+
+    from quantlab.backtest.config import load_backtest_config
+    from quantlab.backtest.engine import build_backtest_providers
+    from quantlab.backtest.engine import run_backtest as _run_backtest_engine
+    from quantlab.core.config import load_platform_config
+    from quantlab.reporting.render import render_report
+    from quantlab.strategies.registry import load_strategy
+    from quantlab.validation.basic import load_validation_config, validate_basic
+    from quantlab.validation.registry import TrialsRegistry
+    from quantlab.validation.report_card import build_report_card
+
+    t0 = time.perf_counter()
+    platform_config = load_platform_config(platform)
+    backtest_config = load_backtest_config(backtest, platform_config)
+    if strategy is not None:
+        backtest_config = backtest_config.model_copy(update={"strategy_config": strategy.resolve()})
+    strategy_obj = load_strategy(backtest_config.strategy_config)
+    providers = build_backtest_providers(platform_config)
+    out.mkdir(parents=True, exist_ok=True)
+
+    typer.echo(f"[1/3] backtest: {backtest_config.strategy_config.name} ...")
+    result = _run_backtest_engine(strategy_obj, backtest_config, providers)
+    result.save(out)
+    typer.echo(f"  done in {result.provenance['run_seconds']:.1f}s")
+
+    typer.echo("[2/3] validate --full ...")
+    validation_config = load_validation_config(validation)
+    sensitivity_result = _build_sensitivity_result(result, platform, validation_config)
+    basic = validate_basic(result, None, validation_config, sensitivity=sensitivity_result)
+    (out / "validation_basic.json").write_text(
+        json.dumps(basic.to_json(), sort_keys=True), encoding="utf-8"
+    )
+
+    registry = TrialsRegistry(platform_config.reports_dir)
+    registry.seed_historical_blend_trials()
+    price_panel, missing_tickers = _build_capacity_price_panel(result, platform_config)
+    strategy_id = result.provenance.get("strategy_id", "")
+    family = strategy_id.rsplit("-", 1)[0] if strategy_id else ""
+    if sensitivity_result is not None:
+        _record_sensitivity_result(result, sensitivity_result, family, registry)
+
+    report_card = build_report_card(
+        result,
+        None,
+        registry,
+        validation_config,
+        sensitivity=sensitivity_result,
+        price_panel=price_panel,
+        price_panel_missing_tickers=missing_tickers,
+    )
+    (out / "report_card.json").write_text(
+        json.dumps(report_card.to_json(), sort_keys=True), encoding="utf-8"
+    )
+    (out / "report_card.md").write_text(
+        _report_card_markdown(result, report_card), encoding="utf-8"
+    )
+    typer.echo(f"  verdict: {report_card.verdict}")
+    for gate in report_card.gates:
+        status_str = "PASS" if gate.passed else "FAIL"
+        typer.echo(f"    [{gate.kind:13s} {status_str}] {gate.name}: {gate.reason}")
+
+    typer.echo("[3/3] report ...")
+    written = render_report(out, out, card_dir=out, config=validation_config, fmt="both")
+    for kind, path in written.items():
+        typer.echo(f"  wrote {kind}: {path}")
+
+    typer.echo(
+        f"quantlab run finished in {time.perf_counter() - t0:.1f}s - verdict {report_card.verdict}"
+    )
+    raise typer.Exit(code=_VERDICT_EXIT_CODES[report_card.verdict])
 
 
 @app.command()

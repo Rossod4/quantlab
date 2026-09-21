@@ -136,13 +136,37 @@ def test_has_sufficient_price_cache_returns_none_for_no_data_after_ttl(tmp_path,
     assert result is None
 
 
-def test_has_sufficient_price_cache_no_data_requires_the_request_to_still_be_covered(tmp_path):
-    """A no_data sidecar recorded for a NARROWER range than is now requested
-    must not be trusted, even within the TTL - the retry must happen for the
-    newly-widened part of the window."""
-    write_price_cache_no_data_meta("GONE", "2020-06-01", "2020-12-31", tmp_path)
+def test_has_sufficient_price_cache_no_data_covers_a_wider_request_within_ttl(tmp_path):
+    """M09 fix (orchestrator-directed): a `no_data` verdict is per SYMBOL,
+    not per date range - a ticker Yahoo does not serve AT ALL returns zero
+    rows for any window, so a no_data sidecar recorded for a NARROWER range
+    than is now requested must still be trusted within the TTL, exactly
+    like the original range. Before this fix, a single sensitivity-grid
+    point requesting a wider lookback window re-triggered a live,
+    network-throttled re-fetch of every already-known-dead ticker on EVERY
+    such grid point - the exact regression this test pins. Real parquet
+    coverage (a ticker WITH data) is UNCHANGED by this fix - see
+    `test_has_sufficient_price_cache_returns_none_for_real_data_not_covering_a_wider_request`
+    below."""
+    write_price_cache_no_data_meta("GONE", "2010-04-12", "2026-07-10", tmp_path)
 
-    result = has_sufficient_price_cache("GONE", "2015-01-01", "2020-12-31", tmp_path)
+    result = has_sufficient_price_cache("GONE", "2009-12-01", "2026-07-10", tmp_path)
+
+    assert result is not None
+    assert result.empty
+
+
+def test_has_sufficient_price_cache_returns_none_for_real_data_not_covering_a_wider_request(
+    tmp_path,
+):
+    """The M09 fix above is scoped to the `no_data` branch ONLY - a ticker
+    with REAL cached data and a too-narrow requested range must still be
+    judged insufficient and re-fetched (branch 1's own range check, above
+    the no_data branch, is untouched)."""
+    _write_fake_cache(tmp_path, "PTV", "2020-06-01", "2020-12-31")
+    write_price_cache_meta("PTV", "2020-06-01", "2020-12-31", tmp_path)
+
+    result = has_sufficient_price_cache("PTV", "2015-01-01", "2020-12-31", tmp_path)
 
     assert result is None
 
@@ -351,3 +375,53 @@ def test_clear_quarantine_meta_preserves_other_sidecar_fields(tmp_path):
     meta = json.loads(price_meta_path("PTV", tmp_path).read_text())
     assert "quarantined" not in meta
     assert meta["requested_start"] == "2005-01-01"
+
+
+# --- clear_no_data_meta (M09, plans/M09-end-to-end.md: `quantlab data
+# refresh --clear-negative-cache`, documented in this module's own
+# docstring but not implemented until now) -----------------------------------
+
+
+def test_clear_no_data_meta_clears_the_flag_and_reports_true(tmp_path):
+    from quantlab.data.cache import clear_no_data_meta
+
+    write_price_cache_no_data_meta("MISSING", "2005-01-01", "2011-12-31", tmp_path)
+
+    cleared = clear_no_data_meta("MISSING", tmp_path)
+
+    assert cleared is True
+    meta = json.loads(price_meta_path("MISSING", tmp_path).read_text())
+    assert "no_data" not in meta
+    assert "fetched_at" not in meta
+    assert meta["requested_start"] == "2005-01-01"  # other sidecar fields untouched
+
+
+def test_clear_no_data_meta_is_a_noop_and_reports_false_when_nothing_to_clear(tmp_path):
+    from quantlab.data.cache import clear_no_data_meta
+
+    assert clear_no_data_meta("NEVER_SEEN", tmp_path) is False  # no sidecar at all
+
+    write_price_cache_meta("HEALTHY", "2005-01-01", "2011-12-31", tmp_path)
+    assert clear_no_data_meta("HEALTHY", tmp_path) is False  # sidecar exists, but no no_data flag
+    meta = json.loads(price_meta_path("HEALTHY", tmp_path).read_text())
+    assert meta["requested_start"] == "2005-01-01"
+
+
+def test_clear_no_data_meta_allows_the_cache_to_be_immediately_reused(tmp_path, monkeypatch):
+    """The whole point of the force-clear: a human who knows a `no_data`
+    verdict was wrong can override it before the TTL lapses, without
+    waiting `retry_after_days`."""
+    from quantlab.data.cache import clear_no_data_meta
+
+    monkeypatch.setattr(cache_module, "_today", lambda: pd.Timestamp("2024-01-01"))
+    write_price_cache_no_data_meta("MISSING", "2005-01-01", "2011-12-31", tmp_path)
+    # Still well within the default 30-day TTL - would normally still be
+    # served as "insufficient, but no need to re-fetch yet" (an empty frame).
+    assert has_sufficient_price_cache("MISSING", "2005-01-01", "2011-12-31", tmp_path) is not None
+
+    clear_no_data_meta("MISSING", tmp_path)
+
+    # No sidecar verdict left at all now - genuinely insufficient (None),
+    # exactly like a ticker that was never fetched, so the next real fetch
+    # is not skipped by a stale negative-cache verdict.
+    assert has_sufficient_price_cache("MISSING", "2005-01-01", "2011-12-31", tmp_path) is None

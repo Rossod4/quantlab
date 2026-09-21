@@ -303,3 +303,36 @@ def test_sensitivity_grid_trials_record_params_and_sharpe():
     assert lookbacks == [9, 12, 15]
     for trial in result.trials:
         assert trial.net_sharpe == pytest.approx(result.trials[0].net_sharpe)
+
+
+def test_sensitivity_grid_captures_each_trials_own_return_series():
+    """M09 fix (orchestrator-directed): before this, `sensitivity_grid`
+    discarded each grid point's `result.net_returns` right after extracting
+    its Sharpe, so `TrialsRegistry.record_sensitivity` could NEVER be given
+    a series to store, which permanently starved White's Reality Check /
+    Hansen SPA (reality_check.py's `build_trial_matrix`, which needs >= 2
+    series-bearing trials) of enough trials to ever run - regardless of how
+    many grid points had actually executed. `net_returns_by_strategy_id`
+    must carry each trial's OWN distinct series, keyed by its OWN
+    `strategy_id` (not one shared object)."""
+    returns_by_lookback = {9: _alternating(0.01, 0.0), 12: _alternating(0.02, 0.0)}
+
+    def runner(strategy_config, params, backtest_config):
+        return _FakeResult(net_returns=returns_by_lookback[params["lookback_months"]])
+
+    result = sensitivity_grid(
+        "configs/strategies/momentum.yaml",
+        {"lookback_months": [9, 12]},
+        _backtest_config(),
+        runner,
+        base_point={"lookback_months": 9},
+    )
+
+    assert len(result.net_returns_by_strategy_id) == 2
+    for trial in result.trials:
+        stored = result.net_returns_by_strategy_id[trial.strategy_id]
+        pd.testing.assert_series_equal(stored, returns_by_lookback[trial.params["lookback_months"]])
+    # Excluded from the JSON payload (a raw pd.Series per point has no
+    # business in report_card.json) - the field exists for cli.py's
+    # `_record_sensitivity_result` to read directly, not to be serialized.
+    assert "net_returns_by_strategy_id" not in result.to_json()

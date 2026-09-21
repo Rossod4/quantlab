@@ -8,7 +8,13 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from quantlab.validation.walk_forward import compound_to, compound_to_quarterly, walk_forward_blend
+from quantlab.validation.walk_forward import (
+    RankingAgreementResult,
+    compound_to,
+    compound_to_quarterly,
+    walk_forward_blend,
+    walk_forward_ranking_agreement,
+)
 
 
 def quarterly_dates(n: int) -> pd.DatetimeIndex:
@@ -148,3 +154,155 @@ def test_walk_forward_comparison_table_has_walk_forward_and_grid_columns():
         result.comparison[result.comparison.columns[1]],
         check_names=False,
     )
+
+
+# --- M09: per-step training Sharpes retained --------------------------------
+
+
+def test_training_sharpes_retained_for_every_grid_point_and_step():
+    n = 32
+    momentum = alternating_series(n, 0.04, 0.0)
+    value = alternating_series(n, 0.01, -0.01)
+    weight_grid = [(w, 1 - w) for w in (1.0, 0.75, 0.5, 0.25, 0.0)]
+    result = walk_forward_blend(
+        [momentum, value],
+        weight_grid=weight_grid,
+        train_years=5,
+        test_years=1,
+        periods_per_year=4,
+        child_labels=("momentum", "value"),
+    )
+    labels = [f"Fixed {w:.0%} momentum/{(1 - w):.0%} value" for w in (1.0, 0.75, 0.5, 0.25, 0.0)]
+
+    assert list(result.training_sharpes.index) == list(result.chosen_weights.index)
+    assert sorted(result.training_sharpes.columns) == sorted(labels)
+    # The chosen weight at every step must be the ARGMAX of that step's own
+    # training Sharpes among the grid (mirrors the tie-break the main loop
+    # already applies) - this is the exact invariant
+    # `no_chosen_step_has_nan_training_sharpe` and the ranking-agreement
+    # check both depend on being real, not fabricated.
+    for date, w in zip(result.chosen_weights.index, result.chosen_weights["momentum"], strict=True):
+        chosen_label = f"Fixed {w:.0%} momentum/{(1 - w):.0%} value"
+        row = result.training_sharpes.loc[date]
+        assert row[chosen_label] == pytest.approx(row.max())
+
+
+def test_no_chosen_step_has_nan_training_sharpe_true_on_a_clean_result():
+    n = 32
+    momentum = alternating_series(n, 0.04, 0.0)
+    value = alternating_series(n, 0.01, -0.01)
+    result = walk_forward_blend(
+        [momentum, value],
+        weight_grid=[(w, 1 - w) for w in (1.0, 0.75, 0.5, 0.25, 0.0)],
+        train_years=5,
+        test_years=1,
+        periods_per_year=4,
+    )
+    assert result.no_chosen_step_has_nan_training_sharpe() is True
+
+
+def test_no_chosen_step_has_nan_training_sharpe_none_when_field_absent():
+    n = 32
+    momentum = alternating_series(n, 0.04, 0.0)
+    value = alternating_series(n, 0.01, -0.01)
+    result = walk_forward_blend(
+        [momentum, value],
+        weight_grid=[(w, 1 - w) for w in (1.0, 0.75, 0.5, 0.25, 0.0)],
+        train_years=5,
+        test_years=1,
+        periods_per_year=4,
+    )
+    stripped = result.__class__(
+        oos_returns=result.oos_returns,
+        chosen_weights=result.chosen_weights,
+        comparison=result.comparison,
+        child_labels=result.child_labels,
+    )
+    assert stripped.no_chosen_step_has_nan_training_sharpe() is None
+
+
+def test_no_chosen_step_has_nan_training_sharpe_detects_a_zero_vol_first_grid_point():
+    # A zero-return (zero-vol) FIRST grid point has a NaN training Sharpe
+    # (std=0) and, per the module's own documented hazard, is seeded as
+    # `best_sharpe` before any comparison runs - `s > NaN` is always False,
+    # so it is NEVER beaten and stays "chosen" at every step regardless of
+    # the other grid points' real performance.
+    n = 32
+    momentum = alternating_series(n, 0.04, 0.0)
+    zero = pd.Series(0.0, index=momentum.index)
+    result = walk_forward_blend(
+        [zero, momentum],
+        weight_grid=[(1.0, 0.0), (0.0, 1.0)],
+        train_years=5,
+        test_years=1,
+        periods_per_year=4,
+    )
+    assert (result.chosen_weights["sleeve_0"] == 1.0).all()
+    assert result.no_chosen_step_has_nan_training_sharpe() is False
+
+
+# --- M09: ranking agreement under both cost conventions ---------------------
+
+
+def test_ranking_agreement_perfect_when_netted_book_matches_blend_of_net():
+    n = 32
+    momentum = alternating_series(n, 0.04, 0.0)
+    value = alternating_series(n, 0.01, -0.01)
+    weight_grid = [(w, 1 - w) for w in (1.0, 0.75, 0.5, 0.25, 0.0)]
+    result = walk_forward_blend(
+        [momentum, value], weight_grid=weight_grid, train_years=5, test_years=1, periods_per_year=4
+    )
+    # A netted-book Sharpe series that agrees EXACTLY with comparison's own
+    # blend-of-net Sharpe ranking (read straight off the fixture) - the
+    # "both conventions agree" case.
+    blend_of_net_sharpes = result.comparison.loc["Sharpe Ratio"]
+    netted_book_sharpes = {
+        w: blend_of_net_sharpes[f"Fixed {w[0]:.0%} sleeve_0/{w[1]:.0%} sleeve_1"]
+        for w in weight_grid
+    }
+
+    agreement = walk_forward_ranking_agreement(result, netted_book_sharpes)
+
+    assert isinstance(agreement, RankingAgreementResult)
+    assert agreement.n_points == len(weight_grid)
+    assert agreement.kendall_tau == pytest.approx(1.0)
+    assert agreement.top_choice_agrees is True
+    assert agreement.blend_of_net_ranking == agreement.netted_book_ranking
+
+
+def test_ranking_agreement_detects_a_reversed_top_choice():
+    n = 32
+    momentum = alternating_series(n, 0.04, 0.0)
+    value = alternating_series(n, 0.01, -0.01)
+    weight_grid = [(w, 1 - w) for w in (1.0, 0.75, 0.5, 0.25, 0.0)]
+    result = walk_forward_blend(
+        [momentum, value], weight_grid=weight_grid, train_years=5, test_years=1, periods_per_year=4
+    )
+    blend_of_net_sharpes = result.comparison.loc["Sharpe Ratio"]
+    ranking = blend_of_net_sharpes.drop("Walk-Forward").sort_values()
+    # Reverse the ranking entirely: assign the WORST blend-of-net label's
+    # rank position to the netted-book Sharpe of the BEST label, and so on.
+    reversed_values = list(ranking.to_numpy())
+    netted_by_label = dict(zip(ranking.index, reversed(reversed_values), strict=True))
+    netted_book_sharpes = {
+        w: netted_by_label[f"Fixed {w[0]:.0%} sleeve_0/{w[1]:.0%} sleeve_1"] for w in weight_grid
+    }
+
+    agreement = walk_forward_ranking_agreement(result, netted_book_sharpes)
+
+    assert agreement.kendall_tau < 0
+    assert agreement.top_choice_agrees is False
+
+
+def test_ranking_agreement_raises_on_a_mismatched_grid():
+    n = 32
+    momentum = alternating_series(n, 0.04, 0.0)
+    value = alternating_series(n, 0.01, -0.01)
+    weight_grid = [(1.0, 0.0), (0.5, 0.5), (0.0, 1.0)]
+    result = walk_forward_blend(
+        [momentum, value], weight_grid=weight_grid, train_years=5, test_years=1, periods_per_year=4
+    )
+    incomplete = {(1.0, 0.0): 1.0}  # missing (0.5, 0.5) and (0.0, 1.0)
+
+    with pytest.raises(ValueError):
+        walk_forward_ranking_agreement(result, incomplete)

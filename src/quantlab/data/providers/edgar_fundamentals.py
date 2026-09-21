@@ -352,6 +352,52 @@ def _ttm_duration(
     return None
 
 
+def _ttm_duration_components(
+    facts: pd.DataFrame, tag_candidates: list[str], as_of_date: pd.Timestamp
+) -> list[tuple[float, pd.Timestamp]] | None:
+    """ADDITIVE M09 helper (plans/M09-end-to-end.md, closing plans/QUANT-NOTES.md's
+    "From M03b verdict" item 1 - the TTM EPS mixed-share-terms residual):
+    mirrors `_ttm_duration`/`_ttm_duration_with_latest_filed` step for step
+    (identical duration-day windows, identical restated-quarter dedup by
+    latest filed, identical four-quarter-sum / annual fallback selection),
+    so `sum(v for v, _ in components)` is byte-identical to what
+    `_ttm_duration` already computes - but returns each summed component's
+    OWN (value, filed) pair instead of one aggregate value plus the single
+    LATEST filed date. `PITDataContext.fundamentals()` (data/pit.py) uses
+    this to restate EACH quarter by the splits between ITS OWN filed date
+    and asof before summing, rather than restating the aggregate by one
+    factor keyed only to the latest component's filed date - the latter is
+    exact only when every summed component was filed in the same share
+    terms, and silently mis-restates whenever a split falls BETWEEN two
+    component filings (measured at the M03b gate: a 4:1 split between the
+    2nd and 3rd component filings left `ttm_eps` at 2.50x the correct value,
+    since the single-factor window (latest_filed, asof] never contained the
+    split at all). Neither `_ttm_duration` nor `_ttm_duration_with_latest_
+    filed` is modified, so every pre-M09 parity fixture pinned against
+    either stays byte-identical; when every component shares one filed date
+    (the common case), per-component restatement reduces to exactly the
+    same single-factor result."""
+    subset = _duration_facts(facts, tag_candidates, as_of_date)
+    if subset.empty:
+        return None
+
+    quarterly = subset[(subset["duration_days"] >= 80) & (subset["duration_days"] <= 100)]
+    if not quarterly.empty:
+        quarterly = quarterly.sort_values("filed").drop_duplicates(subset="end", keep="last")
+        quarterly = quarterly.sort_values("end", ascending=False)
+        last_four = quarterly.head(4)
+        if len(last_four) == 4:
+            return [(float(row["val"]), row["filed"]) for _, row in last_four.iterrows()]
+
+    annual = subset[(subset["duration_days"] >= 350) & (subset["duration_days"] <= 386)]
+    if not annual.empty:
+        annual = annual.sort_values(["end", "filed"])
+        row = annual.iloc[-1]
+        return [(float(row["val"]), row["filed"])]
+
+    return None
+
+
 def _ttm_duration_with_latest_filed(
     facts: pd.DataFrame, tag_candidates: list[str], as_of_date: pd.Timestamp
 ) -> tuple[float | None, pd.Timestamp | None]:
@@ -491,6 +537,15 @@ class PointInTimeFundamentals:
     into the share terms in force at its own `asof` - see that module for
     the ASC 260 argument for why the relevant window is (filed, asof], not
     (period_end, asof].
+
+    `ttm_eps_components` (ADDITIVE, M09, plans/M09-end-to-end.md): the same
+    up-to-four (value, filed) pairs `_ttm_duration_components` selected to
+    build `ttm_eps` (or the single annual-fallback pair) - `None` exactly
+    when `ttm_eps` is None. `PITDataContext.fundamentals()` restates EACH
+    component by the splits between ITS OWN filed date and asof before
+    summing, rather than by one factor keyed to `ttm_eps_filed` alone - see
+    that field's own docstring above for why the single-factor approach is
+    exact only when every component shares one filed date.
     """
 
     shares_outstanding: float | None
@@ -502,6 +557,7 @@ class PointInTimeFundamentals:
     annual_eps_growth: float | None
     shares_outstanding_filed: pd.Timestamp | None
     ttm_eps_filed: pd.Timestamp | None
+    ttm_eps_components: list[tuple[float, pd.Timestamp]] | None = None
 
 
 def get_point_in_time_fundamentals(facts: pd.DataFrame, as_of_date) -> PointInTimeFundamentals:
@@ -526,10 +582,12 @@ def get_point_in_time_fundamentals(facts: pd.DataFrame, as_of_date) -> PointInTi
     ttm_eps, ttm_eps_filed = _ttm_duration_with_latest_filed(
         facts, ["EarningsPerShareDiluted"], as_of_date
     )
+    ttm_eps_components = _ttm_duration_components(facts, ["EarningsPerShareDiluted"], as_of_date)
     if ttm_eps is None:
         ttm_eps, ttm_eps_filed = _ttm_duration_with_latest_filed(
             facts, ["EarningsPerShareBasic"], as_of_date
         )
+        ttm_eps_components = _ttm_duration_components(facts, ["EarningsPerShareBasic"], as_of_date)
 
     operating_income = _ttm_duration(facts, ["OperatingIncomeLoss"], as_of_date)
     d_and_a = _ttm_duration(
@@ -555,6 +613,7 @@ def get_point_in_time_fundamentals(facts: pd.DataFrame, as_of_date) -> PointInTi
         annual_eps_growth=annual_eps_growth,
         shares_outstanding_filed=shares_outstanding_filed,
         ttm_eps_filed=ttm_eps_filed,
+        ttm_eps_components=ttm_eps_components,
     )
 
 
@@ -568,6 +627,7 @@ _EMPTY_FUNDAMENTALS = PointInTimeFundamentals(
     annual_eps_growth=None,
     shares_outstanding_filed=None,
     ttm_eps_filed=None,
+    ttm_eps_components=None,
 )
 
 

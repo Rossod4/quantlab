@@ -258,6 +258,7 @@ from quantlab.core.errors import (
 )
 from quantlab.core.semantics import DATA_SEMANTICS_VERSION
 from quantlab.core.types import PortfolioSnapshot, TargetWeights, normalize_timestamp
+from quantlab.data.cache import DEFAULT_RETRY_AFTER_DAYS, price_meta_path, read_json_meta
 from quantlab.data.interfaces import (
     ConstituentsProvider,
     CorporateActionsProvider,
@@ -266,7 +267,7 @@ from quantlab.data.interfaces import (
     build_provider,
 )
 from quantlab.data.pit import PITDataContext
-from quantlab.data.quality import membership_start_by_ticker
+from quantlab.data.quality import membership_start_by_ticker, unscanned_tickers
 from quantlab.data.requirements import DataRequirements
 from quantlab.data.survivorship import coverage_gap, price_availability_from_cache
 from quantlab.strategies.base import Strategy
@@ -288,12 +289,15 @@ _LAST_PRICE_SEARCH_LOOKBACK_DAYS = 400
 _PERIODS_PER_YEAR: dict[RebalanceFreq, float] = {"daily": 252.0, "weekly": 52.0, "month_end": 12.0}
 
 _TTM_EPS_CAVEAT = (
-    "TTM EPS can be a mixed-share-terms sum when a split falls between component "
-    "filings and restated comparatives are not yet filed (bounded to the P/E leg; "
-    "adverse direction - see plans/QUANT-NOTES.md 'From M03b verdict' item 1). The "
-    "correct fix is a data-layer follow-on (per-component share terms) scheduled "
-    "after M06; until then, treat any value/blend result touching ttm_eps with this "
-    "caveat in mind."
+    "TTM EPS is restated PER-COMPONENT (M09, data/pit.py's fundamentals() restatement using "
+    "data/providers/edgar_fundamentals.py's ttm_eps_components): a split falling BETWEEN two "
+    "component filings no longer leaves the sum in mixed share terms (closing "
+    "plans/QUANT-NOTES.md 'From M03b verdict' item 1 - was bounded to the P/E leg, adverse "
+    "direction, up to 2.5x on the gate's own straddling-split fixture). A narrower residual "
+    "remains when a fundamentals provider supplies no per-component data at all (falls back to "
+    "the pre-M09 single-filed-date restatement) or a filer's own reporting convention does not "
+    "follow the modelled quarter/annual duration windows; treat any value/blend result touching "
+    "ttm_eps with this narrower caveat in mind."
 )
 
 
@@ -309,13 +313,26 @@ class BacktestAbortError(QuantLabError):
 class BacktestProviders:
     """The four concrete providers a backtest run is wired to, plus the
     cache directory they share (needed for survivorship's cache-sidecar
-    inspection and for provenance)."""
+    inspection and for provenance).
+
+    `retry_after_days` (M09, plans/M09-end-to-end.md carried item 3):
+    the negative-price-cache TTL (`PlatformConfig.retry_after_days`,
+    `data/cache.py`'s `has_sufficient_price_cache`) this run's price
+    provider was actually built with - recorded in provenance (below) so a
+    reader can tell that the same config run today and in
+    `retry_after_days` more days could see a DIFFERENT set of tickers
+    (QUANT-NOTES.md "From M04b verdict" item 3 / M06-M09 carried item), not
+    just that the mechanism exists somewhere in the code. Defaults to
+    `DEFAULT_RETRY_AFTER_DAYS` for callers (mostly tests) that construct
+    this dataclass directly without threading a real `PlatformConfig`
+    through."""
 
     price: PriceProvider
     constituents: ConstituentsProvider
     fundamentals: FundamentalsProvider
     corporate_actions: CorporateActionsProvider
     cache_dir: Path
+    retry_after_days: int = DEFAULT_RETRY_AFTER_DAYS
 
 
 def build_backtest_providers(platform_config: PlatformConfig) -> BacktestProviders:
@@ -346,6 +363,7 @@ def build_backtest_providers(platform_config: PlatformConfig) -> BacktestProvide
         fundamentals=fundamentals,
         corporate_actions=corporate_actions,
         cache_dir=platform_config.cache_dir,
+        retry_after_days=platform_config.retry_after_days,
     )
 
 
@@ -800,14 +818,36 @@ def _git_dirty() -> bool | None:
     return None
 
 
+def _no_data_suppressed_tickers(
+    cache_dir: Path, tickers: set[str], retry_after_days: int
+) -> list[str]:
+    """M09 (plans/M09-end-to-end.md carried item 3, QUANT-NOTES.md "From
+    M04b verdict" item 3 / M06-M09 carried item): which of this run's
+    tracked-universe tickers are CURRENTLY being served an empty frame by
+    an ACTIVE (within `retry_after_days`) negative-cache `no_data` sidecar
+    (data/cache.py's `has_sufficient_price_cache`) - the TTL makes this a
+    wall-clock-dependent set, so it must be counted and named, not left
+    implicit in a mechanism a reader has to already know about."""
+    today = pd.Timestamp.now().normalize()
+    suppressed = []
+    for ticker in sorted(tickers):
+        meta = read_json_meta(price_meta_path(ticker, cache_dir))
+        if meta is None or not meta.get("no_data"):
+            continue
+        fetched_at = meta.get("fetched_at")
+        if fetched_at is None:
+            continue
+        if today - pd.Timestamp(fetched_at) < pd.Timedelta(days=retry_after_days):
+            suppressed.append(ticker)
+    return suppressed
+
+
 def _actions_fetched_at(cache_dir: Path, tickers: set[str]) -> dict[str, str | None]:
     """Read the `fetched_at` sidecar (data/corporate_actions.py's staleness
     metadata) for each ticker directly, for provenance's fetched_at min/max
     - a documented, read-only duplication of that module's private path
     convention (`<cache_dir>/actions/<ticker>.meta.json`), not a second
     caching implementation."""
-    from quantlab.data.cache import read_json_meta
-
     result: dict[str, str | None] = {}
     for ticker in tickers:
         meta = read_json_meta(Path(cache_dir) / "actions" / f"{ticker}.meta.json")
@@ -822,6 +862,15 @@ def run_backtest(
     strategy: Strategy, config: BacktestConfig, providers: BacktestProviders
 ) -> BacktestResult:
     _run_start = time.perf_counter()  # provenance.run_seconds, M04b work packet item 6
+    # M09 observability guard (orchestrator-directed): snapshot the price
+    # provider's own network-fetch-attempt counter (`YFinancePriceProvider.
+    # network_fetch_attempts`, if the configured provider exposes one -
+    # `getattr` degrades to None for a provider that doesn't, e.g. a test
+    # fake) BEFORE this call does anything, so the delta at the end names
+    # THIS call's own contribution even though the provider instance is
+    # shared and reused across an entire `quantlab run` (including every
+    # sensitivity-grid backtest - see `_make_sensitivity_runner`).
+    _network_fetch_attempts_start = getattr(providers.price, "network_fetch_attempts", None)
     requirements = strategy.requires()
 
     raw_dates = rebalance_dates(config.start, config.end, config.rebalance_freq)
@@ -1245,6 +1294,58 @@ def run_backtest(
             "trading under the same symbol (data/quality.py's scan_price_cache) - see "
             "provenance.quarantined_tickers."
         )
+    # M09 (plans/QUANT-NOTES.md "M09 (quantlab data scan), must-fix" - closing the M04b
+    # residual that a never-scanned cache was indistinguishable from a scanned-and-clean
+    # one): a run's own universe may contain tickers `quantlab data scan` has never
+    # visited (scan-coverage manifest, data/quality.py's `unscanned_tickers`), whose
+    # quarantine status is therefore unknown, not confirmed-clean.
+    never_scanned_in_universe = unscanned_tickers(providers.cache_dir, sorted(coverage_tickers))
+    if never_scanned_in_universe:
+        known_caveats.append(
+            f"{len(never_scanned_in_universe)} ticker(s) in this run's tracked universe have "
+            "NEVER been visited by `quantlab data scan` - their quarantine status is unknown, "
+            "not confirmed-clean; run `quantlab data scan` before trusting the quarantined "
+            "count above as complete. See provenance.never_scanned_tickers."
+        )
+
+    no_data_suppressed_tickers = _no_data_suppressed_tickers(
+        providers.cache_dir, coverage_tickers, providers.retry_after_days
+    )
+    if no_data_suppressed_tickers:
+        known_caveats.append(
+            f"{len(no_data_suppressed_tickers)} ticker(s) in this run's tracked universe are "
+            f"currently suppressed by an ACTIVE negative-cache 'no_data' sidecar (TTL "
+            f"{providers.retry_after_days} days) - the same config run again after the TTL "
+            "lapses could see a DIFFERENT set of tickers. See provenance.retry_after_days and "
+            "provenance.no_data_suppressed_tickers."
+        )
+
+    # M09 observability guard (orchestrator-directed): how many tickers THIS
+    # call's own price provider decided needed a live fetch attempt - see
+    # `_network_fetch_attempts_start`'s own comment above for why this is a
+    # delta, not the provider's raw (shared, cumulative-across-calls)
+    # counter. More than a few multiples of the tracked universe strongly
+    # suggests the SAME already-known-unfetchable tickers are being
+    # re-attempted repeatedly (the exact regression class a too-strict
+    # negative-cache range check caused - see data/cache.py's `has_
+    # sufficient_price_cache` docstring) rather than a genuine one-pass
+    # cold-cache warm-up, so it is surfaced as a named caveat, not silently
+    # absorbed into a merely slower run.
+    _network_fetch_attempts_end = getattr(providers.price, "network_fetch_attempts", None)
+    network_fetch_attempts_this_run: int | None = None
+    if _network_fetch_attempts_start is not None and _network_fetch_attempts_end is not None:
+        network_fetch_attempts_this_run = (
+            _network_fetch_attempts_end - _network_fetch_attempts_start
+        )
+        if network_fetch_attempts_this_run > 3 * max(len(coverage_tickers), 1):
+            known_caveats.append(
+                f"this run's price provider attempted {network_fetch_attempts_this_run} live "
+                f"fetch(es) against a tracked universe of only {len(coverage_tickers)} ticker(s) "
+                "- more than 3x suggests the SAME already-unfetchable ticker(s) are being "
+                "re-attempted repeatedly rather than a genuine one-pass cache warm-up; see "
+                "provenance.price_provider_network_fetch_attempts and data/cache.py's "
+                "has_sufficient_price_cache docstring."
+            )
 
     fetched_at = _actions_fetched_at(providers.cache_dir, all_encountered_tickers)
     known_fetched_at = sorted(v for v in fetched_at.values() if v is not None)
@@ -1280,6 +1381,21 @@ def run_backtest(
         "quarantined_tickers": quarantined_tickers,
         "masked_start_count": len(masked_start_tickers),
         "masked_start_tickers": masked_start_tickers,
+        # M09: see the known_caveats entry above - tickers in this run's
+        # universe `quantlab data scan` has never visited.
+        "never_scanned_count": len(never_scanned_in_universe),
+        "never_scanned_tickers": never_scanned_in_universe,
+        # M09 carried item 3: the negative-cache TTL this run's price
+        # provider was built with, and which tracked-universe tickers are
+        # currently suppressed by an active no_data verdict under it - see
+        # the known_caveats entry above.
+        "retry_after_days": providers.retry_after_days,
+        "no_data_suppressed_count": len(no_data_suppressed_tickers),
+        "no_data_suppressed_tickers": no_data_suppressed_tickers,
+        # M09 observability guard: None when the configured price provider
+        # doesn't expose a counter (e.g. a test fake) - see the
+        # known_caveats entry above for the interpretation.
+        "price_provider_network_fetch_attempts": network_fetch_attempts_this_run,
         # M04b work packet item 6: wall-clock seconds for this ENTIRE
         # `run_backtest` call, measured from its very first line - the
         # acceptance-criterion timing number belongs in the artifact a real

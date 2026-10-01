@@ -283,6 +283,76 @@ def test_refresh_prices_refetches_past_requested_end(tmp_path, monkeypatch):
     assert pd.Timestamp(meta["requested_end"]) >= pd.Timestamp("2020-12-31")
 
 
+def _plant_no_data_sidecar(cache_dir, ticker: str, fetched_at: str) -> None:
+    from quantlab.data.cache import write_json_meta
+
+    write_json_meta(
+        price_meta_path(ticker, cache_dir),
+        {
+            "no_data": True,
+            "fetched_at": fetched_at,
+            "requested_start": "2015-01-01",
+            "requested_end": "2016-12-31",
+        },
+    )
+
+
+def _fake_price_download_counter(monkeypatch):
+    import quantlab.data.providers.yfinance_prices as yfinance_prices_module
+
+    calls: list[tuple[str, ...]] = []
+
+    def _fake_download(tickers, start, end):
+        calls.append(tuple(tickers))
+        dates = pd.date_range("2015-01-01", "2020-12-31", freq="B")
+        return pd.DataFrame(
+            {
+                "Open": 100.0,
+                "High": 101.0,
+                "Low": 99.0,
+                "Close": 100.0,
+                "Adj Close": 100.0,
+                "Volume": 5_000_000.0,
+            },
+            index=dates,
+        )
+
+    monkeypatch.setattr(yfinance_prices_module, "_download_batch", _fake_download)
+    return calls
+
+
+def test_refresh_prices_replaces_an_expired_negative_sidecar(tmp_path, monkeypatch):
+    """Carried M09 acceptance criterion 3: an EXPIRED no_data sidecar is
+    re-fetched by `refresh --prices` (no `--clear-negative-cache` needed) and
+    the successful download overwrites it with a real range sidecar."""
+    cache_dir = tmp_path / "cache"
+    platform_config = _write_platform_yaml(tmp_path, cache_dir=cache_dir)
+    _plant_no_data_sidecar(cache_dir, "AAA", "2000-01-01")  # far past retry_after_days
+    calls = _fake_price_download_counter(monkeypatch)
+
+    report = refresh(
+        platform_config, tickers=["AAA"], prices=True, as_of=pd.Timestamp("2020-12-31")
+    )
+
+    assert report.prices_refreshed == ["AAA"]
+    assert calls, "an expired negative sidecar must trigger a live re-fetch"
+    meta = read_json_meta(price_meta_path("AAA", cache_dir))
+    assert "no_data" not in meta
+    assert price_cache_path("AAA", cache_dir).exists()
+
+
+def test_refresh_prices_leaves_an_unexpired_negative_sidecar_alone(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "cache"
+    platform_config = _write_platform_yaml(tmp_path, cache_dir=cache_dir)
+    _plant_no_data_sidecar(cache_dir, "AAA", str(pd.Timestamp.now().date()))
+    calls = _fake_price_download_counter(monkeypatch)
+
+    refresh(platform_config, tickers=["AAA"], prices=True, as_of=pd.Timestamp("2020-12-31"))
+
+    assert not calls, "a within-TTL negative sidecar must suppress the re-fetch"
+    assert read_json_meta(price_meta_path("AAA", cache_dir))["no_data"] is True
+
+
 def test_refresh_fundamentals_forces_a_fresh_company_facts_download(tmp_path, monkeypatch):
     cache_dir = tmp_path / "cache"
     platform_config = _write_platform_yaml(tmp_path, cache_dir=cache_dir)

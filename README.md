@@ -146,11 +146,13 @@ be a deliberate step.
 
 For a blend, the walk-forward weight check and its ranking-agreement check under both cost
 conventions need the standalone sleeve runs and one dedicated blend backtest per INTERIOR grid
-weight (the endpoints of the grid ARE the standalone sleeves):
+weight (the endpoints of the grid ARE the standalone sleeves). Run the blend's own backtest with
+`quantlab backtest`, then validate and render it (`quantlab report`) with the sleeve results
+attached; `quantlab run --child-result ... --netted-grid-result ...` takes the same flags but
+re-runs the blend backtest first:
 
 ```
-uv run quantlab run --backtest configs/backtests/blend_50_50_2012_2026.yaml \
-  --out reports/blend_50_50 \
+uv run quantlab validate --full --result reports/blend_50_50 --out reports/blend_50_50 \
   --child-result reports/momentum_12_1 --child-result reports/value_composite \
   --netted-grid-result 0.75,0.25=reports/netted_grid/blend_75_25 \
   --netted-grid-result 0.5,0.5=reports/blend_50_50 \

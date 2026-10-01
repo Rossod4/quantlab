@@ -326,6 +326,13 @@ def validate(
         "honesty check when the headline strategy is a blend (repeat for each child; "
         "at least 2 required). Only meaningful with --full.",
     ),
+    netted_grid_result: list[str] = typer.Option(
+        [],
+        "--netted-grid-result",
+        help="'w1,w2=<dir>': a saved blend BacktestResult at those INTERIOR weights, for the "
+        "walk-forward ranking-agreement check (repeat per interior grid point; the one-hot "
+        "endpoints come from --child-result). Only meaningful with --full and --child-result.",
+    ),
 ) -> None:
     """Run basic-tier validation (metrics, rolling, sub-periods, flags) on a
     saved `BacktestResult` and write the report to `--out`; with `--full`,
@@ -345,6 +352,10 @@ def validate(
         sensitivity_result = _build_sensitivity_result(bt_result, platform, validation_config)
     if full and child_result:
         walk_forward_result = _build_walk_forward_result(bt_result, child_result, validation_config)
+
+    ranking_kwargs = _build_ranking_kwargs(
+        bt_result, walk_forward_result, child_result, netted_grid_result, validation_config
+    )
 
     basic = validate_basic(
         bt_result,
@@ -391,6 +402,7 @@ def validate(
             sensitivity=sensitivity_result,
             price_panel=price_panel,
             price_panel_missing_tickers=missing_tickers,
+            **ranking_kwargs,
         )
 
         (out / "report_card.json").write_text(
@@ -596,6 +608,44 @@ def _build_walk_forward_result(
         return None
 
 
+def _build_ranking_kwargs(
+    bt_result: BacktestResult,
+    walk_forward: WalkForwardResult | None,
+    child_result_dirs: list[Path],
+    netted_grid_specs: list[str],
+    validation_config: ValidationConfig,
+) -> dict:
+    """`build_report_card` kwargs for the walk-forward ranking-agreement
+    check (`validation/netted_grid.py` owns the logic and the window choice).
+    Empty when there is no walk-forward (nothing to rank); otherwise either
+    the real netted-book Sharpes with their provenance, or an explicit
+    "not checked: <reason>" - never a crash, never a silent None."""
+    if walk_forward is None:
+        return {}
+    from quantlab.backtest.result import BacktestResult
+    from quantlab.validation.netted_grid import build_netted_book_grid, parse_grid_spec
+
+    try:
+        specs = [parse_grid_spec(s) for s in netted_grid_specs]
+        children = [BacktestResult.load(d) for d in child_result_dirs]
+        outcome = build_netted_book_grid(
+            headline=bt_result,
+            walk_forward=walk_forward,
+            weight_grid=[tuple(w) for w in validation_config.walk_forward.weight_grid],
+            child_results=children,
+            child_dirs=list(child_result_dirs),
+            grid_specs=specs,
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade to "not checked", never crash --full
+        return {"ranking_not_checked_reason": f"could not assemble inputs: {exc}"}
+    if outcome.sharpes is None:
+        return {"ranking_not_checked_reason": outcome.reason}
+    return {
+        "netted_book_grid_sharpes": outcome.sharpes,
+        "ranking_agreement_detail": {"window": outcome.window, "inputs": outcome.inputs},
+    }
+
+
 def _build_capacity_price_panel(
     bt_result: BacktestResult, platform_config: PlatformConfig
 ) -> tuple[dict[str, pd.DataFrame] | None, list[str]]:
@@ -745,6 +795,18 @@ def run(
     platform: Path = typer.Option(
         Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
     ),
+    child_result: list[Path] = typer.Option(
+        [],
+        "--child-result",
+        help="Saved child-sleeve BacktestResult directory (blend only; repeat per child, at "
+        "least 2) - enables the walk-forward weight check on the blend's card.",
+    ),
+    netted_grid_result: list[str] = typer.Option(
+        [],
+        "--netted-grid-result",
+        help="'w1,w2=<dir>': saved blend BacktestResult at an INTERIOR grid weight (repeat), "
+        "for the walk-forward ranking-agreement check; endpoints come from --child-result.",
+    ),
 ) -> None:
     """One command: backtest -> validate --full -> report, writing the
     BacktestResult, `validation_basic.json`, `report_card.json`/`.md` and
@@ -753,10 +815,11 @@ def run(
     Exit code reflects the verdict, so a scheduler can branch on it:
     0 = ELIGIBLE_FOR_PAPER, 2 = RESEARCH_ONLY, 3 = REJECTED.
 
-    Does NOT wire a walk-forward honesty check (that needs a blend's own
-    CHILD sleeve result directories - run `quantlab validate --full
-    --child-result <dir> --child-result <dir>` on the blend's own `--out`
-    afterward for that; see the README)."""
+    For a blend, `--child-result` (twice) adds the walk-forward weight check
+    and `--netted-grid-result` (once per interior grid weight) the ranking-
+    agreement check under both cost conventions; both are optional, and a
+    missing or mismatched input is reported on the card as "not checked:
+    <reason>"."""
     import json
     import time
 
@@ -787,7 +850,19 @@ def run(
     typer.echo("[2/3] validate --full ...")
     validation_config = load_validation_config(validation)
     sensitivity_result = _build_sensitivity_result(result, platform, validation_config)
-    basic = validate_basic(result, None, validation_config, sensitivity=sensitivity_result)
+    walk_forward_result = None
+    if child_result:
+        walk_forward_result = _build_walk_forward_result(result, child_result, validation_config)
+    ranking_kwargs = _build_ranking_kwargs(
+        result, walk_forward_result, child_result, netted_grid_result, validation_config
+    )
+    basic = validate_basic(
+        result,
+        None,
+        validation_config,
+        walk_forward=walk_forward_result,
+        sensitivity=sensitivity_result,
+    )
     (out / "validation_basic.json").write_text(
         json.dumps(basic.to_json(), sort_keys=True), encoding="utf-8"
     )
@@ -805,9 +880,11 @@ def run(
         None,
         registry,
         validation_config,
+        walk_forward=walk_forward_result,
         sensitivity=sensitivity_result,
         price_panel=price_panel,
         price_panel_missing_tickers=missing_tickers,
+        **ranking_kwargs,
     )
     (out / "report_card.json").write_text(
         json.dumps(report_card.to_json(), sort_keys=True), encoding="utf-8"

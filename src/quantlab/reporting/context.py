@@ -591,12 +591,33 @@ def _transpose_comparison_by_grid_point(
 def _ranking_agreement_line(agreement: dict[str, Any] | None) -> str:
     if agreement is None:
         return "ranking agreement under both cost conventions: not checked"
+    if agreement.get("status") == "not_checked":
+        return (
+            "ranking agreement under both cost conventions: not checked - "
+            f"{agreement.get('reason', 'reason not recorded')}"
+        )
     verb = "AGREES" if agreement["top_choice_agrees"] else "DISAGREES"
-    return (
+    line = (
         "ranking agreement under both cost conventions (M09): Kendall tau="
         f"{_num(agreement['kendall_tau'], digits=4)} over {agreement['n_points']} grid points - "
         f"top choice {verb} between blend-of-net-returns and the engine's netted-book costing."
     )
+    window = agreement.get("window")
+    if window:
+        line += (
+            f" Both conventions measured on the {window['kind']} "
+            f"({window['start']} to {window['end']}, {window['n_periods']} periods, "
+            f"{window['periods_per_year']}/year)."
+        )
+    inputs = agreement.get("inputs")
+    if inputs:
+        line += " Netted-book inputs: " + "; ".join(
+            f"{'/'.join(f'{w:g}' for w in i['weights'])} = {i['strategy_id']} "
+            f"({i['source']}, {i['run_dir']}, Sharpe {_num(i['net_sharpe_oos'], digits=3)})"
+            for i in inputs
+        )
+        line += "."
+    return line
 
 
 def _walk_forward_section(

@@ -138,6 +138,30 @@ uv run quantlab run \
   --out reports/momentum_12_1
 ```
 
+Run `quantlab data scan` after ANY cache rebuild or `prefetch`, and before every real run: the
+quarantine verdict lives in each ticker's own price sidecar plus a cache-level scan manifest, so a
+rebuilt cache starts with neither. A run on a never-scanned cache is **caveated, not refused** -
+the report's known-caveats list names the unvisited tickers - which is exactly why the scan has to
+be a deliberate step.
+
+For a blend, the walk-forward weight check and its ranking-agreement check under both cost
+conventions need the standalone sleeve runs and one dedicated blend backtest per INTERIOR grid
+weight (the endpoints of the grid ARE the standalone sleeves):
+
+```
+uv run quantlab run --backtest configs/backtests/blend_50_50_2012_2026.yaml \
+  --out reports/blend_50_50 \
+  --child-result reports/momentum_12_1 --child-result reports/value_composite \
+  --netted-grid-result 0.75,0.25=reports/netted_grid/blend_75_25 \
+  --netted-grid-result 0.5,0.5=reports/blend_50_50 \
+  --netted-grid-result 0.25,0.75=reports/netted_grid/blend_25_75
+```
+
+Both conventions are measured on the walk-forward's out-of-sample window; each grid point's source
+run and strategy id is recorded in the card's `ranking_agreement` block, and any missing or
+mismatched input shows up as "not checked: <reason>" rather than a number
+(`src/quantlab/validation/netted_grid.py`).
+
 `quantlab run` chains backtest -> `validate --full` -> `report` into one directory and exits
 0 (ELIGIBLE_FOR_PAPER), 2 (RESEARCH_ONLY) or 3 (REJECTED) so a scheduler can branch on the
 verdict. Each of `backtest`, `validate` and `report` also works standalone - see
@@ -238,8 +262,8 @@ reproduces exactly.
 - **A real, measured fraction of the historical universe is invisible in the worst sampled year**
   (the coverage-gap bound - see each report's Trust panel and the reconciliation above for the
   exact figure) - long-delisted names Yahoo no longer serves at all, plus a cache-metadata-masked
-  truncation for a handful of tickers, plus the 47 tickers `quantlab data scan` quarantined before
-  these runs for a corrupted or Yahoo-symbol-reused price history. This is a ceiling on
+  truncation for a handful of tickers, plus the tickers `quantlab data scan` quarantined before
+  these runs (the exact count is in each report's provenance) for a corrupted or Yahoo-symbol-reused price history. This is a ceiling on
   invisibility, not a return impact, and SPY does not suffer it, which slightly flatters every
   strategy-vs-SPY comparison here.
 - **TTM EPS can still be off by more than a per-component restatement fixes** when a filer's
@@ -259,13 +283,18 @@ reproduces exactly.
   dependent** - the same config run today and in 31 days can see a different set of tickers
   (`quantlab data status`'s `fetched_at` range and negative-cache count are how this is surfaced,
   not hidden).
+- **Quarantine and scan state is not self-healing.** It is stored per ticker in the price sidecar
+  (`quarantined: true`) and in a cache-level scan manifest (`prices/_scan_manifest.json`). No
+  ordinary read or refresh drops it (a quarantined ticker is served as empty, never re-fetched),
+  but rebuilding the price cache from scratch does, silently - this project's own 2026-09-12 cache
+  rebuild did exactly that. Re-run `quantlab data scan` after any rebuild.
 - **A strategy that deliberately does `object.__setattr__(ctx, "_accounting", True)`** can still
   reach the accounting-only price accessor from its own decision path - no Python guard can
   prevent this, and it requires obviously-subversive code; documented, not fixed.
 - **Research and paper trading only. No live money moves through this platform.**
 - Post-v1 backlog, not started: a Trading212 practice-account adapter, a Norgate Data provider,
-  a forward-vs-backtest drift dashboard (the underlying `quantlab paper drift` check exists once
-  M08 paper trading is merged - see `plans/state/M09/HANDOFF.md`), and new (never chart-pattern)
+  a forward-vs-backtest drift dashboard (the underlying `quantlab paper drift` check already exists -
+  see `plans/state/M09/HANDOFF.md`), and new (never chart-pattern)
   strategy families.
 
 ## Repository layout

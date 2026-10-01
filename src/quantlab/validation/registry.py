@@ -480,15 +480,35 @@ class TrialsRegistry:
     def trials(
         self, family: str | None = None, *, with_series_only: bool = False
     ) -> list[TrialRecord]:
-        """Deduplicated (by KEY, first occurrence) trial records, optionally
-        filtered by family and/or to only those with a stored return series.
-        This is the RAW, per-key view - see `n_trials_raw()`. For anything
-        feeding DSR, use `n_trials()`/`var_sr_trials()`, which additionally
-        collapse by return-series content (see module docstring)."""
+        """Deduplicated (by KEY) trial records, optionally filtered by
+        family and/or to only those with a stored return series. This is
+        the RAW, per-key view - see `n_trials_raw()`. For anything feeding
+        DSR, use `n_trials()`/`var_sr_trials()`, which additionally collapse
+        by return-series content (see module docstring).
+
+        Registry write-path healing (M09, quant-gate carried item): dedup
+        prefers a record WITH a stored series (`series_path is not None`)
+        over one without, for the SAME key, rather than blindly keeping the
+        first line written. Without this, a sensitivity grid point that was
+        ever recorded series-less (e.g. before `record_sensitivity` was
+        given a `net_returns_by_strategy_id` to draw on, or a caller that
+        skipped it) is series-less FOREVER: the append-only log gains a
+        second, correctly series-bearing row for the identical key on a
+        rerun, but naive first-occurrence dedup would keep the earlier,
+        broken row - permanently starving `build_trial_matrix`
+        (reality_check.py) of a series it has since become available.
+        Among records that agree on series presence, the first-seen still
+        wins (unchanged; `record_backtest`'s series_path is never None, so
+        this is exactly the pre-existing behaviour
+        `test_same_key_recorded_twice_does_not_increment_n` pins)."""
         seen: dict[Key, TrialRecord] = {}
         for raw in self._read_all():
             record = TrialRecord.from_json(raw)
-            seen.setdefault(record.key, record)
+            existing = seen.get(record.key)
+            if existing is None:
+                seen[record.key] = record
+            elif existing.series_path is None and record.series_path is not None:
+                seen[record.key] = record
         results = list(seen.values())
         if family is not None:
             results = [r for r in results if r.family == family]

@@ -1203,6 +1203,51 @@ def test_price_provider_is_called_once_for_the_whole_run_not_once_per_rebalance(
     assert counting_provider.call_count == 1
 
 
+def test_provenance_records_total_provider_calls_per_provider(tmp_path):
+    """M09 orchestrator-directed item: `provenance.provider_call_counts`
+    breaks down calls by provider and `provenance.total_provider_calls` is
+    their sum - the signal `cli.py`'s `_make_sensitivity_runner` compares a
+    sensitivity grid point's own run against the headline run's own figure
+    to catch a caching/memoisation regression (a grid point should never
+    need materially MORE provider calls than the base run over the SAME
+    strategy family and window)."""
+    sessions = trading_days("2019-06-01", "2020-03-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BENCH": 100.0})
+    providers = BacktestProviders(
+        price=_FakePriceProvider(panel),
+        constituents=_FakeConstituentsProvider(["AAA"]),
+        fundamentals=_NoOpFundamentalsProvider(),
+        corporate_actions=_EmptyActionsProvider(),
+        cache_dir=tmp_path,
+    )
+    config = _config(start="2020-01-01", end="2020-03-31")
+
+    result = run_backtest(_EqualWeightStrategy(), config, providers)
+
+    counts = result.provenance["provider_call_counts"]
+    assert set(counts) == {"price", "constituents", "fundamentals", "corporate_actions"}
+    assert all(n >= 0 for n in counts.values())
+    assert counts["price"] >= 1  # at least the panel store's own upfront load
+    assert result.provenance["total_provider_calls"] == sum(counts.values())
+    assert result.provenance["total_provider_calls"] > 0
+
+
+def test_provider_call_counting_does_not_disturb_the_real_provider_class_names(tmp_path):
+    """The `providers` sub-dict of provenance must still name the REAL
+    provider classes (e.g. for a config regression check that the intended
+    vendor is actually wired up) - not the internal call-counting wrapper
+    class this milestone introduces around them."""
+    sessions = trading_days("2019-06-01", "2020-03-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BENCH": 100.0})
+    providers = _providers(panel, ["AAA"])
+    config = _config(start="2020-01-01", end="2020-03-31")
+
+    result = run_backtest(_EqualWeightStrategy(), config, providers)
+
+    assert result.provenance["providers"]["prices"] == "_FakePriceProvider"
+    assert "Counting" not in result.provenance["providers"]["prices"]
+
+
 def test_next_open_return_excludes_the_fill_day_intraday_move_from_the_outgoing_book():
     """quant-gate VERDICT.md finding 5 (blocker): in `next_open` mode, a
     big intraday rally ON the fill day itself (open flat, close way up)

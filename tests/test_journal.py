@@ -44,6 +44,7 @@ def _record(
         canceled_orders=[{"client_order_id": "x", "ticker": "AAA", "qty": 5.0}],
         resting_orders=[{"client_order_id": "y", "ticker": "AAA", "qty": 3.0}],
         assumed_fill_session="2024-01-16",
+        price_asof_by_ticker={"AAA": "2024-01-12"},
     )
 
 
@@ -112,6 +113,41 @@ def test_journal_to_frame_carries_the_widened_fields(tmp_path):
         "strategy_id": "test-strat-abc",
     }
     assert row["assumed_fill_session"] == "2024-01-16"
+
+
+def test_journal_to_frame_carries_price_asof_by_ticker(tmp_path):
+    """M09 (carried from the M08 verdict): `price_asof_by_ticker` used to be
+    in the raw JSONL only - the `quantlab paper drift` check needs it in the
+    frame to tell a lagging data sync (a stale priced bar) from a genuine
+    signal change."""
+    append_journal(tmp_path, _record("2024-01-15"))
+
+    frame = journal_to_frame(tmp_path, "test-strat-abc")
+
+    assert frame.loc[pd.Timestamp("2024-01-15"), "price_asof_by_ticker"] == {"AAA": "2024-01-12"}
+
+
+def test_journal_to_frame_price_asof_by_ticker_defaults_to_empty_dict(tmp_path):
+    record = JournalRecord(
+        asof="2024-01-15",
+        strategy_id="test-strat-abc",
+        data_semantics_version="m03b",
+        quantlab_git_sha="deadbeef",
+        dirty=False,
+        targets=None,
+        planned_orders=[],
+        results=[],
+        account_before={"cash": 1000.0, "equity": 1000.0, "positions": {}},
+        account_after={"cash": 1000.0, "equity": 1000.0, "positions": {}},
+        reconcile_report=None,
+        promoting_report_card=None,
+        refused_reason="promotion gate refused",
+    )
+    append_journal(tmp_path, record)
+
+    frame = journal_to_frame(tmp_path, "test-strat-abc")
+
+    assert frame.loc[pd.Timestamp("2024-01-15"), "price_asof_by_ticker"] == {}
 
 
 def test_journal_to_frame_shows_a_rebaseline_records_kind(tmp_path):

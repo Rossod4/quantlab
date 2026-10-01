@@ -188,6 +188,79 @@ def test_record_sensitivity_stores_series_when_caller_supplies_one(tmp_path):
     pd.testing.assert_series_equal(loaded, net_returns, check_names=False, check_freq=False)
 
 
+def _sensitivity_for_one_point(net_sharpe: float = 0.5) -> SensitivityResult:
+    return SensitivityResult(
+        param_axes={"lookback_months": [9, 12]},
+        base_point={"lookback_months": 9},
+        trials=[
+            SensitivityTrial(
+                strategy_id="momentum-point-1",
+                params={"lookback_months": 9},
+                net_sharpe=net_sharpe,
+            ),
+        ],
+        surface=pd.Series([net_sharpe], index=pd.Index([(9,)], name=("lookback_months",))),
+        no_cliff_score=1.0,
+        neighbourhood_size=1,
+        neighbourhood_truncated=True,
+    )
+
+
+def test_trials_heals_a_series_less_sensitivity_record_on_rerun(tmp_path):
+    """Registry write-path fix (M09, quant-gate carried item): a sensitivity
+    grid point recorded once WITHOUT a series (e.g. before a caller started
+    supplying `net_returns_by_strategy_id`) must not be series-less forever.
+    Re-recording the IDENTICAL key (same strategy_id -> same key) WITH a
+    series must win the dedup in `trials()`, not lose to naive
+    first-occurrence ordering - this is exactly the bug that left momentum's
+    real 2026-09-13 run's 9 sensitivity trials permanently series-less
+    (`build_trial_matrix` needs >= 2 series-bearing trials for White RC /
+    Hansen SPA to run at all) even after the recording code itself was
+    fixed, because the append-only log already held a bad row for that key."""
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    sensitivity = _sensitivity_for_one_point()
+
+    # First recording: no series supplied (the pre-fix / cold-start case).
+    stale = registry.record_sensitivity(sensitivity, family="momentum")
+    assert stale[0].series_path is None
+
+    # Rerun of the IDENTICAL grid point, this time WITH its series.
+    net_returns = pd.Series([0.01, 0.02], index=_dates(2))
+    registry.record_sensitivity(
+        sensitivity, family="momentum", net_returns_by_strategy_id={"momentum-point-1": net_returns}
+    )
+
+    healed = registry.trials("momentum")
+    assert len(healed) == 1  # still one distinct KEY
+    assert healed[0].series_path is not None
+    loaded = registry.load_series(healed[0])
+    pd.testing.assert_series_equal(loaded, net_returns, check_names=False, check_freq=False)
+
+    with_series = registry.trials("momentum", with_series_only=True)
+    assert len(with_series) == 1
+
+
+def test_trials_keeps_first_seen_when_neither_record_has_a_series(tmp_path):
+    """The healing fix in `trials()` must not disturb the pre-existing
+    first-occurrence rule when series presence is tied (both None, or both
+    supplied) - `record_backtest`'s series_path is never None, so this is
+    what `test_same_key_recorded_twice_does_not_increment_n` already
+    depends on; pinned here directly against `record_sensitivity`, whose
+    series_path CAN be None."""
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    first = registry.record_sensitivity(
+        _sensitivity_for_one_point(net_sharpe=0.5), family="momentum"
+    )
+    registry.record_sensitivity(_sensitivity_for_one_point(net_sharpe=0.9), family="momentum")
+
+    kept = registry.trials("momentum")
+    assert len(kept) == 1
+    assert kept[0].series_path is None
+    # First-seen (net_sharpe=0.5), not the second (0.9) rewrite.
+    assert kept[0].net_sharpe == pytest.approx(first[0].net_sharpe)
+    assert kept[0].net_sharpe == pytest.approx(0.5)
+
+
 # --- var_sr_trials -----------------------------------------------------------
 
 
@@ -270,6 +343,7 @@ def test_var_sr_trials_floors_at_null_sampling_variance(tmp_path):
     assert v_hat == pytest.approx(expected_floor)
 
 
+@pytest.mark.slow  # M09 packet item 13: many repeated registry writes/DSR computations
 def test_dsr_does_not_rise_after_many_identical_sharpe_trials_are_added(tmp_path):
     from quantlab.validation.deflated_sharpe import deflated_sharpe_ratio
     from quantlab.validation.metrics import raw_sharpe
@@ -308,6 +382,7 @@ def test_dsr_does_not_rise_after_many_identical_sharpe_trials_are_added(tmp_path
         assert later < earlier, dsr_values
 
 
+@pytest.mark.slow  # M09 packet item 13: many repeated registry writes/DSR computations
 def test_dsr_stays_failed_after_15_and_40_byte_identical_cosmetic_reruns(tmp_path):
     from quantlab.validation.deflated_sharpe import deflated_sharpe_ratio
     from quantlab.validation.metrics import raw_sharpe
@@ -357,6 +432,7 @@ def test_dsr_stays_failed_after_15_and_40_byte_identical_cosmetic_reruns(tmp_pat
         assert _current_dsr() < min_dsr, f"DSR must still FAIL after {rerun_count} cosmetic reruns"
 
 
+@pytest.mark.slow  # M09 packet item 13: many repeated registry writes/DSR computations
 def test_dsr_near_duplicate_headline_reruns_move_but_stay_bounded_then_turn_back_down(tmp_path):
     """quant-gate VERDICT.2.md M06 cycle-2 finding B (non-blocking, carried
     from cycle 1's finding 1's own residual): unlike BYTE-IDENTICAL reruns

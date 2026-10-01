@@ -478,10 +478,31 @@ def run_once(
     reconcile_tolerances: ReconcileTolerances | None = None,
     force_research: bool = False,
     paper_config: PaperRunConfig | None = None,
+    dry_run: bool = False,
 ) -> JournalRecord:
     """Run one paper-trading cycle. See module docstring for the full
     sequence. Always appends exactly one `JournalRecord` (including on a
-    refusal) before returning or raising. This is a STRUCTURAL guarantee
+    refusal) before returning or raising - UNLESS `dry_run=True` (M09,
+    quant-gate carried item), in which case NOTHING is appended to the
+    journal and NOTHING is mutated on the broker: `dry_run` runs the
+    IDENTICAL decision pipeline as a real cycle - the same promotion gate,
+    the same shared `context_factory` (so a blend's per-child context guard
+    is exercised, unlike the old CLI's hand-rolled dry-run path), the same
+    proactive/reactive actions-cache refresh, the same forced-exit policy
+    and `attempt` numbering - and stops the instant `plan_orders` returns,
+    before `_cancel_resting_orders` (a real `broker.cancel()` call) or
+    `broker.submit()` ever run. The returned `JournalRecord` is built the
+    same way a real cycle's would be (same `targets`/`planned_orders`,
+    `results=[]`, `account_after` == `account_before` since nothing was
+    submitted, `canceled_orders=[]` since nothing was actually canceled) but
+    is never passed to `append_journal` - a preview must leave the journal,
+    and the broker, exactly as it found them. A refusal path (promotion
+    gate, actions-cache exhaustion, data degradation, unscoreable, reconcile
+    failure, planning failure) is likewise never journaled under `dry_run`;
+    the `JournalRecord` `_refuse` builds is still returned/raised as normal,
+    just not persisted - the caller can print `refused_reason` without a
+    dry-run preview polluting the journal a real refusal would have used as
+    its reconcile baseline. This is a STRUCTURAL guarantee
     (quant-gate VERDICT.md M08 cycle-2 finding 1, following up on cycle-1
     finding 3): everything below the point the run's identity
     (`strategy`/`effective_asof`/`git_sha`/`dirty`) is known runs inside ONE
@@ -592,7 +613,11 @@ def run_once(
             canceled_orders=extra.get("canceled_orders", canceled_orders),
             price_asof_by_ticker=extra.get("price_asof_by_ticker", price_asof_by_ticker),
         )
-        append_journal(platform_config.reports_dir, record)
+        # `dry_run`: a preview's refusal is still returned/raised as normal
+        # (so a caller can print `refused_reason`) but never persisted - see
+        # run_once's own docstring.
+        if not dry_run:
+            append_journal(platform_config.reports_dir, record)
         already_journaled = True
         return record
 
@@ -694,7 +719,8 @@ def run_once(
                 dropped_tickers=list(dropped_tickers),
                 dropped_fraction=_dropped_fraction(),
             )
-            append_journal(platform_config.reports_dir, record)
+            if not dry_run:
+                append_journal(platform_config.reports_dir, record)
             return record
 
         account_before = broker.account()
@@ -751,7 +777,12 @@ def run_once(
 
         # -- cancel resting orders before planning (finding 4) ------------
         stage = "plan"
-        if paper_cfg.cancel_open_before_plan:
+        # `dry_run`: never call broker.cancel() for real - see run_once's
+        # own docstring. `canceled_orders` stays `[]` (honest: nothing was
+        # actually canceled), which is the one respect in which a dry-run
+        # preview can differ from what a real cycle would plan (a resting
+        # order's reserved capital, if the broker tracks that, is not freed).
+        if paper_cfg.cancel_open_before_plan and not dry_run:
             canceled_orders = _cancel_resting_orders(broker)
 
         # -- forced exits for held, unpriceable names (finding 3) ---------
@@ -806,6 +837,39 @@ def run_once(
                 price_asof_by_ticker=price_asof_by_ticker,
             )
             raise
+
+        if dry_run:
+            # Stop here, per run_once's own docstring: never call
+            # broker.submit(), never append to the journal.
+            return JournalRecord(
+                asof=str(effective_asof.date()),
+                strategy_id=strategy.strategy_id,
+                data_semantics_version=DATA_SEMANTICS_VERSION,
+                quantlab_git_sha=git_sha,
+                dirty=dirty,
+                targets=targets.model_dump(mode="json"),
+                planned_orders=[o.model_dump(mode="json") for o in orders],
+                results=[],
+                account_before=account_before.to_json(),
+                account_after=account_before.to_json(),
+                reconcile_report=reconcile_report.to_json() if reconcile_report else None,
+                promoting_report_card=promoting_path,
+                known_caveats=[
+                    *known_caveats,
+                    "DRY RUN: orders were planned but never submitted to the broker, and "
+                    "no journal record was written for this cycle.",
+                ],
+                force_research=force_research,
+                refused_reason=None,
+                refreshed_actions_tickers=refreshed_tickers,
+                dropped_tickers=list(dropped_tickers),
+                dropped_fraction=_dropped_fraction(),
+                unscored_tickers=dict(targets.unscored),
+                forced_exits=forced_exits,
+                canceled_orders=canceled_orders,
+                price_asof_by_ticker=price_asof_by_ticker,
+                assumed_fill_session=str(next_trading_day(effective_asof).date()),
+            )
 
         stage = "submit"
         try:

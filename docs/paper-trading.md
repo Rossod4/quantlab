@@ -52,16 +52,26 @@ Check the printed verdict. Only `ELIGIBLE_FOR_PAPER` unlocks paper trading.
 
 ## 3. Try it with `--dry-run` first
 
-`--dry-run` builds the exact same decision context and rebalance plan a real
-run would, but never calls `broker.submit()` - nothing is sent anywhere:
+`--dry-run` runs the exact same decision pipeline a real run would (promotion
+gate included) but stops the instant orders are planned - it never calls
+`broker.cancel()` or `broker.submit()`, and it writes nothing to the journal:
 
 ```
 uv run quantlab paper run --strategy configs/strategies/momentum_12_1.yaml --broker mock --dry-run
 ```
 
+Because the promotion gate still applies, previewing a strategy with no
+`ELIGIBLE_FOR_PAPER` report card needs `--force-research` too (testing the
+plumbing only, never for real money):
+
+```
+uv run quantlab paper run --strategy configs/strategies/momentum_12_1.yaml --broker mock --dry-run --force-research
+```
+
 This prints the planned buy/sell orders (or "no orders" if the current mock
-account is already within every drift band). Once you're ready for a real
-paper run:
+account is already within every drift band), or `REFUSED: ...` if the gate
+(or anything else in the pipeline) would have refused a real run. Once
+you're ready for a real paper run:
 
 ```
 uv run quantlab paper run --strategy configs/strategies/momentum_12_1.yaml --broker alpaca

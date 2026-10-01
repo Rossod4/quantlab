@@ -25,7 +25,7 @@ from quantlab.core.errors import (
 )
 from quantlab.core.errors import ReconcileError as ReconcileErrorType
 from quantlab.core.semantics import DATA_SEMANTICS_VERSION
-from quantlab.core.types import Position, TargetWeights
+from quantlab.core.types import Order, Position, TargetWeights
 from quantlab.data.interfaces import (
     ConstituentsProvider,
     CorporateActionsProvider,
@@ -494,6 +494,98 @@ def test_force_research_bypasses_the_gate_and_flags_the_journal(monkeypatch, tmp
 
     records = read_journal(platform_config.reports_dir, strategy_id)
     assert records[-1]["force_research"] is True
+
+
+def test_dry_run_plans_the_identical_orders_a_real_run_would_and_writes_no_journal_record(
+    monkeypatch, tmp_path
+):
+    """M09 fix (quant-gate carried item): `run_once(..., dry_run=True)` must
+    run the SAME pipeline as a real cycle - not the old CLI's hand-rolled
+    second decide-and-plan path, which wired none of `set_context_factory`,
+    the proactive actions-cache refresh, forced exits or `attempt`
+    numbering, and measurably diverged from a real run on a stale-cache
+    fixture. Calling dry_run first (non-mutating) and then a real run on the
+    SAME broker/state proves the orders match, and that the dry run left no
+    trace in the journal or on the broker for the real run to react to."""
+    platform_config = _platform_config(tmp_path)
+    strategy_config = {"strategy": "paper-runner-fixed-weight", "params": {"weights": {"AAA": 1.0}}}
+    from quantlab.strategies.registry import load_strategy
+
+    strategy_id = load_strategy(strategy_config).strategy_id
+    _write_report_card(platform_config.reports_dir, strategy_id, "ELIGIBLE_FOR_PAPER")
+
+    providers = _fake_providers({"AAA": 100.0, "BENCH": 50.0}, tmp_path)
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _: providers)
+
+    broker = _mock_broker({"AAA": 100.0})
+    account_before_dry_run = broker.account()
+
+    dry_record = run_once(strategy_config, platform_config, broker, dry_run=True)
+
+    # No lasting side effect anywhere.
+    assert read_journal(platform_config.reports_dir, strategy_id) == []
+    assert broker.account().cash == account_before_dry_run.cash
+    assert broker.account().positions == account_before_dry_run.positions
+    assert broker.open_orders() == []
+    assert dry_record.results == []
+    assert any("DRY RUN" in c for c in dry_record.known_caveats)
+
+    real_record = run_once(strategy_config, platform_config, broker)
+
+    assert dry_record.refused_reason is None
+    assert real_record.refused_reason is None
+    assert dry_record.planned_orders == real_record.planned_orders
+    assert dry_record.targets == real_record.targets
+    # The real run DID leave a trace; the dry run still shows up as zero.
+    assert len(read_journal(platform_config.reports_dir, strategy_id)) == 1
+
+
+def test_dry_run_refusal_is_returned_but_never_journaled(monkeypatch, tmp_path):
+    platform_config = _platform_config(tmp_path)
+    strategy_config = {"strategy": "paper-runner-fixed-weight", "params": {"weights": {"AAA": 1.0}}}
+    from quantlab.strategies.registry import load_strategy
+
+    strategy_id = load_strategy(strategy_config).strategy_id
+    _write_report_card(platform_config.reports_dir, strategy_id, "REJECTED")
+
+    providers = _fake_providers({"AAA": 100.0, "BENCH": 50.0}, tmp_path)
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _: providers)
+
+    broker = _mock_broker({"AAA": 100.0})
+
+    with pytest.raises(PromotionGateError):
+        run_once(strategy_config, platform_config, broker, dry_run=True)
+
+    # A REAL refusal from the same setup writes exactly one record (pinned
+    # by test_promotion_gate_refuses_a_rejected_strategy above); the dry-run
+    # refusal above must leave the journal untouched.
+    assert read_journal(platform_config.reports_dir, strategy_id) == []
+
+
+def test_dry_run_never_cancels_resting_orders(monkeypatch, tmp_path):
+    platform_config = _platform_config(tmp_path)
+    strategy_config = {"strategy": "paper-runner-fixed-weight", "params": {"weights": {"AAA": 1.0}}}
+    from quantlab.strategies.registry import load_strategy
+
+    strategy_id = load_strategy(strategy_config).strategy_id
+    _write_report_card(platform_config.reports_dir, strategy_id, "ELIGIBLE_FOR_PAPER")
+
+    providers = _fake_providers({"AAA": 100.0, "BENCH": 50.0}, tmp_path)
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _: providers)
+
+    # A broker with a resting order already open (a prior partial fill).
+    broker = _mock_broker({"AAA": 100.0}, cash=0.0)
+    broker.positions["AAA"] = Position(ticker="AAA", qty=500.0, avg_cost=100.0)
+    broker._open["prior-attempt-1"] = Order(
+        client_order_id="prior-attempt-1", ticker="AAA", side="SELL", qty=10.0, order_type="MARKET"
+    )
+    open_before = broker.open_orders()
+    assert len(open_before) == 1
+
+    record = run_once(strategy_config, platform_config, broker, dry_run=True)
+
+    assert record.canceled_orders == []
+    assert broker.open_orders() == open_before
 
 
 def test_resolve_asof_clamps_to_the_price_caches_actual_last_bar(tmp_path):

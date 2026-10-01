@@ -42,6 +42,7 @@ def _iid_noise_matrix(rng: np.random.Generator, t: int, k: int) -> pd.DataFrame:
 # --- synthetic null: p-values ~ Uniform(0, 1) ----------------------------
 
 
+@pytest.mark.slow  # M09 packet item 13: N=200 or 300-sim calibration/size check
 def test_white_rc_synthetic_null_pvalues_are_uniform():
     # LOW-POWER NOTICE (quant-gate VERDICT.2.md M06 cycle-2 finding D,
     # non-blocking): this test runs at block_len=3.0, NOT the shipped
@@ -70,6 +71,7 @@ def test_white_rc_synthetic_null_pvalues_are_uniform():
     assert ks_p > 0.01, f"p-values not consistent with Uniform(0,1): KS stat={ks_stat}, p={ks_p}"
 
 
+@pytest.mark.slow  # M09 packet item 13: N=200 or 300-sim calibration/size check
 def test_white_rc_size_at_shipped_block_length_is_bounded():
     """quant-gate VERDICT.2.md M06 cycle-2 finding D (non-blocking): a real
     SIZE bound at the gate's own max_rc_pvalue=0.10 bar, at the SHIPPED

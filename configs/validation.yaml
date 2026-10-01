@@ -39,7 +39,16 @@ sensitivity:
     lookback_months: [9, 12, 15]
     n_long: [30, 50, 70]
   value_composite:
-    lookback_months: [9, 12, 15]
+    # M09 fix: `lookback_months` is not a `ValueParams` field at all (only
+    # `n_holdings`/`filing_lag_sessions` are, and `ValueParams` is
+    # `extra="forbid"`, src/quantlab/strategies/value.py) - every grid point
+    # raised a pydantic ValidationError from `load_strategy`, which
+    # propagated out of `sensitivity_grid` and was swallowed whole by
+    # `cli.py`'s `_build_sensitivity_result` broad except, silently
+    # returning None for the ENTIRE grid (no sensitivity ran for
+    # value_composite at all - N stayed 1, DSR/no_cliff both NaN). Use the
+    # strategy's own real axis instead; default is 30.
+    n_holdings: [20, 30, 40]
 
 # quant-gate VERDICT.md M06 cycle-1 finding 5: whether `validate --full`
 # runs this grid through the real engine at all. `--no-sensitivity` on the

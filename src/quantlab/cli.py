@@ -464,9 +464,24 @@ def _build_sensitivity_result(
         backtest_config = BacktestConfig.model_validate(backtest_config_dict)
         platform_config = load_platform_config(platform)
         runner = _make_sensitivity_runner(platform_config)
-        return sensitivity_grid(
-            backtest_config_dict["strategy_config"], param_axes, backtest_config, runner
+        result = sensitivity_grid(
+            backtest_config_dict["strategy_config"],
+            param_axes,
+            backtest_config,
+            runner,
+            base_provider_calls=bt_result.provenance.get("total_provider_calls"),
         )
+        # M09 fix ("make grid-point failures loud"): a PARTIAL grid failure
+        # no longer aborts the whole result (see sensitivity.py's own
+        # docstring), so it must not go unnoticed just because the overall
+        # call succeeded - echo every per-point failure and provider-call
+        # warning here, in addition to `sensitivity_grid`'s own immediate
+        # logging, so a `--full` run's own console output names them too.
+        for params, reason in result.failed_points.items():
+            typer.echo(f"  (sensitivity grid point {params} failed: {reason})", err=True)
+        for warning in result.provider_call_warnings:
+            typer.echo(f"  (sensitivity {warning})", err=True)
+        return result
     except Exception as exc:  # noqa: BLE001 - degrade to "no sensitivity", never crash --full
         typer.echo(f"  (sensitivity grid skipped: {exc})", err=True)
         return None
@@ -862,47 +877,33 @@ def paper_run(
     platform_config = load_platform_config(platform)
     broker_instance = _make_broker(broker)
 
-    if dry_run:
-        from quantlab.backtest.context import DecisionProviders, build_decision_context
-        from quantlab.backtest.engine import build_backtest_providers
-        from quantlab.paper.rebalancer import plan_orders
-        from quantlab.paper.runner import _last_prices_with_dates, _today, resolve_asof
-        from quantlab.strategies.registry import load_strategy
-
-        providers = build_backtest_providers(platform_config)
-        strategy_obj = load_strategy(strategy)
-        effective_asof = resolve_asof(_today(), asof, providers, platform_config.benchmark)
-        decision_providers = DecisionProviders(
-            price=providers.price,
-            constituents=providers.constituents,
-            fundamentals=providers.fundamentals,
-            corporate_actions=providers.corporate_actions,
-        )
-        ctx = build_decision_context(
-            asof=effective_asof,
-            requirements=strategy_obj.requires(),
-            providers=decision_providers,
-            max_dropped_fraction=0.05,
-            on_drop=lambda ticker, exc: None,
-        )
-        targets = strategy_obj.generate_targets(ctx, effective_asof)
-        account = broker_instance.account()
-        tickers = sorted(set(targets.weights) | set(account.positions))
-        prices, _ = _last_prices_with_dates(providers, tickers, effective_asof)
-        orders = plan_orders(targets, account, prices, broker_instance.capabilities())
-        typer.echo(f"dry-run: asof={effective_asof.date()} strategy_id={strategy_obj.strategy_id}")
-        for order in orders:
-            typer.echo(f"  {order.side} {order.qty} {order.ticker} ({order.client_order_id})")
-        if not orders:
-            typer.echo("  (no orders - already within drift bands)")
-        return
-
+    # M09 fix (quant-gate carried item): `--dry-run` used to be a hand-rolled
+    # second decide-and-plan path that wired none of `set_context_factory`,
+    # the proactive actions-cache refresh, forced exits, `attempt` numbering
+    # or `PaperRunConfig` - measured to diverge from a real run on a stale
+    # cache fixture. `run_once(..., dry_run=True)` now runs the IDENTICAL
+    # pipeline and stops before `broker.submit()` (see its own docstring);
+    # this branch is now purely about how the result is PRINTED.
     record = run_once(
-        strategy, platform_config, broker_instance, asof=asof, force_research=force_research
+        strategy,
+        platform_config,
+        broker_instance,
+        asof=asof,
+        force_research=force_research,
+        dry_run=dry_run,
     )
     if record.refused_reason:
         typer.echo(f"REFUSED: {record.refused_reason}", err=True)
         raise typer.Exit(code=1)
+    if dry_run:
+        typer.echo(f"dry-run: asof={record.asof} strategy_id={record.strategy_id}")
+        for order in record.planned_orders:
+            typer.echo(
+                f"  {order['side']} {order['qty']} {order['ticker']} ({order['client_order_id']})"
+            )
+        if not record.planned_orders:
+            typer.echo("  (no orders - already within drift bands)")
+        return
     typer.echo(
         f"asof={record.asof} strategy_id={record.strategy_id} "
         f"planned_orders={len(record.planned_orders)} results={len(record.results)}"
@@ -993,6 +994,66 @@ def paper_rebaseline(
             f"  cash_diff={diff['cash_diff']:.2f}  "
             f"position_mismatches={len(diff['position_mismatches'])}"
         )
+
+
+@paper_app.command("drift")
+def paper_drift(
+    strategy: Path = typer.Option(
+        ..., "--strategy", exists=True, readable=True, help="Strategy config YAML."
+    ),
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+    max_records: int | None = typer.Option(
+        None,
+        "--max-records",
+        help="Only check the N most recent journaled trading cycles (default: all).",
+    ),
+) -> None:
+    """Forward-vs-backtest drift check (M09, carried from the M08 verdict):
+    for every journaled, actually-traded cycle, recompute the strategy's
+    targets for that SAME asof on today's cache and report target-weight
+    agreement, the fill-vs-model price gap, and per-ticker data-asof lag.
+    See `quantlab.paper.drift`'s module docstring for the timing convention
+    this models and why it does not re-run a parallel backtest."""
+    import json
+
+    from quantlab.backtest.engine import build_backtest_providers
+    from quantlab.core.config import load_platform_config
+    from quantlab.paper.drift import compute_drift
+    from quantlab.strategies.registry import load_strategy
+
+    platform_config = load_platform_config(platform)
+    strategy_obj = load_strategy(strategy)
+    providers = build_backtest_providers(platform_config)
+
+    report = compute_drift(
+        platform_config.reports_dir, strategy_obj, providers, max_records=max_records
+    )
+    if not report.records:
+        typer.echo(f"no journaled trading cycles yet for {strategy_obj.strategy_id}")
+        return
+    for rec in report.records:
+        if rec.error:
+            typer.echo(f"{rec.asof}: recompute failed - {rec.error}")
+            continue
+        agreement = (
+            f"{rec.target_weight_agreement:.4f}"
+            if rec.target_weight_agreement is not None
+            else "n/a"
+        )
+        typer.echo(
+            f"{rec.asof} (fill assumed {rec.assumed_fill_session}): "
+            f"target_weight_agreement={agreement} "
+            f"max_abs_weight_diff={rec.max_abs_weight_diff!r} "
+            f"only_in_journal={rec.tickers_only_in_journal} "
+            f"only_in_recomputed={rec.tickers_only_in_recomputed}"
+        )
+        if rec.fill_vs_model_price_gap_bps:
+            typer.echo(f"  fill_vs_model_price_gap_bps={rec.fill_vs_model_price_gap_bps}")
+        if rec.price_asof_lag_sessions:
+            typer.echo(f"  price_asof_lag_sessions={rec.price_asof_lag_sessions}")
+    typer.echo(json.dumps(report.to_json(), sort_keys=True))
 
 
 if __name__ == "__main__":

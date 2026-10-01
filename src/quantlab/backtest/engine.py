@@ -235,6 +235,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -364,6 +365,98 @@ def build_backtest_providers(platform_config: PlatformConfig) -> BacktestProvide
         corporate_actions=corporate_actions,
         cache_dir=platform_config.cache_dir,
         retry_after_days=platform_config.retry_after_days,
+    )
+
+
+# -- provider-call counting (M09 orchestrator-directed item) -----------------
+#
+# `run_backtest` wraps its own `providers` in these four thin counters for
+# the duration of ONE call (fresh instances every call, so no delta/snapshot
+# arithmetic is needed - contrast `_network_fetch_attempts_start`/`_end`
+# above, which must snapshot because THAT counter lives on the shared,
+# cross-call provider instance itself). This is a distinct, coarser signal
+# from `price_provider_network_fetch_attempts`: it counts every call made to
+# ANY of the four provider interfaces (price/constituents/fundamentals/
+# corporate-actions), not just the price provider's own live-fetch attempts,
+# so it also catches a regression where e.g. `fundamentals()` or
+# `get_actions()` stop being memoised and start refetching per rebalance
+# (QUANT-NOTES.md "From M03b verdict" item on per-ticker fetches
+# compounding) - a class of regression `price_provider_network_fetch_
+# attempts` cannot see at all. `__getattr__` forwards anything not
+# explicitly counted (e.g. `YFinancePriceProvider.network_fetch_attempts`
+# itself) to the wrapped instance, so wrapping is transparent to every other
+# reader of `providers.price` etc. - in particular `run_backtest` reads
+# `providers.price.network_fetch_attempts` AFTER wrapping and still gets the
+# real provider's own counter.
+
+
+class _CallCountingPriceProvider(PriceProvider):
+    def __init__(self, inner: PriceProvider) -> None:
+        self._inner = inner
+        self.call_count = 0
+
+    def get_prices(self, tickers: list[str], start: object, end: object) -> pd.DataFrame:
+        self.call_count += 1
+        return self._inner.get_prices(tickers, start, end)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+class _CallCountingConstituentsProvider(ConstituentsProvider):
+    def __init__(self, inner: ConstituentsProvider) -> None:
+        self._inner = inner
+        self.call_count = 0
+
+    def membership(self, asof: object) -> list[str]:
+        self.call_count += 1
+        return self._inner.membership(asof)
+
+    def membership_history(self, start: object, end: object) -> pd.DataFrame:
+        self.call_count += 1
+        return self._inner.membership_history(start, end)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+class _CallCountingFundamentalsProvider(FundamentalsProvider):
+    def __init__(self, inner: FundamentalsProvider) -> None:
+        self._inner = inner
+        self.call_count = 0
+
+    def get_pit_fundamentals(self, ticker: str, asof: object) -> dict[str, Any]:
+        self.call_count += 1
+        return self._inner.get_pit_fundamentals(ticker, asof)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+class _CallCountingCorporateActionsProvider(CorporateActionsProvider):
+    def __init__(self, inner: CorporateActionsProvider) -> None:
+        self._inner = inner
+        self.call_count = 0
+
+    def get_actions(self, ticker: str, start: object, end: object) -> pd.DataFrame:
+        self.call_count += 1
+        return self._inner.get_actions(ticker, start, end)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+def _wrap_providers_for_call_counting(providers: BacktestProviders) -> BacktestProviders:
+    """A fresh `BacktestProviders` wrapping each of `providers`' four
+    objects in its own call counter, scoped to exactly one `run_backtest`
+    call - see the section docstring above."""
+    return BacktestProviders(
+        price=_CallCountingPriceProvider(providers.price),
+        constituents=_CallCountingConstituentsProvider(providers.constituents),
+        fundamentals=_CallCountingFundamentalsProvider(providers.fundamentals),
+        corporate_actions=_CallCountingCorporateActionsProvider(providers.corporate_actions),
+        cache_dir=providers.cache_dir,
+        retry_after_days=providers.retry_after_days,
     )
 
 
@@ -833,6 +926,14 @@ def run_backtest(
     # shared and reused across an entire `quantlab run` (including every
     # sensitivity-grid backtest - see `_make_sensitivity_runner`).
     _network_fetch_attempts_start = getattr(providers.price, "network_fetch_attempts", None)
+    # M09 orchestrator-directed item: `_orig_providers` keeps the REAL
+    # provider instances (for `type(...).__name__` in the `provenance`
+    # dict below, which must keep naming e.g. "YFinancePriceProvider", not
+    # a wrapper class) while `providers` itself is reassigned to a
+    # call-counting wrapper set for the rest of this function - see
+    # `_wrap_providers_for_call_counting`'s section docstring above.
+    _orig_providers = providers
+    providers = _wrap_providers_for_call_counting(providers)
     requirements = strategy.requires()
 
     raw_dates = rebalance_dates(config.start, config.end, config.rebalance_freq)
@@ -1315,15 +1416,31 @@ def run_backtest(
     fetched_at = actions_fetched_at(providers.cache_dir, all_encountered_tickers)
     known_fetched_at = sorted(v for v in fetched_at.values() if v is not None)
 
+    # M09 orchestrator-directed item: total calls THIS run made to each of
+    # the four provider interfaces (see the section docstring above) - a
+    # sensitivity-grid runner (cli.py's `_make_sensitivity_runner`) compares
+    # each grid point's `total_provider_calls` against the headline run's
+    # own recorded figure and warns loudly when a grid point - rerunning
+    # the SAME strategy family over the SAME window - makes MORE calls,
+    # which points at a caching/memoisation regression rather than a
+    # genuinely more expensive run.
+    provider_call_counts = {
+        "price": providers.price.call_count,
+        "constituents": providers.constituents.call_count,
+        "fundamentals": providers.fundamentals.call_count,
+        "corporate_actions": providers.corporate_actions.call_count,
+    }
+    total_provider_calls = sum(provider_call_counts.values())
+
     provenance = {
         "strategy_id": strategy.strategy_id,
         "strategy_params": strategy.params,
         "backtest_config": json.loads(config.model_dump_json()),
         "providers": {
-            "prices": type(providers.price).__name__,
-            "constituents": type(providers.constituents).__name__,
-            "fundamentals": type(providers.fundamentals).__name__,
-            "corporate_actions": type(providers.corporate_actions).__name__,
+            "prices": type(_orig_providers.price).__name__,
+            "constituents": type(_orig_providers.constituents).__name__,
+            "fundamentals": type(_orig_providers.fundamentals).__name__,
+            "corporate_actions": type(_orig_providers.corporate_actions).__name__,
         },
         "actions_cache_fetched_at": {
             "min": known_fetched_at[0] if known_fetched_at else None,
@@ -1361,6 +1478,9 @@ def run_backtest(
         # doesn't expose a counter (e.g. a test fake) - see the
         # known_caveats entry above for the interpretation.
         "price_provider_network_fetch_attempts": network_fetch_attempts_this_run,
+        # M09 orchestrator-directed item: see this dict's comment above.
+        "provider_call_counts": provider_call_counts,
+        "total_provider_calls": total_provider_calls,
         # M04b work packet item 6: wall-clock seconds for this ENTIRE
         # `run_backtest` call, measured from its very first line - the
         # acceptance-criterion timing number belongs in the artifact a real

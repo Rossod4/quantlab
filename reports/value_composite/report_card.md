@@ -52,11 +52,11 @@ this run's data_semantics_version (m09) is at or after M04b: this count is strat
 - at least one trial counted toward this family's N (or its dispersion estimate) was recorded from a dirty (uncommitted-changes) working tree - see the provenance section's dirty trial count.
 
 ## Validation badges
-N trials (distinct): **1** (raw key count: 1, 1 dirty) · PSR 0.9993 · DSR n/a (registry too thin - fewer than 2 distinct trials) · min track-record length unbounded (n/a)
+N trials (distinct): **4** (raw key count: 4, 4 dirty) · PSR 0.9993 · DSR 0.9892 · min track-record length unbounded (n/a)
 
-Reality Check: Reality Check did not run - see the reality_check_pvalue gate's own reason.
+Reality Check: K=4 realised trials over n_periods=173 common periods, B=200 bootstrap resamples, block_len=6.0. measured size ≈ 0.12 at the 0.10 bar (block length 6.0); treat the bar as approximate.
 
-Hansen SPA: Hansen SPA did not run - see the spa_pvalue gate's own reason.
+Hansen SPA: K=4 realised trials over n_periods=173 common periods, B=200 bootstrap resamples, block_len=6.0. measured size ≈ 0.12 at the 0.10 bar (block length 6.0); treat the bar as approximate.
 
 RC/SPA benchmark: embedded (result.benchmark_returns) - validation.yaml default · headline's own retained fraction: 100.00%
 
@@ -66,19 +66,19 @@ Capacity: spread percentiles: p10=5.5bps, p25=11.8bps, p50=19.5bps, p75=25.4bps,
 
 | Gate | Kind | Value | Threshold | Result | Reason |
 |---|---|---|---|---|---|
-| deflated_sharpe_ratio | hard | n/a (could not be computed) | 0.9500 | FAIL | DSR could not be computed - fewer than 2 distinct trials are registered for this family (N=1); this is the registry being too thin, NOT a statistical failure - treated as a FAILURE (not a pass) until more genuinely distinct trials are recorded. |
-| reality_check_pvalue | hard | n/a (could not be computed) | 0.1000 | FAIL | Reality Check could not be run: fewer than 2 registered trials in this family have a stored return series - treated as a FAILURE, not a pass by default. |
+| deflated_sharpe_ratio | hard | 0.9892 | 0.9500 | PASS | DSR=0.9892 against the 0.95 bar for significance after correcting for N=4 distinct trials (computed on the PER-PERIOD Sharpe 0.2814, not the annualized 0.97 - see deflated_sharpe.py's 'same footing' contract). DSR is not monotone in N above the variance floor; near-duplicate reruns of one grid point can move it. |
+| reality_check_pvalue | hard | 0.0149 | 0.1000 | PASS | White Reality Check p=0.0149 against the 0.10 bar, over K=4 realised trials, benchmark=embedded (result.benchmark_returns) - validation.yaml default. |
 | net_sharpe_vs_benchmark | hard | 0.9747 | 1.0583 | FAIL | net Sharpe 0.97 vs benchmark Sharpe 1.06. |
 | coverage_bound | hard | 27.9678 | 15.0000 | FAIL | worst-year coverage bound 28.0% against the 15.0% ceiling. |
 | min_track_record_length | hard | unbounded (n/a) | 173.0000 | FAIL | needs >= unbounded observations for significance; 173 are available (computed on the PER-PERIOD Sharpe 0.2814, not the annualized 0.97). |
 | probabilistic_sharpe_ratio | soft | 0.9993 | 0.9500 | PASS | PSR=0.9993 against the 0.95 bar (computed on the PER-PERIOD Sharpe 0.2814, not the annualized 0.97). min_psr 0.95 binds only below an annualised Sharpe of about 0.47 on a 12-year monthly book - neither is evidence of quality. |
 | subperiod_oof_sharpe | soft | 1.1965 | 0.0000 | PASS | mean Sharpe 1.20 over 5 contiguous sub-periods of a strategy with NO FITTED PARAMETERS - purge/embargo have no effect on this value by construction (quant-gate VERDICT.md M06 cycle-1 finding 4); NOT a purged cross-validation. |
-| no_cliff_score | soft | n/a (could not be computed) | 0.5000 | FAIL | no sensitivity grid was supplied - treated as a FAILURE, not a pass by default. |
-| min_net_sharpe | soft | 0.9747 | 0.3000 | PASS | net Sharpe 0.97 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). |
+| no_cliff_score | soft | 0.9420 | 0.5000 | PASS | no_cliff_score=0.9420 against 0.50 (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0) - a RELATIVE-SPREAD statistic only, never evidence of quality by itself (see min_net_sharpe below). |
+| min_net_sharpe | soft | 0.9747 | 0.3000 | PASS | net Sharpe 0.97 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). Sensitivity grid: (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0). |
 | max_drawdown_floor | soft | -0.3476 | -0.5000 | PASS | FULL-SAMPLE net max drawdown -34.76% against the -50.00% floor (never a rolling column - see max_negative_rolling_window_fraction below for that). |
 | max_negative_rolling_window_fraction | soft | 0.0072 | 0.5000 | PASS | 1% of rolling windows had negative CAGR against the 50% bar - computed from the FROZEN ported rolling_window_metrics table, whose CAGR is blind to each window's own first return (ported convention, see rolling.py's module docstring). |
 | monte_carlo_drawdown | soft | 0.3040 | 0.5000 | PASS | P(bootstrap drawdown worse than observed)=0.30. the Monte Carlo drawdown gate sits at the centre of its own statistic's null - neither is evidence of quality. |
-| spa_pvalue | soft | n/a (could not be computed) | 0.1000 | FAIL | SPA could not be run (fewer than 2 registered trials with a stored return series) - treated as a FAILURE, not a pass by default. |
+| spa_pvalue | soft | 0.0199 | 0.1000 | PASS | Hansen SPA p=0.0199 against the 0.10 bar, over K=4 realised trials, benchmark=embedded (result.benchmark_returns) - validation.yaml default. |
 | walk_forward_stability | soft | n/a (could not be computed) | 0.5000 | PASS | no walk-forward result was supplied - vacuously satisfied per 'if present'. |
 | capacity_ceiling | informational | 89751.2477 | 100.0000 | PASS | worst-case capacity ceiling is 89751x the resolved intended capital ($1,000, configs/validation.yaml intended_capital_usd) against the 100x bar. NOTE: the capacity gate is trivially passable at this stake (89751x against a 100x bar) - this is not evidence of edge, only that the resolved intended capital is small relative to the instrument's liquidity. |
 `informational` gates are always reported (value, threshold, result) but never affect the verdict above - see the verdict legend.
@@ -130,6 +130,21 @@ ported convention: each window's first return is omitted from CAGR and hidden fr
 | rate_shock_2021_2022 | 8.90% | 24.57% | 0.47 | -28.18% | 1.1854 |
 | recent_2023_plus | 22.52% | 15.95% | 1.36 | -10.34% | 2.0354 |
 
+### Parameter sensitivity
+
+no_cliff_score = **0.9420** (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0) - shown ONLY beside min_net_sharpe below.
+
+no_cliff_score=0.9420 against 0.50 (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0) - a RELATIVE-SPREAD statistic only, never evidence of quality by itself (see min_net_sharpe below).
+
+net Sharpe 0.97 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). Sensitivity grid: (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0).
+
+Base point: **n_holdings=30**
+
+| Grid point | Net Sharpe |
+|---|---|
+| n_holdings=20 | 1.02 |
+| n_holdings=30 (base point) | 0.97 |
+| n_holdings=40 | 0.97 |
 
 
 
@@ -158,9 +173,9 @@ ported convention: each window's first return is omitted from CAGR and hidden fr
 | | |
 |---|---|
 | Strategy id | `value_composite-b6fdfec048` |
-| Strategy params | `{'n_holdings': 30, 'filing_lag_sessions': 1}` |
-| Backtest config | `{'start': '2012-01-01T00:00:00', 'end': '2026-06-30T00:00:00', 'strategy_config': 'C:\\Users\\arwga\\Developer\\ClaudeProjects\\Trading\\quantlab\\configs\\strategies\\value_composite.yaml', 'rebalance_freq': 'month_end', 'initial_capital': 1000000.0, 'execution': 'close', 'cost_model': 'flat_bps', 'one_way_cost_bps': 10.0, 'corwin_schultz_lookback_days': 60, 'borrow_fee_annual_bps': 30.0, 'delisting_haircut': 0.0, 'extreme_return_bound': 3.0, 'extreme_return_policy': 'exclude_legacy', 'benchmark': 'SPY', 'max_dropped_fraction': 0.05, 'abort_on_unscoreable': True}` |
-| Providers | `{'prices': 'YFinancePriceProvider', 'constituents': 'SP500CommunityConstituentsProvider', 'fundamentals': 'EdgarFundamentalsProvider', 'corporate_actions': 'YFinanceCorporateActionsProvider'}` |
+| Strategy params | `{'filing_lag_sessions': 1, 'n_holdings': 30}` |
+| Backtest config | `{'abort_on_unscoreable': True, 'benchmark': 'SPY', 'borrow_fee_annual_bps': 30.0, 'corwin_schultz_lookback_days': 60, 'cost_model': 'flat_bps', 'delisting_haircut': 0.0, 'end': '2026-06-30T00:00:00', 'execution': 'close', 'extreme_return_bound': 3.0, 'extreme_return_policy': 'exclude_legacy', 'initial_capital': 1000000.0, 'max_dropped_fraction': 0.05, 'one_way_cost_bps': 10.0, 'rebalance_freq': 'month_end', 'start': '2012-01-01T00:00:00', 'strategy_config': 'C:\\Users\\arwga\\Developer\\ClaudeProjects\\Trading\\quantlab\\configs\\strategies\\value_composite.yaml'}` |
+| Providers | `{'constituents': 'SP500CommunityConstituentsProvider', 'corporate_actions': 'YFinanceCorporateActionsProvider', 'fundamentals': 'EdgarFundamentalsProvider', 'prices': 'YFinancePriceProvider'}` |
 | Actions-cache fetched_at range | 2026-09-13 - 2026-09-13 |
 | Cache dir | n/a (not recorded in the provenance for this run) |
 | Run seconds | 10278.07 |

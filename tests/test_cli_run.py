@@ -212,6 +212,7 @@ def test_run_help_works():
     assert "--out" in result.output
 
 
+@pytest.mark.slow  # M09 packet item 13: full backtest+validate+report fixture pipeline
 def test_run_end_to_end_writes_all_three_artefacts_and_matching_exit_code(_cli_run_fixture):
     import json
 
@@ -251,6 +252,7 @@ def test_run_end_to_end_writes_all_three_artefacts_and_matching_exit_code(_cli_r
     assert (fx["reports_dir"] / "trials" / "trials.jsonl").exists()
 
 
+@pytest.mark.slow  # M09 packet item 13: full backtest+validate+report fixture pipeline
 def test_run_strategy_override_replaces_the_backtest_configs_own_strategy(_cli_run_fixture):
     import json
 

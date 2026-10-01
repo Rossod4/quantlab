@@ -559,13 +559,15 @@ class TrialsRegistry:
                 existing.series_path is not None and record.series_path is None
             ):
                 seen[record.key] = record
-        for record in seen.values():
-            self._check_series_coherent(record)
         results = list(seen.values())
         if family is not None:
             results = [r for r in results if r.family == family]
         if with_series_only:
             results = [r for r in results if r.series_path is not None]
+        # Only the rows actually being returned are checked: a corrupt row in
+        # another family must not block this one.
+        for record in results:
+            self._check_series_coherent(record)
         return results
 
     def distinct_trials(self, family: str) -> list[TrialRecord]:

@@ -671,6 +671,14 @@ def build_report_card(
             known_caveats.append(_WALK_FORWARD_NAN_TIEBREAK_CLEAN_NOTE)
         else:
             known_caveats.append(_WALK_FORWARD_NAN_TIEBREAK_FIRED_NOTE)
+    if ranking_agreement is None and ranking_not_checked_reason and walk_forward is None:
+        # The caller supplied ranking inputs but no walk-forward was built (the
+        # branch above only runs with one): still say so on the card.
+        ranking_agreement = {"status": "not_checked", "reason": ranking_not_checked_reason}
+        known_caveats.append(
+            f"Walk-forward ranking agreement under both cost conventions: not checked - "
+            f"{ranking_not_checked_reason}"
+        )
     if dirty_trial_count > 0:
         known_caveats.append(_DIRTY_TRIAL_CAVEAT)
     known_caveats.extend(rc_excluded)

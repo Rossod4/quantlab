@@ -654,3 +654,26 @@ def test_dirty_flag_prefers_provenance_when_present(tmp_path):
     assert clean_record.dirty_source == "provenance"
     assert dirty_record.dirty is True
     assert dirty_record.dirty_source == "provenance"
+
+
+def test_coherence_error_is_confined_to_the_family_being_returned(tmp_path):
+    from quantlab.validation.registry import RegistryCoherenceError
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    series = pd.Series([0.01, 0.02, -0.01, 0.03] * 6, index=_dates(24))
+    bad = registry.record_backtest(
+        make_backtest_result(net_returns=series, strategy_id="momentum-aaaa"), family="momentum"
+    )
+    registry.record_backtest(
+        make_backtest_result(net_returns=series * 3, strategy_id="value_composite-bbbb"),
+        family="value_composite",
+    )
+    corrupt = (series * 2).rename("net_return").to_frame()
+    corrupt.index.name = "date"
+    corrupt.to_parquet(bad.series_path)
+
+    assert len(registry.trials("value_composite")) == 1  # other family unaffected
+    with pytest.raises(RegistryCoherenceError, match="momentum-aaaa"):
+        registry.trials("momentum")
+    with pytest.raises(RegistryCoherenceError):
+        registry.trials()  # unfiltered view includes the corrupt row

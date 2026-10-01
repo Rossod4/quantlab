@@ -16,7 +16,11 @@ import quantlab.cli as cli_module
 from quantlab.reporting.context import _ranking_agreement_line
 from quantlab.validation.basic import ValidationConfig, WalkForwardAxisConfig
 from quantlab.validation.metrics import sharpe_ratio
-from quantlab.validation.netted_grid import build_netted_book_grid, parse_grid_spec
+from quantlab.validation.netted_grid import (
+    _COMPARABLE_CONFIG_KEYS,
+    build_netted_book_grid,
+    parse_grid_spec,
+)
 from quantlab.validation.registry import TrialsRegistry
 from quantlab.validation.report_card import build_report_card
 from quantlab.validation.walk_forward import walk_forward_blend
@@ -320,3 +324,177 @@ def test_report_card_says_not_checked_with_reason(world, tmp_path):
     assert _ranking_agreement_line(card.ranking_agreement).startswith(
         "ranking agreement under both cost conventions: not checked - no --netted"
     )
+
+
+# --- review follow-ups -------------------------------------------------------
+
+
+def _flip(value):
+    if isinstance(value, str):
+        return value + "-x"
+    return value + 1
+
+
+@pytest.mark.parametrize("key", _COMPARABLE_CONFIG_KEYS)
+def test_every_comparable_config_key_is_enforced_for_endpoints(world, tmp_path, key):
+    base = {
+        **FULL_CFG,
+        "start": "2015-01-31",
+        "end": str(DATES[-1].date()),
+        "rebalance_freq": "month_end",
+    }
+    bad = _result(
+        world["results"]["mom"].net_returns,
+        "momentum-aaaa",
+        cfg_overrides={key: _flip(base[key])},
+        params={"n_long": 30},
+    )
+    bad_dir = tmp_path / f"bad_{key}"
+    bad.save(bad_dir)
+
+    outcome = _build(
+        world,
+        child_results=[bad, world["results"]["val"]],
+        child_dirs=[bad_dir, world["dirs"]["val"]],
+    )
+
+    assert outcome.sharpes is None
+    assert f"{key} differs" in outcome.reason
+
+
+@pytest.mark.parametrize("key", _COMPARABLE_CONFIG_KEYS)
+def test_a_comparable_key_missing_from_provenance_is_refused(world, tmp_path, key):
+    bad = _result(world["results"]["mom"].net_returns, "momentum-aaaa", params={"n_long": 30})
+    bad.provenance["backtest_config"].pop(key, None)
+    bad_dir = tmp_path / f"missing_{key}"
+    bad.save(bad_dir)
+
+    outcome = _build(
+        world,
+        child_results=[bad, world["results"]["val"]],
+        child_dirs=[bad_dir, world["dirs"]["val"]],
+    )
+
+    assert outcome.sharpes is None
+    assert f"{key} missing from provenance" in outcome.reason
+
+
+def test_data_semantics_version_mismatch_is_refused(world, tmp_path):
+    bad = _result(
+        world["results"]["val"].net_returns, "value_composite-bbbb", params={"n_holdings": 30}
+    )
+    bad.provenance["data_semantics_version"] = "m03b"
+    bad_dir = tmp_path / "old_semantics"
+    bad.save(bad_dir)
+
+    outcome = _build(
+        world,
+        child_results=[world["results"]["mom"], bad],
+        child_dirs=[world["dirs"]["mom"], bad_dir],
+    )
+
+    assert outcome.sharpes is None
+    assert "data_semantics_version differs" in outcome.reason
+
+
+def test_interior_run_with_different_child_params_is_refused(world, tmp_path):
+    other = _result(
+        world["results"]["b0.75"].net_returns,
+        "blend-0.75b",
+        params={
+            "children": [
+                {"strategy": "momentum", "params": {"n_long": 50}, "weight": 0.75},
+                {"strategy": "value_composite", "params": {"n_holdings": 30}, "weight": 0.25},
+            ]
+        },
+    )
+    other_dir = tmp_path / "other_params"
+    other.save(other_dir)
+    d = world["dirs"]
+
+    outcome = _build(
+        world,
+        specs=[((0.75, 0.25), other_dir), ((0.5, 0.5), d["b0.5"]), ((0.25, 0.75), d["b0.25"])],
+    )
+
+    assert outcome.sharpes is None
+    assert "child strategy/params differ" in outcome.reason
+
+
+def test_annualisation_follows_the_runs_own_rebalance_frequency(tmp_path):
+    """Quarterly runs: periods_per_year must be 4 on BOTH conventions."""
+    q_dates = pd.date_range("2005-03-31", periods=44, freq="QE")
+    rng = np.random.default_rng(3)
+    mom = pd.Series(rng.normal(0.03, 0.06, 44), index=q_dates)
+    val = pd.Series(rng.normal(0.02, 0.04, 44), index=q_dates)
+    q = {"rebalance_freq": "quarter_end", "start": "2005-03-31", "end": str(q_dates[-1].date())}
+
+    def make(name, series, sid, **kw):
+        r = _result(series, sid, cfg_overrides=q, **kw)
+        r.save(tmp_path / name)
+        return r, tmp_path / name
+
+    mom_r, mom_d = make("mom", mom, "momentum-aaaa", params={"n_long": 30})
+    val_r, val_d = make("val", val, "value_composite-bbbb", params={"n_holdings": 30})
+    specs, headline = [], None
+    for w in (0.75, 0.5, 0.25):
+        r, d = make(f"b{w}", mom * w + val * (1 - w), f"blend-{w}", weights=(w, 1 - w))
+        specs.append(((w, 1 - w), d))
+        if w == 0.5:
+            headline = r
+    wf = walk_forward_blend(
+        [mom, val],
+        GRID,
+        train_years=5,
+        test_years=1,
+        periods_per_year=4,
+        child_labels=("momentum", "value"),
+    )
+
+    outcome = build_netted_book_grid(
+        headline=headline,
+        walk_forward=wf,
+        weight_grid=GRID,
+        child_results=[mom_r, val_r],
+        child_dirs=[mom_d, val_d],
+        grid_specs=specs,
+    )
+
+    assert outcome.reason is None
+    assert outcome.window["periods_per_year"] == 4
+    oos = wf.oos_returns.index
+    assert outcome.sharpes[(1.0, 0.0)] == pytest.approx(sharpe_ratio(mom.loc[oos], 0.0, 4))
+    assert outcome.sharpes[(1.0, 0.0)] != pytest.approx(sharpe_ratio(mom.loc[oos], 0.0, 12))
+    # same convention as the walk-forward's own comparison row
+    plain = wf.comparison.loc["Sharpe Ratio", "Fixed 75% momentum/25% value"]
+    assert outcome.sharpes[(0.75, 0.25)] == pytest.approx(plain)
+
+
+def test_netted_grid_result_without_a_walk_forward_is_reported_not_dropped(world, tmp_path):
+    kwargs = cli_module._build_ranking_kwargs(
+        world["headline"], None, [], [f"0.5,0.5={world['dirs']['b0.5']}"], _config()
+    )
+    assert "no walk-forward" in kwargs["ranking_not_checked_reason"]
+
+    registry = TrialsRegistry(tmp_path / "reg", repo_root=tmp_path)
+    card = build_report_card(world["headline"], None, registry, _config(), **kwargs)
+    assert card.ranking_agreement["status"] == "not_checked"
+    assert any("not checked" in c and "no walk-forward" in c for c in card.known_caveats)
+
+
+def test_the_comparable_key_set_itself_is_pinned():
+    """The parametrised tests above iterate the tuple, so deleting a key would
+    silently delete its own test; pin the set explicitly (add new keys here)."""
+    assert set(_COMPARABLE_CONFIG_KEYS) == {
+        "start",
+        "end",
+        "rebalance_freq",
+        "execution",
+        "cost_model",
+        "one_way_cost_bps",
+        "borrow_fee_annual_bps",
+        "delisting_haircut",
+        "extreme_return_policy",
+        "extreme_return_bound",
+        "corwin_schultz_lookback_days",
+    }

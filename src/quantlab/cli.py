@@ -621,6 +621,11 @@ def _build_ranking_kwargs(
     the real netted-book Sharpes with their provenance, or an explicit
     "not checked: <reason>" - never a crash, never a silent None."""
     if walk_forward is None:
+        if netted_grid_specs:
+            return {
+                "ranking_not_checked_reason": "--netted-grid-result supplied but no walk-forward "
+                "was built (needs a blend headline and >= 2 loadable --child-result; see stderr)"
+            }
         return {}
     from quantlab.backtest.result import BacktestResult
     from quantlab.validation.netted_grid import build_netted_book_grid, parse_grid_spec

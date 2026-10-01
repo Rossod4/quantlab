@@ -191,6 +191,16 @@ def _family_from_strategy_id(strategy_id: str) -> str:
     return strategy_id.rsplit("-", 1)[0]
 
 
+class RegistryCoherenceError(RuntimeError):
+    """A registry row and its stored return series disagree (see
+    `TrialsRegistry._check_series_coherent`). Deliberately NOT a ValueError:
+    `report_card.py` degrades ValueErrors to a failed gate; this must be
+    loud."""
+
+
+_SERIES_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+
+
 def _series_hash(net_returns: pd.Series) -> str:
     """sha256 of the return series' VALUES only (not its date index) - see
     module docstring's "Distinct-trial deduplication" section."""
@@ -477,6 +487,33 @@ class TrialsRegistry:
 
     # --- reading -----------------------------------------------------------
 
+    def _check_series_coherent(self, record: TrialRecord) -> None:
+        """Raise `RegistryCoherenceError` if `record`'s stored `series_hash`
+        disagrees with the series file on disk. A MISSING or unreadable file
+        is not this check's business (`load_series` raises OSError and
+        `reality_check.build_trial_matrix` degrades that trial by name)."""
+        if record.series_path is None or record.series_hash is None:
+            return
+        path = Path(record.series_path)
+        try:
+            stat = path.stat()
+        except OSError:
+            return
+        cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
+        actual = _SERIES_HASH_CACHE.get(cache_key)
+        if actual is None:
+            try:
+                actual = _series_hash(pd.read_parquet(path)["net_return"])
+            except Exception:  # noqa: BLE001 - corrupt file: left to load_series
+                return
+            _SERIES_HASH_CACHE[cache_key] = actual
+        if actual != record.series_hash:
+            raise RegistryCoherenceError(
+                f"trial {record.key!r}: the registry row's series_hash does not match the "
+                f"series file {record.series_path} on disk (row recorded {record.recorded_at}) "
+                "- the row and its series are out of sync; refusing to pick one silently"
+            )
+
     def trials(
         self, family: str | None = None, *, with_series_only: bool = False
     ) -> list[TrialRecord]:
@@ -500,15 +537,30 @@ class TrialsRegistry:
         Among records that agree on series presence, the first-seen still
         wins (unchanged; `record_backtest`'s series_path is never None, so
         this is exactly the pre-existing behaviour
-        `test_same_key_recorded_twice_does_not_increment_n` pins)."""
+        `test_same_key_recorded_twice_does_not_increment_n` pins).
+
+        UPDATE (M09): among rows agreeing on series presence the LATEST now
+        wins, not the first-seen - see the supersede comment in the loop.
+        A series file is overwritten per key (`_write_series`), so first-seen
+        wins would pair a stale row (Sharpe, `series_hash`) with the newer
+        series on disk; `_check_series_coherent` makes any such disagreement a
+        loud error instead of a silent pick."""
         seen: dict[Key, TrialRecord] = {}
         for raw in self._read_all():
             record = TrialRecord.from_json(raw)
             existing = seen.get(record.key)
-            if existing is None:
+            # Supersede policy (M09, orchestrator decision): re-recording an
+            # identical key means the SAME hypothesis on a newer data vintage,
+            # so the LATEST row replaces the earlier one (N is unchanged - the
+            # key set is). Exception: a later row with no series never
+            # discards an earlier series-bearing row. Superseded rows stay in
+            # the jsonl for audit.
+            if existing is None or not (
+                existing.series_path is not None and record.series_path is None
+            ):
                 seen[record.key] = record
-            elif existing.series_path is None and record.series_path is not None:
-                seen[record.key] = record
+        for record in seen.values():
+            self._check_series_coherent(record)
         results = list(seen.values())
         if family is not None:
             results = [r for r in results if r.family == family]

@@ -240,25 +240,87 @@ def test_trials_heals_a_series_less_sensitivity_record_on_rerun(tmp_path):
     assert len(with_series) == 1
 
 
-def test_trials_keeps_first_seen_when_neither_record_has_a_series(tmp_path):
-    """The healing fix in `trials()` must not disturb the pre-existing
-    first-occurrence rule when series presence is tied (both None, or both
-    supplied) - `record_backtest`'s series_path is never None, so this is
-    what `test_same_key_recorded_twice_does_not_increment_n` already
-    depends on; pinned here directly against `record_sensitivity`, whose
-    series_path CAN be None."""
+def test_trials_latest_row_supersedes_when_neither_record_has_a_series(tmp_path):
+    """M09 supersede policy (orchestrator decision; replaces the old
+    first-seen rule): re-recording an identical key is the same hypothesis on
+    a newer data vintage, so the LATEST row wins; N is unchanged; the
+    superseded row stays in the jsonl for audit."""
     registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
-    first = registry.record_sensitivity(
-        _sensitivity_for_one_point(net_sharpe=0.5), family="momentum"
-    )
+    registry.record_sensitivity(_sensitivity_for_one_point(net_sharpe=0.5), family="momentum")
     registry.record_sensitivity(_sensitivity_for_one_point(net_sharpe=0.9), family="momentum")
 
     kept = registry.trials("momentum")
     assert len(kept) == 1
     assert kept[0].series_path is None
-    # First-seen (net_sharpe=0.5), not the second (0.9) rewrite.
-    assert kept[0].net_sharpe == pytest.approx(first[0].net_sharpe)
-    assert kept[0].net_sharpe == pytest.approx(0.5)
+    assert kept[0].net_sharpe == pytest.approx(0.9)
+    assert registry.n_trials_raw("momentum") == 1
+    assert len(registry.path.read_text(encoding="utf-8").splitlines()) == 2  # audit trail
+
+
+def test_rerecording_a_key_with_a_different_series_returns_new_sharpe_and_matching_hash(tmp_path):
+    from quantlab.validation.registry import _series_hash
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    old = pd.Series([0.01, 0.02, -0.01, 0.03] * 6, index=_dates(24))
+    new = pd.Series([0.02, -0.03, 0.01, 0.05] * 6, index=_dates(24))
+    registry.record_backtest(
+        make_backtest_result(net_returns=old, strategy_id="momentum-aaaa"), family="momentum"
+    )
+    n_before = registry.n_trials("momentum")
+    latest = registry.record_backtest(
+        make_backtest_result(net_returns=new, strategy_id="momentum-aaaa"), family="momentum"
+    )
+
+    kept = registry.trials("momentum")
+    assert len(kept) == 1
+    assert kept[0].net_sharpe == pytest.approx(latest.net_sharpe)
+    assert kept[0].series_hash == _series_hash(new)
+    assert _series_hash(registry.load_series(kept[0])) == kept[0].series_hash
+    assert registry.n_trials("momentum") == n_before == 1
+
+
+def test_later_series_less_row_does_not_discard_an_earlier_series_bearing_one(tmp_path):
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    sensitivity = _sensitivity_for_one_point()
+    net_returns = pd.Series([0.01, 0.02], index=_dates(2))
+    registry.record_sensitivity(
+        sensitivity, family="momentum", net_returns_by_strategy_id={"momentum-point-1": net_returns}
+    )
+    registry.record_sensitivity(sensitivity, family="momentum")  # Sharpe-only re-record
+
+    kept = registry.trials("momentum")
+    assert len(kept) == 1 and kept[0].series_path is not None
+
+
+def test_a_row_whose_series_hash_disagrees_with_the_file_is_a_loud_error(tmp_path):
+    from quantlab.validation.registry import RegistryCoherenceError
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    series = pd.Series([0.01, 0.02, -0.01, 0.03] * 6, index=_dates(24))
+    record = registry.record_backtest(
+        make_backtest_result(net_returns=series, strategy_id="momentum-aaaa"), family="momentum"
+    )
+    # Out-of-band overwrite of the series file: row and file now disagree.
+    other = (series * 2).rename("net_return").to_frame()
+    other.index.name = "date"
+    other.to_parquet(record.series_path)
+
+    with pytest.raises(RegistryCoherenceError, match="momentum-aaaa"):
+        registry.trials("momentum")
+
+
+def test_a_missing_series_file_is_not_a_coherence_error(tmp_path):
+    from pathlib import Path
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    record = registry.record_backtest(
+        make_backtest_result(
+            net_returns=pd.Series(0.01, index=_dates(24)), strategy_id="momentum-aaaa"
+        ),
+        family="momentum",
+    )
+    Path(record.series_path).unlink()
+    assert len(registry.trials("momentum")) == 1  # left to load_series / build_trial_matrix
 
 
 # --- var_sr_trials -----------------------------------------------------------

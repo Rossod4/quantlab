@@ -443,6 +443,8 @@ def build_report_card(
     price_panel_missing_tickers: list[str] | None = None,
     family: str | None = None,
     netted_book_grid_sharpes: dict[tuple[float, ...], float] | None = None,
+    ranking_agreement_detail: dict[str, Any] | None = None,
+    ranking_not_checked_reason: str | None = None,
 ) -> ReportCard:
     """Build the full report card for `result`. Registers `result` itself
     into `registry` (idempotent by key - see registry.py) so the current
@@ -644,13 +646,21 @@ def build_report_card(
             from quantlab.validation.walk_forward import walk_forward_ranking_agreement
 
             agreement = walk_forward_ranking_agreement(walk_forward, netted_book_grid_sharpes)
-            ranking_agreement = agreement.to_json()
+            ranking_agreement = {"status": "checked", **agreement.to_json()}
+            if ranking_agreement_detail:
+                ranking_agreement.update(ranking_agreement_detail)
             known_caveats.append(
                 f"Walk-forward Sharpe ranking checked against the real engine's netted-book "
                 f"costing at the same {agreement.n_points} grid points (M09): Kendall tau="
                 f"{agreement.kendall_tau:.4f}, top choice "
                 f"{'AGREES' if agreement.top_choice_agrees else 'DISAGREES'} between the two "
                 "cost conventions."
+            )
+        elif ranking_not_checked_reason:
+            ranking_agreement = {"status": "not_checked", "reason": ranking_not_checked_reason}
+            known_caveats.append(
+                f"Walk-forward ranking agreement under both cost conventions: not checked - "
+                f"{ranking_not_checked_reason}. {_WALK_FORWARD_RANKING_NOTE}"
             )
         else:
             known_caveats.append(_WALK_FORWARD_RANKING_NOTE)
@@ -661,6 +671,14 @@ def build_report_card(
             known_caveats.append(_WALK_FORWARD_NAN_TIEBREAK_CLEAN_NOTE)
         else:
             known_caveats.append(_WALK_FORWARD_NAN_TIEBREAK_FIRED_NOTE)
+    if ranking_agreement is None and ranking_not_checked_reason and walk_forward is None:
+        # The caller supplied ranking inputs but no walk-forward was built (the
+        # branch above only runs with one): still say so on the card.
+        ranking_agreement = {"status": "not_checked", "reason": ranking_not_checked_reason}
+        known_caveats.append(
+            f"Walk-forward ranking agreement under both cost conventions: not checked - "
+            f"{ranking_not_checked_reason}"
+        )
     if dirty_trial_count > 0:
         known_caveats.append(_DIRTY_TRIAL_CAVEAT)
     known_caveats.extend(rc_excluded)

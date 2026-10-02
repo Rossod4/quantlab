@@ -240,25 +240,87 @@ def test_trials_heals_a_series_less_sensitivity_record_on_rerun(tmp_path):
     assert len(with_series) == 1
 
 
-def test_trials_keeps_first_seen_when_neither_record_has_a_series(tmp_path):
-    """The healing fix in `trials()` must not disturb the pre-existing
-    first-occurrence rule when series presence is tied (both None, or both
-    supplied) - `record_backtest`'s series_path is never None, so this is
-    what `test_same_key_recorded_twice_does_not_increment_n` already
-    depends on; pinned here directly against `record_sensitivity`, whose
-    series_path CAN be None."""
+def test_trials_latest_row_supersedes_when_neither_record_has_a_series(tmp_path):
+    """M09 supersede policy (orchestrator decision; replaces the old
+    first-seen rule): re-recording an identical key is the same hypothesis on
+    a newer data vintage, so the LATEST row wins; N is unchanged; the
+    superseded row stays in the jsonl for audit."""
     registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
-    first = registry.record_sensitivity(
-        _sensitivity_for_one_point(net_sharpe=0.5), family="momentum"
-    )
+    registry.record_sensitivity(_sensitivity_for_one_point(net_sharpe=0.5), family="momentum")
     registry.record_sensitivity(_sensitivity_for_one_point(net_sharpe=0.9), family="momentum")
 
     kept = registry.trials("momentum")
     assert len(kept) == 1
     assert kept[0].series_path is None
-    # First-seen (net_sharpe=0.5), not the second (0.9) rewrite.
-    assert kept[0].net_sharpe == pytest.approx(first[0].net_sharpe)
-    assert kept[0].net_sharpe == pytest.approx(0.5)
+    assert kept[0].net_sharpe == pytest.approx(0.9)
+    assert registry.n_trials_raw("momentum") == 1
+    assert len(registry.path.read_text(encoding="utf-8").splitlines()) == 2  # audit trail
+
+
+def test_rerecording_a_key_with_a_different_series_returns_new_sharpe_and_matching_hash(tmp_path):
+    from quantlab.validation.registry import _series_hash
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    old = pd.Series([0.01, 0.02, -0.01, 0.03] * 6, index=_dates(24))
+    new = pd.Series([0.02, -0.03, 0.01, 0.05] * 6, index=_dates(24))
+    registry.record_backtest(
+        make_backtest_result(net_returns=old, strategy_id="momentum-aaaa"), family="momentum"
+    )
+    n_before = registry.n_trials("momentum")
+    latest = registry.record_backtest(
+        make_backtest_result(net_returns=new, strategy_id="momentum-aaaa"), family="momentum"
+    )
+
+    kept = registry.trials("momentum")
+    assert len(kept) == 1
+    assert kept[0].net_sharpe == pytest.approx(latest.net_sharpe)
+    assert kept[0].series_hash == _series_hash(new)
+    assert _series_hash(registry.load_series(kept[0])) == kept[0].series_hash
+    assert registry.n_trials("momentum") == n_before == 1
+
+
+def test_later_series_less_row_does_not_discard_an_earlier_series_bearing_one(tmp_path):
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    sensitivity = _sensitivity_for_one_point()
+    net_returns = pd.Series([0.01, 0.02], index=_dates(2))
+    registry.record_sensitivity(
+        sensitivity, family="momentum", net_returns_by_strategy_id={"momentum-point-1": net_returns}
+    )
+    registry.record_sensitivity(sensitivity, family="momentum")  # Sharpe-only re-record
+
+    kept = registry.trials("momentum")
+    assert len(kept) == 1 and kept[0].series_path is not None
+
+
+def test_a_row_whose_series_hash_disagrees_with_the_file_is_a_loud_error(tmp_path):
+    from quantlab.validation.registry import RegistryCoherenceError
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    series = pd.Series([0.01, 0.02, -0.01, 0.03] * 6, index=_dates(24))
+    record = registry.record_backtest(
+        make_backtest_result(net_returns=series, strategy_id="momentum-aaaa"), family="momentum"
+    )
+    # Out-of-band overwrite of the series file: row and file now disagree.
+    other = (series * 2).rename("net_return").to_frame()
+    other.index.name = "date"
+    other.to_parquet(record.series_path)
+
+    with pytest.raises(RegistryCoherenceError, match="momentum-aaaa"):
+        registry.trials("momentum")
+
+
+def test_a_missing_series_file_is_not_a_coherence_error(tmp_path):
+    from pathlib import Path
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    record = registry.record_backtest(
+        make_backtest_result(
+            net_returns=pd.Series(0.01, index=_dates(24)), strategy_id="momentum-aaaa"
+        ),
+        family="momentum",
+    )
+    Path(record.series_path).unlink()
+    assert len(registry.trials("momentum")) == 1  # left to load_series / build_trial_matrix
 
 
 # --- var_sr_trials -----------------------------------------------------------
@@ -592,3 +654,107 @@ def test_dirty_flag_prefers_provenance_when_present(tmp_path):
     assert clean_record.dirty_source == "provenance"
     assert dirty_record.dirty is True
     assert dirty_record.dirty_source == "provenance"
+
+
+def test_coherence_error_is_confined_to_the_family_being_returned(tmp_path):
+    from quantlab.validation.registry import RegistryCoherenceError
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    series = pd.Series([0.01, 0.02, -0.01, 0.03] * 6, index=_dates(24))
+    bad = registry.record_backtest(
+        make_backtest_result(net_returns=series, strategy_id="momentum-aaaa"), family="momentum"
+    )
+    registry.record_backtest(
+        make_backtest_result(net_returns=series * 3, strategy_id="value_composite-bbbb"),
+        family="value_composite",
+    )
+    corrupt = (series * 2).rename("net_return").to_frame()
+    corrupt.index.name = "date"
+    corrupt.to_parquet(bad.series_path)
+
+    assert len(registry.trials("value_composite")) == 1  # other family unaffected
+    with pytest.raises(RegistryCoherenceError, match="momentum-aaaa"):
+        registry.trials("momentum")
+    with pytest.raises(RegistryCoherenceError):
+        registry.trials()  # unfiltered view includes the corrupt row
+
+
+def test_sensitivity_rows_take_the_runs_own_dirty_flag_not_the_tree_at_record_time(tmp_path):
+    """A run that started from a clean tree rewrites its own tracked report
+    artefacts before recording; the rows must still read clean."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "tracked.txt").write_text("a")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"],
+        cwd=tmp_path,
+        check=True,
+    )
+    registry = TrialsRegistry(tmp_path / "reports", repo_root=tmp_path)
+    (tmp_path / "tracked.txt").write_text("rewritten by the run itself")  # tree now dirty
+
+    from quantlab.validation.registry import _git_dirty
+
+    assert _git_dirty(tmp_path) is True
+    rows = registry.record_sensitivity(_sensitivity_for_one_point(), family="momentum", dirty=False)
+    assert rows[0].dirty is False and rows[0].dirty_source == "provenance"
+
+    fallback = registry.record_sensitivity(
+        _sensitivity_for_one_point(), family="momentum", dirty=None
+    )
+    assert fallback[0].dirty is True and fallback[0].dirty_source == "registry_at_record_time"
+
+
+def test_cli_record_sensitivity_forwards_the_headline_runs_dirty_flag(tmp_path):
+    import quantlab.cli as cli_module
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    headline = make_backtest_result(
+        net_returns=pd.Series(0.01, index=_dates(24)), strategy_id="momentum-aaaa", dirty=False
+    )
+    cli_module._record_sensitivity_result(
+        headline, _sensitivity_for_one_point(), "momentum", registry
+    )
+    rows = registry.trials("momentum")
+    assert rows and all(r.dirty is False and r.dirty_source == "provenance" for r in rows)
+
+
+def test_record_extra_trials_records_same_family_runs_with_series_and_own_dirty(tmp_path):
+    import quantlab.cli as cli_module
+
+    registry = TrialsRegistry(tmp_path / "reg", repo_root=tmp_path)
+    headline = make_backtest_result(
+        net_returns=pd.Series(0.01, index=_dates(24)), strategy_id="blend-head", dirty=False
+    )
+    other = make_backtest_result(
+        net_returns=pd.Series([0.02, -0.01] * 12, index=_dates(24)),
+        strategy_id="blend-other",
+        dirty=True,
+    )
+    other.save(tmp_path / "other")
+
+    cli_module._record_extra_trials(registry, [tmp_path / "other"], headline)
+
+    rows = registry.trials("blend", with_series_only=True)
+    assert [r.key[0] for r in rows] == ["blend-other"]
+    assert rows[0].source == "backtest" and rows[0].dirty is True
+    assert rows[0].dirty_source == "provenance"
+
+
+def test_record_extra_trials_refuses_a_different_family(tmp_path):
+    import typer
+
+    import quantlab.cli as cli_module
+
+    registry = TrialsRegistry(tmp_path / "reg", repo_root=tmp_path)
+    headline = make_backtest_result(
+        net_returns=pd.Series(0.01, index=_dates(24)), strategy_id="blend-head"
+    )
+    make_backtest_result(
+        net_returns=pd.Series(0.02, index=_dates(24)), strategy_id="momentum-x"
+    ).save(tmp_path / "mom")
+
+    with pytest.raises(typer.BadParameter, match="not the headline"):
+        cli_module._record_extra_trials(registry, [tmp_path / "mom"], headline)

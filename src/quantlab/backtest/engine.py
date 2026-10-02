@@ -1370,8 +1370,10 @@ def run_backtest(
         known_caveats.append(
             f"{len(never_scanned_in_universe)} ticker(s) in this run's tracked universe have "
             "NEVER been visited by `quantlab data scan` - their quarantine status is unknown, "
-            "not confirmed-clean; run `quantlab data scan` before trusting the quarantined "
-            "count above as complete. See provenance.never_scanned_tickers."
+            "not confirmed-clean. A name with no cached price series at all (e.g. a delisted "
+            "symbol Yahoo no longer serves) has nothing to scan and always appears here; for "
+            "any that DO have a cached series, run `quantlab data scan` before trusting the "
+            "quarantined count above as complete. See provenance.never_scanned_tickers."
         )
 
     no_data_suppressed_tickers = _no_data_suppressed_tickers(

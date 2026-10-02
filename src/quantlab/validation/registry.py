@@ -191,6 +191,16 @@ def _family_from_strategy_id(strategy_id: str) -> str:
     return strategy_id.rsplit("-", 1)[0]
 
 
+class RegistryCoherenceError(RuntimeError):
+    """A registry row and its stored return series disagree (see
+    `TrialsRegistry._check_series_coherent`). Deliberately NOT a ValueError:
+    `report_card.py` degrades ValueErrors to a failed gate; this must be
+    loud."""
+
+
+_SERIES_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+
+
 def _series_hash(net_returns: pd.Series) -> str:
     """sha256 of the return series' VALUES only (not its date index) - see
     module docstring's "Distinct-trial deduplication" section."""
@@ -381,6 +391,7 @@ class TrialsRegistry:
         family: str,
         net_returns_by_strategy_id: dict[str, pd.Series] | None = None,
         periods_per_year: int | None = None,
+        dirty: bool | None = None,
     ) -> list[TrialRecord]:
         """Record every grid point in `sensitivity.trials`. `sensitivity_grid`
         itself discards each point's raw result after extracting its Sharpe
@@ -398,9 +409,21 @@ class TrialsRegistry:
         know it), via `trial.net_sharpe / sqrt(periods_per_year)` - the
         EXACT algebraic inverse of `metrics.sharpe_ratio`'s own
         annualization, not an approximation. NaN when neither is available.
+
+        `dirty` (M09): the tree state of the run that PRODUCED these grid
+        points - pass the headline result's `provenance["dirty"]`, captured
+        before the run wrote anything. Omitted, the registry falls back to
+        `git status` at record time, which a `quantlab run` contaminates
+        itself: it has by then rewritten the TRACKED report artefacts
+        (`validation_basic.json`, ...) under `reports/<name>/`, so every
+        sensitivity row of a run that started from a clean tree read
+        dirty=True (observed on the 2026-10-01 momentum run).
         """
         series_by_id = net_returns_by_strategy_id or {}
-        dirty = _git_dirty(self._repo_root)
+        if dirty is None:
+            dirty, dirty_source = _git_dirty(self._repo_root), "registry_at_record_time"
+        else:
+            dirty, dirty_source = bool(dirty), "provenance"
         now = pd.Timestamp.now("UTC").isoformat()
         records = []
         for trial in sensitivity.trials:
@@ -426,7 +449,7 @@ class TrialsRegistry:
                 periods_per_year=periods_per_year or 0,
                 quantlab_git_sha="n/a",
                 dirty=dirty,
-                dirty_source="registry_at_record_time",
+                dirty_source=dirty_source,
                 series_path=series_path,
                 series_hash=series_hash,
                 recorded_at=now,
@@ -477,6 +500,33 @@ class TrialsRegistry:
 
     # --- reading -----------------------------------------------------------
 
+    def _check_series_coherent(self, record: TrialRecord) -> None:
+        """Raise `RegistryCoherenceError` if `record`'s stored `series_hash`
+        disagrees with the series file on disk. A MISSING or unreadable file
+        is not this check's business (`load_series` raises OSError and
+        `reality_check.build_trial_matrix` degrades that trial by name)."""
+        if record.series_path is None or record.series_hash is None:
+            return
+        path = Path(record.series_path)
+        try:
+            stat = path.stat()
+        except OSError:
+            return
+        cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
+        actual = _SERIES_HASH_CACHE.get(cache_key)
+        if actual is None:
+            try:
+                actual = _series_hash(pd.read_parquet(path)["net_return"])
+            except Exception:  # noqa: BLE001 - corrupt file: left to load_series
+                return
+            _SERIES_HASH_CACHE[cache_key] = actual
+        if actual != record.series_hash:
+            raise RegistryCoherenceError(
+                f"trial {record.key!r}: the registry row's series_hash does not match the "
+                f"series file {record.series_path} on disk (row recorded {record.recorded_at}) "
+                "- the row and its series are out of sync; refusing to pick one silently"
+            )
+
     def trials(
         self, family: str | None = None, *, with_series_only: bool = False
     ) -> list[TrialRecord]:
@@ -500,20 +550,37 @@ class TrialsRegistry:
         Among records that agree on series presence, the first-seen still
         wins (unchanged; `record_backtest`'s series_path is never None, so
         this is exactly the pre-existing behaviour
-        `test_same_key_recorded_twice_does_not_increment_n` pins)."""
+        `test_same_key_recorded_twice_does_not_increment_n` pins).
+
+        UPDATE (M09): among rows agreeing on series presence the LATEST now
+        wins, not the first-seen - see the supersede comment in the loop.
+        A series file is overwritten per key (`_write_series`), so first-seen
+        wins would pair a stale row (Sharpe, `series_hash`) with the newer
+        series on disk; `_check_series_coherent` makes any such disagreement a
+        loud error instead of a silent pick."""
         seen: dict[Key, TrialRecord] = {}
         for raw in self._read_all():
             record = TrialRecord.from_json(raw)
             existing = seen.get(record.key)
-            if existing is None:
-                seen[record.key] = record
-            elif existing.series_path is None and record.series_path is not None:
+            # Supersede policy (M09, orchestrator decision): re-recording an
+            # identical key means the SAME hypothesis on a newer data vintage,
+            # so the LATEST row replaces the earlier one (N is unchanged - the
+            # key set is). Exception: a later row with no series never
+            # discards an earlier series-bearing row. Superseded rows stay in
+            # the jsonl for audit.
+            if existing is None or not (
+                existing.series_path is not None and record.series_path is None
+            ):
                 seen[record.key] = record
         results = list(seen.values())
         if family is not None:
             results = [r for r in results if r.family == family]
         if with_series_only:
             results = [r for r in results if r.series_path is not None]
+        # Only the rows actually being returned are checked: a corrupt row in
+        # another family must not block this one.
+        for record in results:
+            self._check_series_coherent(record)
         return results
 
     def distinct_trials(self, family: str) -> list[TrialRecord]:

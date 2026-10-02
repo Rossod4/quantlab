@@ -326,6 +326,20 @@ def validate(
         "honesty check when the headline strategy is a blend (repeat for each child; "
         "at least 2 required). Only meaningful with --full.",
     ),
+    netted_grid_result: list[str] = typer.Option(
+        [],
+        "--netted-grid-result",
+        help="'w1,w2=<dir>': a saved blend BacktestResult at those INTERIOR weights, for the "
+        "walk-forward ranking-agreement check (repeat per interior grid point; the one-hot "
+        "endpoints come from --child-result). Only meaningful with --full and --child-result.",
+    ),
+    record_trial: list[Path] = typer.Option(
+        [],
+        "--record-trial",
+        help="Saved BacktestResult directory of another run in the SAME strategy family (e.g. an "
+        "interior blend-weight backtest) to record as a trial in the registry, with its series "
+        "and its own dirty flag. Repeat per run. Only meaningful with --full.",
+    ),
 ) -> None:
     """Run basic-tier validation (metrics, rolling, sub-periods, flags) on a
     saved `BacktestResult` and write the report to `--out`; with `--full`,
@@ -345,6 +359,10 @@ def validate(
         sensitivity_result = _build_sensitivity_result(bt_result, platform, validation_config)
     if full and child_result:
         walk_forward_result = _build_walk_forward_result(bt_result, child_result, validation_config)
+
+    ranking_kwargs = _build_ranking_kwargs(
+        bt_result, walk_forward_result, child_result, netted_grid_result, validation_config
+    )
 
     basic = validate_basic(
         bt_result,
@@ -374,6 +392,7 @@ def validate(
         # calling it on every --full run is harmless (registry.py's own
         # `seed_historical_blend_trials` docstring).
         registry.seed_historical_blend_trials()
+        _record_extra_trials(registry, record_trial, bt_result)
 
         price_panel, missing_tickers = _build_capacity_price_panel(bt_result, platform_config)
 
@@ -391,6 +410,7 @@ def validate(
             sensitivity=sensitivity_result,
             price_panel=price_panel,
             price_panel_missing_tickers=missing_tickers,
+            **ranking_kwargs,
         )
 
         (out / "report_card.json").write_text(
@@ -515,6 +535,10 @@ def _record_sensitivity_result(
         family=family or "unknown",
         periods_per_year=periods_per_year,
         net_returns_by_strategy_id=sensitivity_result.net_returns_by_strategy_id,
+        # The grid ran from the same tree as the headline backtest; use ITS
+        # run-time state, not `git status` now (the run has since rewritten
+        # its own tracked report artefacts).
+        dirty=bt_result.provenance.get("dirty"),
     )
 
 
@@ -594,6 +618,73 @@ def _build_walk_forward_result(
     except Exception as exc:  # noqa: BLE001 - degrade to "no walk-forward", never crash --full
         typer.echo(f"  (walk-forward skipped: {exc})", err=True)
         return None
+
+
+def _record_extra_trials(
+    registry: TrialsRegistry, trial_dirs: list[Path], headline: BacktestResult
+) -> None:
+    """Record other saved runs of the headline's OWN strategy family as
+    trials (`registry.record_backtest`: source=backtest, series stored, dirty
+    from each run's provenance). A run from a different family is refused
+    loudly - it belongs in its own family's registry, not this one."""
+    from quantlab.backtest.result import BacktestResult
+
+    headline_id = headline.provenance.get("strategy_id", "")
+    family = headline_id.rsplit("-", 1)[0] if headline_id else ""
+    for directory in trial_dirs:
+        trial = BacktestResult.load(directory)
+        trial_id = trial.provenance.get("strategy_id", "")
+        trial_family = trial_id.rsplit("-", 1)[0] if trial_id else ""
+        if trial_family != family:
+            raise typer.BadParameter(
+                f"--record-trial {directory}: strategy family {trial_family!r} is not the "
+                f"headline's {family!r}"
+            )
+        record = registry.record_backtest(trial, family=family)
+        typer.echo(f"  recorded trial {record.key[0]} from {directory}")
+
+
+def _build_ranking_kwargs(
+    bt_result: BacktestResult,
+    walk_forward: WalkForwardResult | None,
+    child_result_dirs: list[Path],
+    netted_grid_specs: list[str],
+    validation_config: ValidationConfig,
+) -> dict:
+    """`build_report_card` kwargs for the walk-forward ranking-agreement
+    check (`validation/netted_grid.py` owns the logic and the window choice).
+    Empty when there is no walk-forward (nothing to rank); otherwise either
+    the real netted-book Sharpes with their provenance, or an explicit
+    "not checked: <reason>" - never a crash, never a silent None."""
+    if walk_forward is None:
+        if netted_grid_specs:
+            return {
+                "ranking_not_checked_reason": "--netted-grid-result supplied but no walk-forward "
+                "was built (needs a blend headline and >= 2 loadable --child-result; see stderr)"
+            }
+        return {}
+    from quantlab.backtest.result import BacktestResult
+    from quantlab.validation.netted_grid import build_netted_book_grid, parse_grid_spec
+
+    try:
+        specs = [parse_grid_spec(s) for s in netted_grid_specs]
+        children = [BacktestResult.load(d) for d in child_result_dirs]
+        outcome = build_netted_book_grid(
+            headline=bt_result,
+            walk_forward=walk_forward,
+            weight_grid=[tuple(w) for w in validation_config.walk_forward.weight_grid],
+            child_results=children,
+            child_dirs=list(child_result_dirs),
+            grid_specs=specs,
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade to "not checked", never crash --full
+        return {"ranking_not_checked_reason": f"could not assemble inputs: {exc}"}
+    if outcome.sharpes is None:
+        return {"ranking_not_checked_reason": outcome.reason}
+    return {
+        "netted_book_grid_sharpes": outcome.sharpes,
+        "ranking_agreement_detail": {"window": outcome.window, "inputs": outcome.inputs},
+    }
 
 
 def _build_capacity_price_panel(
@@ -745,6 +836,25 @@ def run(
     platform: Path = typer.Option(
         Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
     ),
+    child_result: list[Path] = typer.Option(
+        [],
+        "--child-result",
+        help="Saved child-sleeve BacktestResult directory (blend only; repeat per child, at "
+        "least 2) - enables the walk-forward weight check on the blend's card.",
+    ),
+    netted_grid_result: list[str] = typer.Option(
+        [],
+        "--netted-grid-result",
+        help="'w1,w2=<dir>': saved blend BacktestResult at an INTERIOR grid weight (repeat), "
+        "for the walk-forward ranking-agreement check; endpoints come from --child-result.",
+    ),
+    record_trial: list[Path] = typer.Option(
+        [],
+        "--record-trial",
+        help="Saved BacktestResult directory of another run in the SAME strategy family (e.g. an "
+        "interior blend-weight backtest) to record as a trial in the registry, with its series "
+        "and its own dirty flag. Repeat per run. Only meaningful with --full.",
+    ),
 ) -> None:
     """One command: backtest -> validate --full -> report, writing the
     BacktestResult, `validation_basic.json`, `report_card.json`/`.md` and
@@ -753,10 +863,11 @@ def run(
     Exit code reflects the verdict, so a scheduler can branch on it:
     0 = ELIGIBLE_FOR_PAPER, 2 = RESEARCH_ONLY, 3 = REJECTED.
 
-    Does NOT wire a walk-forward honesty check (that needs a blend's own
-    CHILD sleeve result directories - run `quantlab validate --full
-    --child-result <dir> --child-result <dir>` on the blend's own `--out`
-    afterward for that; see the README)."""
+    For a blend, `--child-result` (twice) adds the walk-forward weight check
+    and `--netted-grid-result` (once per interior grid weight) the ranking-
+    agreement check under both cost conventions; both are optional, and a
+    missing or mismatched input is reported on the card as "not checked:
+    <reason>"."""
     import json
     import time
 
@@ -787,13 +898,26 @@ def run(
     typer.echo("[2/3] validate --full ...")
     validation_config = load_validation_config(validation)
     sensitivity_result = _build_sensitivity_result(result, platform, validation_config)
-    basic = validate_basic(result, None, validation_config, sensitivity=sensitivity_result)
+    walk_forward_result = None
+    if child_result:
+        walk_forward_result = _build_walk_forward_result(result, child_result, validation_config)
+    ranking_kwargs = _build_ranking_kwargs(
+        result, walk_forward_result, child_result, netted_grid_result, validation_config
+    )
+    basic = validate_basic(
+        result,
+        None,
+        validation_config,
+        walk_forward=walk_forward_result,
+        sensitivity=sensitivity_result,
+    )
     (out / "validation_basic.json").write_text(
         json.dumps(basic.to_json(), sort_keys=True), encoding="utf-8"
     )
 
     registry = TrialsRegistry(platform_config.reports_dir)
     registry.seed_historical_blend_trials()
+    _record_extra_trials(registry, record_trial, result)
     price_panel, missing_tickers = _build_capacity_price_panel(result, platform_config)
     strategy_id = result.provenance.get("strategy_id", "")
     family = strategy_id.rsplit("-", 1)[0] if strategy_id else ""
@@ -805,9 +929,11 @@ def run(
         None,
         registry,
         validation_config,
+        walk_forward=walk_forward_result,
         sensitivity=sensitivity_result,
         price_panel=price_panel,
         price_panel_missing_tickers=missing_tickers,
+        **ranking_kwargs,
     )
     (out / "report_card.json").write_text(
         json.dumps(report_card.to_json(), sort_keys=True), encoding="utf-8"

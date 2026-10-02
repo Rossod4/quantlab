@@ -118,7 +118,26 @@ def write_json_meta(path: Path, meta: dict) -> None:
     path.write_text(json.dumps(meta))
 
 
+SCAN_MANIFEST_FILENAME = "_scan_manifest.json"
+
+
+def invalidate_scan_coverage(ticker: str, cache_dir: Path) -> None:
+    """Drop `ticker` from the cache-level scan manifest (`data/quality.py`'s
+    `scan_price_cache`): its price file was just rewritten, so whatever the
+    last scan concluded about the OLD bytes no longer applies and the ticker
+    must read as "never scanned" until it is scanned again. A missing manifest
+    is left alone (nothing is claimed scanned)."""
+    path = Path(cache_dir) / "prices" / SCAN_MANIFEST_FILENAME
+    manifest = read_json_meta(path)
+    if manifest is None or ticker not in manifest.get("scanned_tickers", []):
+        return
+    manifest["scanned_tickers"] = [t for t in manifest["scanned_tickers"] if t != ticker]
+    write_json_meta(path, manifest)
+
+
 def write_price_cache_meta(ticker: str, start: object, end: object, cache_dir: Path) -> None:
+    # Only reached right after a fresh parquet was written for `ticker`.
+    invalidate_scan_coverage(ticker, cache_dir)
     write_json_meta(
         price_meta_path(ticker, cache_dir),
         {

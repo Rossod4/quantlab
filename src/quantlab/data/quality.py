@@ -95,6 +95,7 @@ import pandas as pd
 from quantlab.core.calendar import trading_days
 from quantlab.core.errors import DataQualityError
 from quantlab.data.cache import (
+    SCAN_MANIFEST_FILENAME,
     price_cache_path,
     price_meta_path,
     read_cache,
@@ -614,7 +615,7 @@ class QuarantineReport:
     checked_at: pd.Timestamp = field(default_factory=lambda: pd.Timestamp.now().normalize())
 
 
-_SCAN_MANIFEST_FILENAME = "_scan_manifest.json"
+_SCAN_MANIFEST_FILENAME = SCAN_MANIFEST_FILENAME
 
 
 def scan_manifest_path(cache_dir: Path) -> Path:
@@ -707,13 +708,15 @@ def scan_price_cache(
     quarantined_count` read 0 in both cases. Every ticker this call actually
     visits is now recorded in a cache-level manifest
     (`scan_manifest_path`/`read_scan_manifest`/`unscanned_tickers`), even
-    when `tickers` narrows the scan to one name - a caller doing a targeted
-    re-scan should read the OLD manifest first if it needs to preserve
-    coverage of names outside its narrowed list; this function itself always
-    writes exactly the set it was asked to scan, not a union with any prior
-    manifest, since it has no way to know whether an existing manifest is
-    still current."""
+    when `tickers` narrows the scan to one name. A full scan (`tickers=None`)
+    writes exactly the set it visited; a NARROWED scan unions its names into
+    the existing manifest (M09 fix: it used to overwrite the manifest with
+    just the narrowed list, so `refresh --unquarantine X` silently turned
+    every other ticker into "never scanned"). A ticker whose price file is
+    later rewritten is dropped again by `data/cache.py`'s
+    `invalidate_scan_coverage`."""
     prices_dir = Path(cache_dir) / "prices"
+    narrowed = tickers is not None
     if tickers is None:
         tickers = (
             sorted(p.stem for p in prices_dir.glob("*.parquet")) if prices_dir.is_dir() else []
@@ -774,9 +777,16 @@ def scan_price_cache(
             write_quarantine_meta(ticker, reasons, cache_dir)
 
     checked_at = pd.Timestamp.now().normalize()
+    scanned = set(tickers)
+    if narrowed:
+        # A targeted re-scan (`refresh --unquarantine`) must not erase the
+        # coverage every OTHER ticker earned from the last full scan.
+        previous = read_scan_manifest(cache_dir)
+        if previous is not None:
+            scanned |= set(previous.get("scanned_tickers", []))
     write_json_meta(
         scan_manifest_path(cache_dir),
-        {"checked_at": str(checked_at.date()), "scanned_tickers": sorted(tickers)},
+        {"checked_at": str(checked_at.date()), "scanned_tickers": sorted(scanned)},
     )
 
     return QuarantineReport(

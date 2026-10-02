@@ -719,3 +719,42 @@ def test_cli_record_sensitivity_forwards_the_headline_runs_dirty_flag(tmp_path):
     )
     rows = registry.trials("momentum")
     assert rows and all(r.dirty is False and r.dirty_source == "provenance" for r in rows)
+
+
+def test_record_extra_trials_records_same_family_runs_with_series_and_own_dirty(tmp_path):
+    import quantlab.cli as cli_module
+
+    registry = TrialsRegistry(tmp_path / "reg", repo_root=tmp_path)
+    headline = make_backtest_result(
+        net_returns=pd.Series(0.01, index=_dates(24)), strategy_id="blend-head", dirty=False
+    )
+    other = make_backtest_result(
+        net_returns=pd.Series([0.02, -0.01] * 12, index=_dates(24)),
+        strategy_id="blend-other",
+        dirty=True,
+    )
+    other.save(tmp_path / "other")
+
+    cli_module._record_extra_trials(registry, [tmp_path / "other"], headline)
+
+    rows = registry.trials("blend", with_series_only=True)
+    assert [r.key[0] for r in rows] == ["blend-other"]
+    assert rows[0].source == "backtest" and rows[0].dirty is True
+    assert rows[0].dirty_source == "provenance"
+
+
+def test_record_extra_trials_refuses_a_different_family(tmp_path):
+    import typer
+
+    import quantlab.cli as cli_module
+
+    registry = TrialsRegistry(tmp_path / "reg", repo_root=tmp_path)
+    headline = make_backtest_result(
+        net_returns=pd.Series(0.01, index=_dates(24)), strategy_id="blend-head"
+    )
+    make_backtest_result(
+        net_returns=pd.Series(0.02, index=_dates(24)), strategy_id="momentum-x"
+    ).save(tmp_path / "mom")
+
+    with pytest.raises(typer.BadParameter, match="not the headline"):
+        cli_module._record_extra_trials(registry, [tmp_path / "mom"], headline)

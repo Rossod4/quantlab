@@ -31,9 +31,8 @@ SPY over the same window: CAGR 14.81%, Sharpe 1.06 (`reports/momentum_12_1/repor
 14.81% CAGR) but neither beats it risk-adjusted (Sharpe 0.98 and 1.03 vs SPY's 1.06) over this
 window, and the measured 28.4% worst-year coverage gap alone exceeds the platform's 15% ceiling -
 independent, correct reasons to reject each. Momentum additionally fails White's Reality Check
-(p=0.144 against a 0.10 bar, over 10 realised trials); the blend's registry is too thin for a
-Reality Check or a deflated Sharpe ratio to run at all, which the platform counts as a failure, not
-a pass. The platform's own gates are designed to say REJECTED or RESEARCH_ONLY more often
+(p=0.144 against a 0.10 bar, over 10 realised trials) and the blend narrowly fails it too
+(p=0.1045, over 3 realised trials). The platform's own gates are designed to say REJECTED or RESEARCH_ONLY more often
 than they say ELIGIBLE_FOR_PAPER, on purpose - a verdict states which tests a result survived, not
 that it has edge. See each strategy's linked report for the full gate table, and
 [plans/QUANT-NOTES.md](plans/QUANT-NOTES.md) for the complete, unredacted history of every bug the
@@ -212,12 +211,22 @@ length unbounded. It passes the deflated Sharpe ratio (DSR 0.9823 vs 0.95, N=9 d
 probabilistic Sharpe ratio (0.9998) and the no-cliff sensitivity gate. Soft failures: Hansen SPA
 p=0.1990 and the Monte Carlo drawdown check (0.50 against a 0.50 bar - a coin flip).
 
-**Blend 50/50 - REJECTED.** Net Sharpe 1.03 vs 1.06 and coverage 28.4%, plus three gates the
-platform could not evaluate and therefore counted as failures: DSR (registry too thin, N=6: the
-headline trial plus the five historical blend rows), Reality Check and SPA (fewer than two trials
-with a stored return series). The blend run has no sensitivity grid, so no-cliff also fails. Its
-walk-forward weight check passes (the modal weight tuple was chosen in 70% of steps against a 50%
-bar), but the walk-forward chose 0% momentum / 100% value in seven of its ten steps and
+**Blend 50/50 - REJECTED.** Hard-gate failures: net Sharpe 1.03 vs SPY's 1.06; coverage 28.4%;
+White's Reality Check p=0.1045 vs 0.10 (K=3 trials - a near miss, not a clear one); minimum
+track-record length unbounded. It passes the deflated Sharpe ratio (DSR 0.9849, N=8 distinct trials)
+and the probabilistic Sharpe ratio (0.9997), and Hansen SPA (p=0.0796). Soft failure: no-cliff, only
+because no sensitivity grid is configured for the blend (its weight grid is its only explored axis);
+that is a "not evaluated" failure, not evidence of a cliff.
+
+The blend family's N=8 is the five historical rows from the predecessor repo's sweep, the 50/50
+headline, and the two interior-weight backtests (75/25 and 25/75) that were really run through the
+engine as live alternatives to the headline and are recorded as trials with their return series.
+The grid endpoints (100% momentum, 100% value) are not blend trials: they are the momentum and
+value strategies and count in their own families. The 0.50 hypothesis is counted twice (once as the
+historical row, once as the headline), which can only make the correction more conservative.
+
+Its walk-forward weight check passes (the modal weight tuple was chosen in 70% of steps against a
+50% bar), but the walk-forward chose 0% momentum / 100% value in seven of its ten steps and
 `[0.75, 0.25]` or `[1.0, 0.0]` in the last three: the weight choice is not stable in the sense that
 matters, and a pass on that gate should not be read as stability.
 

@@ -333,6 +333,13 @@ def validate(
         "walk-forward ranking-agreement check (repeat per interior grid point; the one-hot "
         "endpoints come from --child-result). Only meaningful with --full and --child-result.",
     ),
+    record_trial: list[Path] = typer.Option(
+        [],
+        "--record-trial",
+        help="Saved BacktestResult directory of another run in the SAME strategy family (e.g. an "
+        "interior blend-weight backtest) to record as a trial in the registry, with its series "
+        "and its own dirty flag. Repeat per run. Only meaningful with --full.",
+    ),
 ) -> None:
     """Run basic-tier validation (metrics, rolling, sub-periods, flags) on a
     saved `BacktestResult` and write the report to `--out`; with `--full`,
@@ -385,6 +392,7 @@ def validate(
         # calling it on every --full run is harmless (registry.py's own
         # `seed_historical_blend_trials` docstring).
         registry.seed_historical_blend_trials()
+        _record_extra_trials(registry, record_trial, bt_result)
 
         price_panel, missing_tickers = _build_capacity_price_panel(bt_result, platform_config)
 
@@ -612,6 +620,30 @@ def _build_walk_forward_result(
         return None
 
 
+def _record_extra_trials(
+    registry: TrialsRegistry, trial_dirs: list[Path], headline: BacktestResult
+) -> None:
+    """Record other saved runs of the headline's OWN strategy family as
+    trials (`registry.record_backtest`: source=backtest, series stored, dirty
+    from each run's provenance). A run from a different family is refused
+    loudly - it belongs in its own family's registry, not this one."""
+    from quantlab.backtest.result import BacktestResult
+
+    headline_id = headline.provenance.get("strategy_id", "")
+    family = headline_id.rsplit("-", 1)[0] if headline_id else ""
+    for directory in trial_dirs:
+        trial = BacktestResult.load(directory)
+        trial_id = trial.provenance.get("strategy_id", "")
+        trial_family = trial_id.rsplit("-", 1)[0] if trial_id else ""
+        if trial_family != family:
+            raise typer.BadParameter(
+                f"--record-trial {directory}: strategy family {trial_family!r} is not the "
+                f"headline's {family!r}"
+            )
+        record = registry.record_backtest(trial, family=family)
+        typer.echo(f"  recorded trial {record.key[0]} from {directory}")
+
+
 def _build_ranking_kwargs(
     bt_result: BacktestResult,
     walk_forward: WalkForwardResult | None,
@@ -816,6 +848,13 @@ def run(
         help="'w1,w2=<dir>': saved blend BacktestResult at an INTERIOR grid weight (repeat), "
         "for the walk-forward ranking-agreement check; endpoints come from --child-result.",
     ),
+    record_trial: list[Path] = typer.Option(
+        [],
+        "--record-trial",
+        help="Saved BacktestResult directory of another run in the SAME strategy family (e.g. an "
+        "interior blend-weight backtest) to record as a trial in the registry, with its series "
+        "and its own dirty flag. Repeat per run. Only meaningful with --full.",
+    ),
 ) -> None:
     """One command: backtest -> validate --full -> report, writing the
     BacktestResult, `validation_basic.json`, `report_card.json`/`.md` and
@@ -878,6 +917,7 @@ def run(
 
     registry = TrialsRegistry(platform_config.reports_dir)
     registry.seed_historical_blend_trials()
+    _record_extra_trials(registry, record_trial, result)
     price_panel, missing_tickers = _build_capacity_price_panel(result, platform_config)
     strategy_id = result.provenance.get("strategy_id", "")
     family = strategy_id.rsplit("-", 1)[0] if strategy_id else ""

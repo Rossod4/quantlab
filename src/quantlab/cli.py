@@ -527,6 +527,10 @@ def _record_sensitivity_result(
         family=family or "unknown",
         periods_per_year=periods_per_year,
         net_returns_by_strategy_id=sensitivity_result.net_returns_by_strategy_id,
+        # The grid ran from the same tree as the headline backtest; use ITS
+        # run-time state, not `git status` now (the run has since rewritten
+        # its own tracked report artefacts).
+        dirty=bt_result.provenance.get("dirty"),
     )
 
 

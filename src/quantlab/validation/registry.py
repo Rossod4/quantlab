@@ -391,6 +391,7 @@ class TrialsRegistry:
         family: str,
         net_returns_by_strategy_id: dict[str, pd.Series] | None = None,
         periods_per_year: int | None = None,
+        dirty: bool | None = None,
     ) -> list[TrialRecord]:
         """Record every grid point in `sensitivity.trials`. `sensitivity_grid`
         itself discards each point's raw result after extracting its Sharpe
@@ -408,9 +409,21 @@ class TrialsRegistry:
         know it), via `trial.net_sharpe / sqrt(periods_per_year)` - the
         EXACT algebraic inverse of `metrics.sharpe_ratio`'s own
         annualization, not an approximation. NaN when neither is available.
+
+        `dirty` (M09): the tree state of the run that PRODUCED these grid
+        points - pass the headline result's `provenance["dirty"]`, captured
+        before the run wrote anything. Omitted, the registry falls back to
+        `git status` at record time, which a `quantlab run` contaminates
+        itself: it has by then rewritten the TRACKED report artefacts
+        (`validation_basic.json`, ...) under `reports/<name>/`, so every
+        sensitivity row of a run that started from a clean tree read
+        dirty=True (observed on the 2026-10-01 momentum run).
         """
         series_by_id = net_returns_by_strategy_id or {}
-        dirty = _git_dirty(self._repo_root)
+        if dirty is None:
+            dirty, dirty_source = _git_dirty(self._repo_root), "registry_at_record_time"
+        else:
+            dirty, dirty_source = bool(dirty), "provenance"
         now = pd.Timestamp.now("UTC").isoformat()
         records = []
         for trial in sensitivity.trials:
@@ -436,7 +449,7 @@ class TrialsRegistry:
                 periods_per_year=periods_per_year or 0,
                 quantlab_git_sha="n/a",
                 dirty=dirty,
-                dirty_source="registry_at_record_time",
+                dirty_source=dirty_source,
                 series_path=series_path,
                 series_hash=series_hash,
                 recorded_at=now,

@@ -4,7 +4,8 @@
 
 # reports/: M09 commits the THREE REAL 2012-2026 STRATEGIES' small,
 # human-readable artefacts (the point of the project) - report_card.json,
-# validation_basic.json, report_card.md (the M06 gate-table render),
+# validation_basic.json, provenance.json (the quarantine/negative-cache/never-scanned
+# counts and call counts live ONLY there), report_card.md (the M06 gate-table render),
 # report.md (the full M07 report) and every PNG. Everything else under
 # reports/ - parquet result series, report.html (self-contained, can be
 # regenerated with `quantlab report`), the trials registry, and any OTHER
@@ -17,16 +18,19 @@
 /reports/value_composite/*
 /reports/blend_50_50/*
 !/reports/momentum_12_1/report_card.json
+!/reports/momentum_12_1/provenance.json
 !/reports/momentum_12_1/validation_basic.json
 !/reports/momentum_12_1/report_card.md
 !/reports/momentum_12_1/report.md
 !/reports/momentum_12_1/*.png
 !/reports/value_composite/report_card.json
+!/reports/value_composite/provenance.json
 !/reports/value_composite/validation_basic.json
 !/reports/value_composite/report_card.md
 !/reports/value_composite/report.md
 !/reports/value_composite/*.png
 !/reports/blend_50_50/report_card.json
+!/reports/blend_50_50/provenance.json
 !/reports/blend_50_50/validation_basic.json
 !/reports/blend_50_50/report_card.md
 !/reports/blend_50_50/report.md

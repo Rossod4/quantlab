@@ -677,3 +677,45 @@ def test_coherence_error_is_confined_to_the_family_being_returned(tmp_path):
         registry.trials("momentum")
     with pytest.raises(RegistryCoherenceError):
         registry.trials()  # unfiltered view includes the corrupt row
+
+
+def test_sensitivity_rows_take_the_runs_own_dirty_flag_not_the_tree_at_record_time(tmp_path):
+    """A run that started from a clean tree rewrites its own tracked report
+    artefacts before recording; the rows must still read clean."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "tracked.txt").write_text("a")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"],
+        cwd=tmp_path,
+        check=True,
+    )
+    registry = TrialsRegistry(tmp_path / "reports", repo_root=tmp_path)
+    (tmp_path / "tracked.txt").write_text("rewritten by the run itself")  # tree now dirty
+
+    from quantlab.validation.registry import _git_dirty
+
+    assert _git_dirty(tmp_path) is True
+    rows = registry.record_sensitivity(_sensitivity_for_one_point(), family="momentum", dirty=False)
+    assert rows[0].dirty is False and rows[0].dirty_source == "provenance"
+
+    fallback = registry.record_sensitivity(
+        _sensitivity_for_one_point(), family="momentum", dirty=None
+    )
+    assert fallback[0].dirty is True and fallback[0].dirty_source == "registry_at_record_time"
+
+
+def test_cli_record_sensitivity_forwards_the_headline_runs_dirty_flag(tmp_path):
+    import quantlab.cli as cli_module
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    headline = make_backtest_result(
+        net_returns=pd.Series(0.01, index=_dates(24)), strategy_id="momentum-aaaa", dirty=False
+    )
+    cli_module._record_sensitivity_result(
+        headline, _sensitivity_for_one_point(), "momentum", registry
+    )
+    rows = registry.trials("momentum")
+    assert rows and all(r.dirty is False and r.dirty_source == "provenance" for r in rows)

@@ -7,7 +7,7 @@ the real implementations.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import typer
 
@@ -348,7 +348,10 @@ def validate(
 
     from quantlab.backtest.result import BacktestResult
     from quantlab.validation.basic import load_validation_config, validate_basic
+    from quantlab.validation.registry import current_code_state
 
+    # captured BEFORE this command writes its own (tracked) artefacts
+    validating_code = current_code_state()
     bt_result = BacktestResult.load(result)
     bench_result = BacktestResult.load(benchmark) if benchmark is not None else None
     validation_config = load_validation_config(config)
@@ -410,6 +413,7 @@ def validate(
             sensitivity=sensitivity_result,
             price_panel=price_panel,
             price_panel_missing_tickers=missing_tickers,
+            validating_code=validating_code,
             **ranking_kwargs,
         )
 
@@ -476,6 +480,32 @@ def _build_sensitivity_result(
     if not param_axes or not has_strategy_config:
         return None
 
+    # The grid's base point (the centre of `no_cliff_score`'s neighbourhood
+    # and the marked cell in the report) MUST be the headline strategy's own
+    # parameters. `sensitivity_grid` otherwise defaults to the middle of each
+    # axis, which silently centres the neighbourhood elsewhere whenever the
+    # headline is not the middle value (the 2026-10-01 momentum card was
+    # centred on n_long=50 while the headline is n_long=30). Refuse loudly -
+    # outside the best-effort try below - rather than validate a different
+    # strategy than the one being judged.
+    headline_params = bt_result.provenance.get("strategy_params") or {}
+    base_point: dict[str, Any] = {}
+    for axis, values in param_axes.items():
+        if axis not in headline_params:
+            raise typer.BadParameter(
+                f"sensitivity axis {axis!r} is not a parameter of the headline strategy "
+                f"{strategy_id!r} (its params: {sorted(headline_params)})"
+            )
+        if headline_params[axis] not in values:
+            raise typer.BadParameter(
+                f"the headline strategy {strategy_id!r} has {axis}={headline_params[axis]!r}, "
+                "which "
+                f"is not a point on the configured sensitivity axis {list(values)} "
+                "(configs/validation.yaml) - the grid would be centred on a different strategy "
+                "than the one being validated; fix the grid or the strategy"
+            )
+        base_point[axis] = headline_params[axis]
+
     try:
         from quantlab.backtest.config import BacktestConfig
         from quantlab.core.config import load_platform_config
@@ -489,6 +519,7 @@ def _build_sensitivity_result(
             param_axes,
             backtest_config,
             runner,
+            base_point=base_point,
             base_provider_calls=bt_result.provenance.get("total_provider_calls"),
         )
         # M09 fix ("make grid-point failures loud"): a PARTIAL grid failure
@@ -878,9 +909,10 @@ def run(
     from quantlab.reporting.render import render_report
     from quantlab.strategies.registry import load_strategy
     from quantlab.validation.basic import load_validation_config, validate_basic
-    from quantlab.validation.registry import TrialsRegistry
+    from quantlab.validation.registry import TrialsRegistry, current_code_state
     from quantlab.validation.report_card import build_report_card
 
+    validating_code = current_code_state()  # before any artefact is written
     t0 = time.perf_counter()
     platform_config = load_platform_config(platform)
     backtest_config = load_backtest_config(backtest, platform_config)
@@ -933,6 +965,7 @@ def run(
         sensitivity=sensitivity_result,
         price_panel=price_panel,
         price_panel_missing_tickers=missing_tickers,
+        validating_code=validating_code,
         **ranking_kwargs,
     )
     (out / "report_card.json").write_text(

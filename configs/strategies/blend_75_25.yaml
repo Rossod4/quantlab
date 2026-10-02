@@ -1,4 +1,5 @@
-# 50/50 blend of the long-only momentum and composite value books.
+# 75/25 momentum/value blend of the long-only momentum and composite value books (an interior
+# point of the walk-forward weight grid; backtested only to measure the netted-book Sharpe).
 strategy: blend
 params:
   children:

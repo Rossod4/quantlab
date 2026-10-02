@@ -44,6 +44,7 @@ from quantlab.paper.runner import (
 )
 from quantlab.strategies.base import Strategy
 from quantlab.strategies.registry import register_strategy
+from tests._report_fixtures import write_real_eligible_report_card
 
 # -- fakes --------------------------------------------------------------------
 
@@ -458,6 +459,50 @@ def test_promotion_gate_refuses_a_rejected_strategy(monkeypatch, tmp_path):
     assert len(records) == 1
     assert records[0]["refused_reason"] is not None
     assert records[0]["planned_orders"] == []
+
+
+def _gate_setup(monkeypatch, tmp_path):
+    platform_config = _platform_config(tmp_path)
+    strategy_config = {"strategy": "paper-runner-fixed-weight", "params": {"weights": {"AAA": 1.0}}}
+    from quantlab.strategies.registry import load_strategy
+
+    strategy_id = load_strategy(strategy_config).strategy_id
+    providers = _fake_providers({"AAA": 100.0, "BENCH": 50.0}, tmp_path)
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _: providers)
+    return platform_config, strategy_config, strategy_id
+
+
+def test_promotion_gate_refuses_an_eligible_card_for_a_different_strategy_id(monkeypatch, tmp_path):
+    platform_config, strategy_config, _strategy_id = _gate_setup(monkeypatch, tmp_path)
+    _write_report_card(platform_config.reports_dir, "paper-runner-other-0000", "ELIGIBLE_FOR_PAPER")
+
+    with pytest.raises(PromotionGateError):
+        run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+
+def test_promotion_gate_refuses_an_eligible_card_from_an_older_data_semantics_version(
+    monkeypatch, tmp_path
+):
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    write_real_eligible_report_card(
+        platform_config.reports_dir, strategy_id, data_semantics_version="m03b"
+    )
+
+    with pytest.raises(PromotionGateError):
+        run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+
+def test_promotion_gate_accepts_a_card_written_by_the_real_report_card_builder(
+    monkeypatch, tmp_path
+):
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    card = write_real_eligible_report_card(platform_config.reports_dir, strategy_id)
+    assert card["verdict"] == "ELIGIBLE_FOR_PAPER"
+
+    record = run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+    assert record.refused_reason is None
+    assert record.promoting_report_card is not None
 
 
 def test_promotion_gate_refuses_when_no_report_card_exists_at_all(monkeypatch, tmp_path):

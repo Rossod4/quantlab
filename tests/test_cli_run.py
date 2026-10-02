@@ -280,3 +280,71 @@ def test_run_strategy_override_replaces_the_backtest_configs_own_strategy(_cli_r
     provenance = json.loads((out_dir / "provenance.json").read_text())
     assert provenance["strategy_id"].startswith("cli-run-test-fixed-second-")
     assert provenance["backtest_config"]["strategy_config"] == str(override_strategy_path.resolve())
+
+
+# --- exit code per verdict, driven through `run` itself (default tier) -------
+#
+# The end-to-end tests above are slow-tier and their fixture only ever
+# produces REJECTED, so the 0 and 2 branches were never driven. These stub
+# the engine and the card builder (everything else - config loading, the
+# registry, validate_basic, the artefact writes - is the real code) so all
+# three verdicts go through `run`'s own exit path in a fraction of a second.
+# Mutation check (HANDOFF.2.md): `raise typer.Exit(code=3)` unconditionally
+# fails the 0 and 2 cases.
+
+
+@pytest.mark.parametrize(
+    "verdict, expected_exit",
+    [("ELIGIBLE_FOR_PAPER", 0), ("RESEARCH_ONLY", 2), ("REJECTED", 3)],
+)
+def test_run_exits_with_the_code_for_each_verdict(monkeypatch, tmp_path, verdict, expected_exit):
+    from types import SimpleNamespace
+
+    import quantlab.cli as cli_module
+    import quantlab.reporting.render as render_module
+    import quantlab.validation.report_card as report_card_module
+    from tests._validation_fixtures import make_backtest_result
+
+    platform_path = _write_platform_yaml(tmp_path, tmp_path / "cache", tmp_path / "reports")
+    strategy_path = _write_strategy_yaml(tmp_path, "cli-run-test-equal-weight")
+    backtest_path = _write_backtest_yaml(tmp_path, strategy_path, "2015-01-01", "2016-12-31")
+
+    def _fake_run_backtest(strategy, config, providers):
+        dates = pd.date_range("2015-01-31", periods=24, freq="ME")
+        result = make_backtest_result(
+            net_returns=pd.Series([0.01, -0.005] * 12, index=dates),
+            strategy_id=strategy.strategy_id,
+            dirty=False,
+        )
+        result.provenance["run_seconds"] = 0.0
+        return result
+
+    monkeypatch.setattr("quantlab.backtest.engine.run_backtest", _fake_run_backtest)
+    monkeypatch.setattr("quantlab.backtest.engine.build_backtest_providers", lambda _c: None)
+    monkeypatch.setattr(cli_module, "_build_sensitivity_result", lambda *a, **k: None)
+    monkeypatch.setattr(cli_module, "_build_capacity_price_panel", lambda *a, **k: ({}, []))
+    monkeypatch.setattr(cli_module, "_report_card_markdown", lambda *a, **k: "")
+    monkeypatch.setattr(render_module, "render_report", lambda *a, **k: {})
+    monkeypatch.setattr(
+        report_card_module,
+        "build_report_card",
+        lambda *a, **k: SimpleNamespace(
+            verdict=verdict, gates=[], to_json=lambda: {"verdict": verdict}
+        ),
+    )
+
+    invocation = runner.invoke(
+        app,
+        [
+            "run",
+            "--backtest",
+            str(backtest_path),
+            "--out",
+            str(tmp_path / "out"),
+            "--platform",
+            str(platform_path),
+        ],
+    )
+
+    assert invocation.exit_code == expected_exit, invocation.output
+    assert f"verdict {verdict}" in invocation.output

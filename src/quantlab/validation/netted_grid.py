@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
+from quantlab.core.paths import portable_path
 from quantlab.validation.metrics import PERIODS_PER_YEAR, sharpe_ratio
 
 if TYPE_CHECKING:
@@ -248,7 +249,7 @@ def build_netted_book_grid(
             {
                 "weights": list(weights),
                 "source": kind,
-                "run_dir": str(directory),
+                "run_dir": portable_path(directory),
                 "strategy_id": source.provenance.get("strategy_id"),
                 "net_sharpe_oos": value,
             }

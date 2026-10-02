@@ -354,6 +354,13 @@ class ReportCardProvenance:
     headline_retained_fraction: float | None
     untrusted_fraction_line: str
     sharpe_sortino_convention: str
+    # ADDITIVE (M09): the code that built THIS card (`validate`/`run`), as
+    # opposed to `quantlab_git_sha`/`dirty` above, which describe the code
+    # that produced the backtest. They differ whenever a result is validated
+    # later, by a newer tree. "unknown"/None on cards written before this
+    # field existed.
+    validated_by_git_sha: str = "unknown"
+    validated_by_dirty: bool | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -370,6 +377,8 @@ class ReportCardProvenance:
             "headline_retained_fraction": self.headline_retained_fraction,
             "untrusted_fraction_line": self.untrusted_fraction_line,
             "sharpe_sortino_convention": self.sharpe_sortino_convention,
+            "validated_by_git_sha": self.validated_by_git_sha,
+            "validated_by_dirty": self.validated_by_dirty,
         }
 
 
@@ -445,6 +454,7 @@ def build_report_card(
     netted_book_grid_sharpes: dict[tuple[float, ...], float] | None = None,
     ranking_agreement_detail: dict[str, Any] | None = None,
     ranking_not_checked_reason: str | None = None,
+    validating_code: dict[str, Any] | None = None,
 ) -> ReportCard:
     """Build the full report card for `result`. Registers `result` itself
     into `registry` (idempotent by key - see registry.py) so the current
@@ -620,6 +630,10 @@ def build_report_card(
     distinct_trials = registry.distinct_trials(fam)
     dirty_trial_count = sum(1 for r in distinct_trials if r.dirty)
     prov = result.provenance
+    if validating_code is None:
+        from quantlab.validation.registry import current_code_state
+
+        validating_code = current_code_state()
     provenance = ReportCardProvenance(
         strategy_id=strategy_id,
         data_semantics_version=prov.get("data_semantics_version", "unknown"),
@@ -634,6 +648,8 @@ def build_report_card(
         headline_retained_fraction=headline_retained_fraction,
         untrusted_fraction_line=basic.flags[0] if basic.flags else "",
         sharpe_sortino_convention=_SHARPE_SORTINO_CONVENTION,
+        validated_by_git_sha=str(validating_code.get("sha", "unknown")),
+        validated_by_dirty=validating_code.get("dirty"),
     )
 
     known_caveats = list(result.provenance.get("known_caveats", []))

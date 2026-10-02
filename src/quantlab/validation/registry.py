@@ -215,6 +215,30 @@ def _default_repo_root() -> Path:
     return Path.cwd()
 
 
+def current_code_state(repo_root: Path | None = None) -> dict[str, Any]:
+    """`{"sha": <HEAD>, "dirty": <bool>}` of the code doing the VALIDATING
+    (M09): a report card is built by whatever tree runs `validate`, which can
+    be later than the tree that produced the backtest. Capture it at command
+    start, BEFORE the command writes its own tracked artefacts (which would
+    otherwise read as a dirty tree)."""
+    root = Path(repo_root) if repo_root is not None else _default_repo_root()
+    sha = "unknown"
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            sha = result.stdout.strip()
+    except OSError:
+        pass
+    return {"sha": sha, "dirty": _git_dirty(root)}
+
+
 def _git_dirty(repo_root: Path) -> bool:
     """See module docstring's "Dirty-tree flag" section. Any failure to
     determine cleanliness (git missing, not a repo, timeout) is treated as

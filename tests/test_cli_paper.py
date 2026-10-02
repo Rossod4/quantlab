@@ -282,3 +282,69 @@ def test_paper_drift_end_to_end_on_a_traded_journal(monkeypatch, tmp_path):
 
     assert drift_result.exit_code == 0, drift_result.output
     assert "target_weight_agreement=1.0000" in drift_result.output
+
+
+# -- promotion gate through the CLI, on cards written by the real builder -----
+
+
+def _cli_paper_dry_run(monkeypatch, tmp_path):
+    providers = BacktestProviders(
+        price=_FakePriceProvider(_price_panel()),
+        constituents=_FakeConstituentsProvider(),
+        fundamentals=_NoOpFundamentalsProvider(),
+        corporate_actions=_EmptyActionsProvider(),
+        cache_dir=tmp_path / "cache",
+    )
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _config: providers)
+    platform_path = _write_platform_yaml(tmp_path)
+    strategy_path = _write_strategy_yaml(tmp_path)
+    return CliRunner().invoke(
+        app,
+        [
+            "paper",
+            "run",
+            "--strategy",
+            strategy_path,
+            "--broker",
+            "mock",
+            "--platform",
+            platform_path,
+            "--dry-run",
+        ],
+    )
+
+
+def _cli_strategy_id() -> str:
+    from quantlab.strategies.registry import load_strategy
+
+    return load_strategy(
+        {"strategy": "paper-cli-fixed-weight", "params": {"weights": {"AAA": 1.0}}}
+    ).strategy_id
+
+
+def test_paper_run_without_force_research_refuses_a_card_for_another_strategy(
+    monkeypatch, tmp_path
+):
+    from tests._report_fixtures import write_real_eligible_report_card
+
+    write_real_eligible_report_card(tmp_path / "reports", "paper-cli-other-0000")
+    result = _cli_paper_dry_run(monkeypatch, tmp_path)
+    assert result.exit_code != 0
+
+
+def test_paper_run_without_force_research_refuses_a_pre_m09_semantics_card(monkeypatch, tmp_path):
+    from tests._report_fixtures import write_real_eligible_report_card
+
+    write_real_eligible_report_card(
+        tmp_path / "reports", _cli_strategy_id(), data_semantics_version="m03b"
+    )
+    result = _cli_paper_dry_run(monkeypatch, tmp_path)
+    assert result.exit_code != 0
+
+
+def test_paper_run_without_force_research_accepts_a_real_eligible_card(monkeypatch, tmp_path):
+    from tests._report_fixtures import write_real_eligible_report_card
+
+    write_real_eligible_report_card(tmp_path / "reports", _cli_strategy_id())
+    result = _cli_paper_dry_run(monkeypatch, tmp_path)
+    assert result.exit_code == 0, result.output

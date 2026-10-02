@@ -317,3 +317,76 @@ def test_drift_report_to_json_round_trips_shape(tmp_path):
     assert payload["strategy_id"] == strategy.strategy_id
     assert len(payload["records"]) == 1
     assert payload["records"][0]["asof"] == "2024-01-10"
+
+
+# -- look-ahead guard: the recompute context is bound to the JOURNALED asof --
+#
+# `compute_drift` rebuilds each journaled decision with
+# `build_decision_context(asof=<journaled asof>)`. A recompute bound even one
+# day later would let the strategy read data the live decision never had and
+# make drift look better than it is. Mutation check (recorded in
+# plans/state/M09/HANDOFF.2.md): `asof=_asof + pd.Timedelta(days=30)` in
+# drift.py's `_context_factory` makes both tests below fail.
+
+_OBSERVED_ASOFS: list[pd.Timestamp] = []
+
+
+class _DriftSpyParams(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tag: str = ""
+
+
+@register_strategy("drift-test-asof-spy")
+class _DriftAsofSpyStrategy(Strategy):
+    @classmethod
+    def params_model(cls) -> type[BaseModel]:
+        return _DriftSpyParams
+
+    def requires(self) -> DataRequirements:
+        return DataRequirements()
+
+    def generate_targets(self, ctx, date) -> TargetWeights:
+        _OBSERVED_ASOFS.append(ctx.asof)
+        return TargetWeights(asof=date, weights={}, strategy_id=self.strategy_id)
+
+
+def _journal_two_asofs(tmp_path, strategy_id: str) -> list[pd.Timestamp]:
+    asofs = ["2024-01-10", "2024-01-18"]
+    for asof in asofs:
+        append_journal(tmp_path, _trading_record(asof, {"AAA": 1.0}, strategy_id=strategy_id))
+    return [pd.Timestamp(a) for a in asofs]
+
+
+def test_drift_recompute_context_is_bound_to_each_journaled_asof(tmp_path):
+    from quantlab.strategies.registry import load_strategy
+
+    strategy = load_strategy({"strategy": "drift-test-asof-spy"})
+    expected = _journal_two_asofs(tmp_path, strategy.strategy_id)
+    _OBSERVED_ASOFS.clear()
+
+    compute_drift(tmp_path, strategy, _providers({"AAA": 100.0}, tmp_path))
+
+    assert _OBSERVED_ASOFS == expected
+
+
+def test_drift_recompute_blend_children_contexts_are_bound_to_the_journaled_asof(tmp_path):
+    from quantlab.strategies.registry import load_strategy
+
+    strategy = load_strategy(
+        {
+            "strategy": "blend",
+            "params": {
+                "children": [
+                    {"strategy": "drift-test-asof-spy", "params": {"tag": "a"}, "weight": 0.5},
+                    {"strategy": "drift-test-asof-spy", "params": {"tag": "b"}, "weight": 0.5},
+                ]
+            },
+        }
+    )
+    expected = _journal_two_asofs(tmp_path, strategy.strategy_id)
+    _OBSERVED_ASOFS.clear()
+
+    compute_drift(tmp_path, strategy, _providers({"AAA": 100.0}, tmp_path))
+
+    assert _OBSERVED_ASOFS == [e for e in expected for _ in range(2)]

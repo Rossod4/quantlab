@@ -258,3 +258,46 @@ def save_result_and_card(result: BacktestResult, card: ReportCard, out_dir: Path
     result.save(out_dir)
     (out_dir / "report_card.json").write_text(json.dumps(card.to_json(), sort_keys=True))
     return out_dir
+
+
+def write_real_eligible_report_card(
+    reports_dir, strategy_id: str, data_semantics_version: str | None = None
+) -> dict:
+    """Write a `report_card.json` produced by the REAL `build_report_card`
+    (verdict ELIGIBLE_FOR_PAPER) for `strategy_id` under `reports_dir`, and
+    return its parsed content. Independent evidence for the promotion gate:
+    the card's schema comes from `ReportCard.to_json()`, not a hand-built
+    dict that merely happens to match it today."""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from quantlab.core.semantics import DATA_SEMANTICS_VERSION
+    from quantlab.validation.registry import TrialsRegistry
+    from quantlab.validation.report_card import build_report_card
+    from tests import test_report_card as trc
+    from tests._validation_fixtures import make_backtest_result
+
+    with tempfile.TemporaryDirectory() as tmp:
+        registry = TrialsRegistry(tmp, repo_root=tmp)
+        trc._register_background_trials(registry, family=strategy_id.rsplit("-", 1)[0])
+        result = make_backtest_result(
+            net_returns=trc._alternating(0.05, 0.01),
+            benchmark_returns=trc._alternating(0.001, -0.001),
+            strategy_id=strategy_id,
+            data_semantics_version=data_semantics_version or DATA_SEMANTICS_VERSION,
+            holdings_history=trc._holdings_history(),
+        )
+        card = build_report_card(
+            result,
+            None,
+            registry,
+            trc._config(),
+            sensitivity=trc._flat_sensitivity(),
+            price_panel=trc._price_panel(),
+        )
+    data = card.to_json()
+    out = Path(reports_dir) / "validate" / strategy_id
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "report_card.json").write_text(json.dumps(data), encoding="utf-8")
+    return data

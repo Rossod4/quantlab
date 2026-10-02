@@ -135,7 +135,7 @@ def test_all_five_points_resolve_with_provenance_on_the_oos_window(world):
     assert by_weights[(1.0, 0.0)]["source"] == "standalone child run"
     assert by_weights[(1.0, 0.0)]["strategy_id"] == "momentum-aaaa"
     assert by_weights[(0.75, 0.25)]["strategy_id"] == "blend-0.75"
-    assert by_weights[(0.75, 0.25)]["run_dir"].endswith("b0.75")
+    assert by_weights[(0.75, 0.25)]["run_dir"] == "<external>/b0.75"
 
 
 def test_sharpes_equal_the_comparison_convention_when_series_are_the_plain_blend(world):

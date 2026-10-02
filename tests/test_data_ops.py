@@ -580,3 +580,31 @@ def test_status_reflects_a_completed_scan(tmp_path):
 
     assert report.never_scanned_count == 0
     assert report.scan_checked_at is not None
+
+
+def test_prefetch_requests_actions_from_the_epoch_not_from_the_window_start(tmp_path, monkeypatch):
+    """The adjustment replay needs every corporate action BEFORE the backtest
+    window too, so prefetch must ask for the full history, not [start, end].
+    (Mutation: `_EPOCH` -> `start_ts` in `prefetch` made nothing fail.)"""
+    import quantlab.data.ops as ops_module
+
+    cache_dir = tmp_path / "cache"
+    platform_config = _write_platform_yaml(tmp_path, cache_dir=cache_dir)
+    _write_constituents_cache(cache_dir, {"2015-01-01": ["AAA"]})
+    _write_warm_price_cache("AAA", cache_dir, "2015-01-01", "2016-12-31")
+    _write_warm_price_cache("SPY", cache_dir, "2015-01-01", "2016-12-31")
+    write_cache(pd.DataFrame(columns=["ticker", "cik"]), cache_dir / "sec_ticker_cik_map.parquet")
+    requested: list[tuple[str, pd.Timestamp, pd.Timestamp]] = []
+
+    class _SpyActionsProvider(ops_module.YFinanceCorporateActionsProvider):
+        def get_actions(self, ticker, start, end):
+            requested.append((ticker, pd.Timestamp(start), pd.Timestamp(end)))
+            return _fake_no_actions(ticker)
+
+    monkeypatch.setattr(ops_module, "YFinanceCorporateActionsProvider", _SpyActionsProvider)
+
+    prefetch(platform_config, "2015-01-01", "2016-12-31")
+
+    assert {t for t, _s, _e in requested} == {"AAA", "SPY"}
+    assert all(start == ops_module._EPOCH for _t, start, _e in requested)
+    assert all(start < pd.Timestamp("2015-01-01") for _t, start, _e in requested)

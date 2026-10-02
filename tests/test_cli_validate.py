@@ -323,6 +323,10 @@ def test_validate_full_reaches_eligible_for_paper_through_the_cli(tmp_path, monk
         end="2019-12-31",
         strategy_config="configs/strategies/momentum.yaml",
     )
+    # the headline must be a point on the configured grid (the sensitivity
+    # base point is now the strategy's own params): shipped axes are
+    # lookback_months [9, 12, 15], n_long [30, 50, 70]
+    result.provenance["strategy_params"] = {"lookback_months": 12, "n_long": 30}
     result_dir = tmp_path / "result"
     result.save(result_dir)
 
@@ -577,3 +581,92 @@ def test_build_walk_forward_result_uses_the_childrens_own_rebalance_freq(tmp_pat
     # 5 years @ 12/month = 60-period train window -> the first OOS date is
     # the 61st monthly period (index 60), not the 21st (a wrong 4/yr read).
     assert result.oos_returns.index[0] == dates[60]
+
+
+# --- sensitivity base point = the headline strategy's own params -------------
+
+
+def _sensitivity_headline(tmp_path, params: dict):
+    dates = pd.date_range("2015-01-31", periods=24, freq="ME")
+    result = make_backtest_result(
+        net_returns=pd.Series([0.01, -0.005] * 12, index=dates),
+        strategy_id="momentum-headline01",
+        strategy_config=str(tmp_path / "strategy.yaml"),
+    )
+    result.provenance["strategy_params"] = params
+    return result
+
+
+def _validation_config_with_axes(axes: dict):
+    from quantlab.validation.basic import ValidationConfig
+
+    return ValidationConfig(sensitivity={"momentum": axes})
+
+
+def test_sensitivity_grid_is_centred_on_the_headline_params_not_the_axis_middle(
+    monkeypatch, tmp_path
+):
+    import quantlab.cli as cli_module
+
+    captured: dict = {}
+
+    def _fake_grid(strategy_config, param_axes, backtest_config, runner, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(failed_points={}, provider_call_warnings=[])
+
+    monkeypatch.setattr("quantlab.validation.sensitivity.sensitivity_grid", _fake_grid)
+    monkeypatch.setattr(cli_module, "_make_sensitivity_runner", lambda _pc: None)
+    monkeypatch.setattr(
+        "quantlab.core.config.load_platform_config", lambda _path: SimpleNamespace()
+    )
+    # headline n_long=30 is the FIRST value of the axis, not its middle (50)
+    headline = _sensitivity_headline(tmp_path, {"lookback_months": 12, "n_long": 30})
+    axes = {"lookback_months": [9, 12, 15], "n_long": [30, 50, 70]}
+
+    out = cli_module._build_sensitivity_result(
+        headline, tmp_path / "platform.yaml", _validation_config_with_axes(axes)
+    )
+
+    assert out is not None
+    assert captured["base_point"] == {"lookback_months": 12, "n_long": 30}
+
+
+def test_sensitivity_refuses_a_headline_that_is_not_a_point_on_the_configured_grid(tmp_path):
+    import typer
+
+    import quantlab.cli as cli_module
+
+    headline = _sensitivity_headline(tmp_path, {"lookback_months": 12, "n_long": 40})
+    axes = {"lookback_months": [9, 12, 15], "n_long": [30, 50, 70]}
+
+    with pytest.raises(typer.BadParameter, match="not a point on the configured sensitivity axis"):
+        cli_module._build_sensitivity_result(
+            headline, tmp_path / "platform.yaml", _validation_config_with_axes(axes)
+        )
+
+
+def test_sensitivity_refuses_an_axis_the_headline_strategy_does_not_have(tmp_path):
+    import typer
+
+    import quantlab.cli as cli_module
+
+    headline = _sensitivity_headline(tmp_path, {"lookback_months": 12})
+    axes = {"lookback_months": [9, 12, 15], "n_long": [30, 50, 70]}
+
+    with pytest.raises(typer.BadParameter, match="not a parameter of the headline strategy"):
+        cli_module._build_sensitivity_result(
+            headline, tmp_path / "platform.yaml", _validation_config_with_axes(axes)
+        )
+
+
+def test_value_composite_headline_is_the_middle_of_its_configured_axis_so_unaffected():
+    """The shipped value_composite headline (n_holdings=30) is already the
+    middle of configs/validation.yaml's [20, 30, 40], so passing it as the
+    base point is identical to the old middle-of-axis default."""
+    from quantlab.validation.basic import load_validation_config
+
+    config = load_validation_config(
+        Path(__file__).resolve().parents[1] / "configs" / "validation.yaml"
+    )
+    values = config.sensitivity["value_composite"]["n_holdings"]
+    assert values[len(values) // 2] == 30

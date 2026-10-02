@@ -184,7 +184,7 @@ Base point: **n_holdings=30**
 |---|---|
 | Strategy id | `value_composite-b6fdfec048` |
 | Strategy params | `{'filing_lag_sessions': 1, 'n_holdings': 30}` |
-| Backtest config | `{'abort_on_unscoreable': True, 'benchmark': 'SPY', 'borrow_fee_annual_bps': 30.0, 'corwin_schultz_lookback_days': 60, 'cost_model': 'flat_bps', 'delisting_haircut': 0.0, 'end': '2026-06-30T00:00:00', 'execution': 'close', 'extreme_return_bound': 3.0, 'extreme_return_policy': 'exclude_legacy', 'initial_capital': 1000000.0, 'max_dropped_fraction': 0.05, 'one_way_cost_bps': 10.0, 'rebalance_freq': 'month_end', 'start': '2012-01-01T00:00:00', 'strategy_config': 'C:\\Users\\arwga\\Developer\\ClaudeProjects\\Trading\\quantlab\\configs\\strategies\\value_composite.yaml'}` |
+| Backtest config | `{'abort_on_unscoreable': True, 'benchmark': 'SPY', 'borrow_fee_annual_bps': 30.0, 'corwin_schultz_lookback_days': 60, 'cost_model': 'flat_bps', 'delisting_haircut': 0.0, 'end': '2026-06-30T00:00:00', 'execution': 'close', 'extreme_return_bound': 3.0, 'extreme_return_policy': 'exclude_legacy', 'initial_capital': 1000000.0, 'max_dropped_fraction': 0.05, 'one_way_cost_bps': 10.0, 'rebalance_freq': 'month_end', 'start': '2012-01-01T00:00:00', 'strategy_config': 'configs/strategies/value_composite.yaml'}` |
 | Providers | `{'constituents': 'SP500CommunityConstituentsProvider', 'corporate_actions': 'YFinanceCorporateActionsProvider', 'fundamentals': 'EdgarFundamentalsProvider', 'prices': 'YFinancePriceProvider'}` |
 | Actions-cache fetched_at range | 2026-09-13 - 2026-09-13 |
 | Cache dir | n/a (not recorded in the provenance for this run) |

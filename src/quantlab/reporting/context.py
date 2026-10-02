@@ -31,6 +31,7 @@ from markupsafe import Markup
 
 from quantlab import __version__
 from quantlab.backtest.result import BacktestResult
+from quantlab.core.paths import portable_path
 from quantlab.validation.capacity import (
     OLD_REPO_CAPACITY_RANGE_ASSUMPTION,
     OLD_REPO_CAPACITY_RANGE_USD,
@@ -753,6 +754,9 @@ def _execution_section(result: BacktestResult) -> dict[str, Any]:
 def _provenance_section(result: BacktestResult) -> dict[str, Any]:
     prov = result.provenance
     bc = dict(prov.get("backtest_config", {}))
+    if bc.get("strategy_config"):
+        # committed reports must not carry a machine-specific absolute path
+        bc["strategy_config"] = portable_path(bc["strategy_config"])
     fetched_at = prov.get("actions_cache_fetched_at", {})
     return {
         "strategy_id": prov.get("strategy_id", "unknown"),

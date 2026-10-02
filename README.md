@@ -148,19 +148,30 @@ the report's known-caveats list names the unvisited tickers - which is exactly w
 be a deliberate step.
 
 For a blend, the walk-forward weight check and its ranking-agreement check under both cost
-conventions need the standalone sleeve runs and one dedicated blend backtest per INTERIOR grid
-weight (the endpoints of the grid ARE the standalone sleeves). Run the blend's own backtest with
-`quantlab backtest`, then validate and render it (`quantlab report`) with the sleeve results
-attached; `quantlab run --child-result ... --netted-grid-result ...` takes the same flags but
-re-runs the blend backtest first:
+conventions need the standalone sleeve runs (`reports/momentum_12_1`, `reports/value_composite`,
+produced above) plus one dedicated blend backtest per INTERIOR grid weight (the endpoints of the
+grid ARE the standalone sleeves). The two interior runs are NOT committed (about seven hours
+each); regenerate them from the committed configs, then validate and render the blend with the
+sleeve results attached (`quantlab run --child-result ... --netted-grid-result ...` takes the same
+flags but re-runs the blend backtest first):
 
 ```
+uv run quantlab backtest --config configs/backtests/blend_50_50_2012_2026.yaml --out reports/blend_50_50
+uv run quantlab backtest --config configs/backtests/blend_75_25_2012_2026.yaml --out reports/netted_grid/blend_75_25
+uv run quantlab backtest --config configs/backtests/blend_25_75_2012_2026.yaml --out reports/netted_grid/blend_25_75
+
 uv run quantlab validate --full --result reports/blend_50_50 --out reports/blend_50_50 \
   --child-result reports/momentum_12_1 --child-result reports/value_composite \
   --netted-grid-result 0.75,0.25=reports/netted_grid/blend_75_25 \
   --netted-grid-result 0.5,0.5=reports/blend_50_50 \
-  --netted-grid-result 0.25,0.75=reports/netted_grid/blend_25_75
+  --netted-grid-result 0.25,0.75=reports/netted_grid/blend_25_75 \
+  --record-trial reports/netted_grid/blend_75_25 --record-trial reports/netted_grid/blend_25_75
+uv run quantlab report --result reports/blend_50_50 --out reports/blend_50_50
 ```
+
+`--record-trial` records the two interior blends as blend-family trials (with their return series)
+so the multiple-testing correction counts them; the endpoints are the momentum and value
+strategies and count in their own families.
 
 Both conventions are measured on the walk-forward's out-of-sample window; each grid point's source
 run and strategy id is recorded in the card's `ranking_agreement` block, and any missing or
@@ -186,7 +197,9 @@ verdict. Each of `backtest`, `validate` and `report` also works standalone - see
 Run on the shared, prefetched `data/cache` after a fresh `quantlab data scan` (36 tickers
 quarantined; 168 more have no cached price series at all and sit behind the 30-day negative cache),
 2012-01-01 to 2026-06-30, `month_end` rebalance, `close` execution (parity mode), flat 10 bps
-one-way cost, from clean commit `dc5356d`.
+one-way cost. The three backtests ran from clean commit `dc5356d`; the cards were validated by
+the code recorded in each card's `provenance.validated_by_git_sha` where present (the momentum and
+blend cards, re-validated after the review fixes) and otherwise by `dc5356d` too.
 
 | | Momentum 12-1 | Value composite | Blend 50/50 |
 |---|---|---|---|
@@ -198,9 +211,10 @@ one-way cost, from clean commit `dc5356d`.
 | Backtest wall time | 1,329 s | 23,373 s | 25,352 s |
 | Report | [reports/momentum_12_1/report.md](reports/momentum_12_1/report.md) | [reports/value_composite/report.md](reports/value_composite/report.md) | [reports/blend_50_50/report.md](reports/blend_50_50/report.md) |
 
-Every number above is in the committed `report_card.md` / `report_card.json` / `provenance.json` in
-each strategy's own `reports/<name>/` directory. **The wall-clock figures are not benchmarks.**
-"Backtest wall time" is `provenance.run_seconds` for the backtest alone, and the runs shared one
+Every number above is in the committed `report_card.md` / `report_card.json` / `report.md` in
+each strategy's own `reports/<name>/` directory (the run-seconds figure is the provenance table's
+"Run seconds" row); the run-level call counts quoted below are in `plans/state/M09/EVIDENCE.md`. **The wall-clock figures are not benchmarks.**
+"Backtest wall time" is the backtest alone, and the runs shared one
 laptop that went into standby overnight while five jobs ran concurrently (momentum alone first,
 about 22 minutes; value and the three blend backtests together afterwards, 6.5-7 hours each). The
 only supportable statement is the ordering: value and blend are far slower than momentum because
@@ -220,8 +234,10 @@ p=0.1990 and the Monte Carlo drawdown check (0.50 against a 0.50 bar - a coin fl
 ratio (DSR 0.9917, N=3 distinct trials), White's Reality Check (p=0.0149, K=4) and Hansen SPA
 (p=0.0199), PSR (0.9992), no-cliff (0.9322 over a 3-point grid), and every other soft gate
 (Monte Carlo drawdown 0.33). The statistical machinery is saying that the value book is not
-noise, and the verdict is REJECTED for the two reasons above: it does not beat SPY risk-adjusted,
-and its 34.75% drawdown (the covid 2020 window) is the deepest of the three. Value has no
+noise. The verdict is REJECTED because three HARD gates fail (net Sharpe vs SPY, the coverage
+bound, and minimum track-record length), not because of the drawdown: the 34.75% maximum
+drawdown (the covid 2020 window, the deepest of the three strategies) is within the -50% floor
+and that gate passes; it is context, not a rejection reason. Value has no
 walk-forward result of its own, so that gate is vacuous.
 
 **Blend 50/50 - REJECTED.** Hard-gate failures: net Sharpe 1.03 vs SPY's 1.06; coverage 28.4%;
@@ -266,8 +282,8 @@ Sharpe, and a 3.55 pp deeper drawdown. Mechanism by mechanism:
   cache, gives identical net returns (maximum absolute difference 0.0 over 173 periods). The only
   difference from the 12 September run of the same code is 1.6e-7 per period (all 173 periods),
   which is data vintage (the price cache was rebuilt and the corporate-actions cache refreshed
-  between the two runs), not code; headline metrics agree to seven digits. The A/B is recorded in
-  `plans/state/M09/HANDOFF.md`.
+  between the two runs), not code; headline metrics agree to seven digits. The exact commands,
+  shas and series hashes are in `plans/state/M09/EVIDENCE.md`.
 - **M04b mechanisms that could NOT have moved it:** the backtest window clamp and the
   benchmark-from-store change (the M04b gate verified a bit-identical A/B, `plans/QUANT-NOTES.md`).
 - **Mechanism that DID move it - symbol-reuse quarantine.** The predecessor had no quality-scan

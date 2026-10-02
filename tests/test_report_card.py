@@ -491,3 +491,50 @@ def test_rc_hard_gate_fails_named_cause_when_headline_offset_from_siblings(tmp_p
     # siblings, which this assertion would not catch on its own without
     # the reason-string check above also naming the true cause.
     assert report_card.verdict == "REJECTED"
+
+
+def test_card_provenance_records_the_validating_code_beside_the_backtest_sha(tmp_path):
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    _register_background_trials(registry)
+    result = _strong_headline_result()
+
+    card = build_report_card(
+        result,
+        None,
+        registry,
+        _config(),
+        validating_code={"sha": "abc1234validator", "dirty": False},
+    )
+
+    prov = card.to_json()["provenance"]
+    assert prov["validated_by_git_sha"] == "abc1234validator"
+    assert prov["validated_by_dirty"] is False
+    assert prov["quantlab_git_sha"] == "test-sha"  # the BACKTEST's own sha, unchanged
+
+
+def test_card_provenance_captures_the_validating_code_itself_when_not_supplied(tmp_path):
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    _register_background_trials(registry)
+
+    card = build_report_card(_strong_headline_result(), None, registry, _config())
+
+    prov = card.to_json()["provenance"]
+    assert prov["validated_by_git_sha"] != "unknown"
+    assert isinstance(prov["validated_by_dirty"], bool)
+
+
+def test_unbounded_min_track_record_length_is_worded_unbounded_never_inf(tmp_path):
+    """Carried M09 item 11. A strategy whose Sharpe is below the confidence
+    bar's null has an infinite minimum track-record length; the gate reason
+    must say "unbounded" at the source (Mutation: "unbounded" -> "inf" made
+    nothing fail)."""
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    _register_background_trials(registry)
+    result = _strong_headline_result(net_returns=_alternating(0.01, -0.0100001))
+
+    card = build_report_card(result, None, registry, _config())
+
+    gate = next(g for g in card.gates if g.name == "min_track_record_length")
+    assert not gate.passed
+    assert "needs >= unbounded observations" in gate.reason
+    assert "inf" not in gate.reason.replace("information", "")

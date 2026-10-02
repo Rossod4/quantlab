@@ -1,36 +1,36 @@
 # QuantLab report - value_composite-b6fdfec048
 
-**Verdict: REJECTED** **DIRTY TREE**
-`value_composite-b6fdfec048` · data semantics `m09` · run 2026-09-13T18:07:05.660529+00:00 · git `395bd9894b720d2408df854290106e345bf33983` · quantlab 0.1.0
+**Verdict: REJECTED**
+`value_composite-b6fdfec048` · data semantics `m09` · run 2026-10-01T15:36:59.163929+00:00 · git `dc5356d7c0fa02929ea4d8d1c6144083dbdcae70` · quantlab 0.1.0
 
-net CAGR 17.63%, Sharpe 0.97, max drawdown -34.76% - verdict REJECTED.
+net CAGR 17.19%, Sharpe 0.95, max drawdown -34.75% - verdict REJECTED.
 
 _REJECTED: at least one HARD gate failed. RESEARCH_ONLY: every hard gate passed but at least one SOFT gate failed. ELIGIBLE_FOR_PAPER: every hard and soft gate passed. Hard-gate failures cap the verdict at REJECTED; soft-gate failures cap it at RESEARCH_ONLY; gates of kind INFORMATIONAL (capacity, at Alex's retail stake - orchestrator decision, plans/QUANT-NOTES.md) and the informational notes beside min_psr and the Monte Carlo drawdown gate are always reported but never affect the verdict at all. A verdict is not evidence of edge; it states which tests the result survived._
 
 ## Headline vs. benchmark
 | Metric | Net | Gross | Note |
 |---|---|---|---|
-| CAGR | 17.63% | 17.97% |  |
-| Annualized volatility (net) | 18.56% |  |  |
-| Sharpe (net) | 0.97 |  |  |
-| Sortino (net) | 1.55 |  | Sharpe: pandas ddof=1 (sample std), annualized by sqrt(periods_per_year). Sortino: target return 0, FULL-SAMPLE N at ddof=0 (not losing-periods-only N). The two denominators are on DIFFERENT footings (M05 carried item 8) - do not compare them via their raw values alone. |
-| Max drawdown (net) | -34.76% |  |  |
-| Calmar (net) | 0.51 |  |  |
+| CAGR | 17.19% | 17.53% |  |
+| Annualized volatility (net) | 18.68% |  |  |
+| Sharpe (net) | 0.95 |  |  |
+| Sortino (net) | 1.50 |  | Sharpe: pandas ddof=1 (sample std), annualized by sqrt(periods_per_year). Sortino: target return 0, FULL-SAMPLE N at ddof=0 (not losing-periods-only N). The two denominators are on DIFFERENT footings (M05 carried item 8) - do not compare them via their raw values alone. |
+| Max drawdown (net) | -34.75% |  |  |
+| Calmar (net) | 0.49 |  |  |
 | Hit rate | 67.63% |  |  |
-| Mean turnover | 12.14% |  |  |
+| Mean turnover | 12.18% |  |  |
 | Cost drag (CAGR impact) | 0.34% |  |  |
 | Benchmark CAGR | 14.81% |  |  |
 | Benchmark Sharpe | 1.06 |  |  |
-beta 1.19  |  information ratio 0.38  |  tracking error 8.51%  (overlap: 173 periods)
+beta 1.19  |  information ratio 0.33  |  tracking error 8.75%  (overlap: 173 periods)
 
 
 ## Trust panel
 
-**Coverage bound: 27.97%** - worst sampled rebalance-date year, % of point-in-time members with no cached history or masked before that date; a ceiling on invisibility, not a return impact.
+**Coverage bound: 28.37%** - worst sampled rebalance-date year, % of point-in-time members with no cached history or masked before that date; a ceiling on invisibility, not a return impact.
 
 forced exits, extreme-return exclusions, unscored and dropped tickers are SEPARATE selection effects from the coverage bound above - they are not additive into one headline number (carried M04 verdict item 4).
 
-coverage bound 28.0% (worst sampled year's uncached/masked universe fraction) - this bound and the unscored-ticker / dropped-ticker counts reported separately below are SEPARATE selection effects, not additive into one headline number
+coverage bound 28.4% (worst sampled year's uncached/masked universe fraction) - this bound and the unscored-ticker / dropped-ticker counts reported separately below are SEPARATE selection effects, not additive into one headline number
 
 | | |
 |---|---|
@@ -43,8 +43,8 @@ coverage bound 28.0% (worst sampled year's uncached/masked universe fraction) - 
 this run's data_semantics_version (m09) is at or after M04b: this count is strategy-self-reported and genuinely means 'could not be scored'.
 ### Known caveats
 - TTM EPS is restated PER-COMPONENT (M09, data/pit.py's fundamentals() restatement using data/providers/edgar_fundamentals.py's ttm_eps_components): a split falling BETWEEN two component filings no longer leaves the sum in mixed share terms (closing plans/QUANT-NOTES.md 'From M03b verdict' item 1 - was bounded to the P/E leg, adverse direction, up to 2.5x on the gate's own straddling-split fixture). A narrower residual remains when a fundamentals provider supplies no per-component data at all (falls back to the pre-M09 single-filed-date restatement) or a filer's own reporting convention does not follow the modelled quarter/annual duration windows; treat any value/blend result touching ttm_eps with this narrower caveat in mind.
-- 27 point-in-time constituent(s) had already joined the index before this run's cached price history for them begins, within this run's own [start, end] window - their early membership span is invisible to every strategy (PriceAvailability.masked_start; counted in the coverage bound above, not a second, separate deduction) - see coverage_report.masked_start_tickers for the per-year breakdown and per-ticker reasons.
-- 805 ticker(s) in this run's tracked universe have NEVER been visited by `quantlab data scan` - their quarantine status is unknown, not confirmed-clean; run `quantlab data scan` before trusting the quarantined count above as complete. See provenance.never_scanned_tickers.
+- Yahoo symbol reuse erases delisted history; 36 historical constituent(s) in this run's tracked universe were quarantined because their cached price series belongs to a DIFFERENT, later company now trading under the same symbol (data/quality.py's scan_price_cache) - see provenance.quarantined_tickers.
+- 168 ticker(s) in this run's tracked universe have NEVER been visited by `quantlab data scan` - their quarantine status is unknown, not confirmed-clean; run `quantlab data scan` before trusting the quarantined count above as complete. See provenance.never_scanned_tickers.
 - 168 ticker(s) in this run's tracked universe are currently suppressed by an ACTIVE negative-cache 'no_data' sidecar (TTL 30 days) - the same config run again after the TTL lapses could see a DIFFERENT set of tickers. See provenance.retry_after_days and provenance.no_data_suppressed_tickers.
 - Purged/embargoed CV needs both a purge and an embargo because a contiguous test fold can sit in the MIDDLE of the series with training data on both sides, so a training row's own label window can overlap the test fold from either direction; the walk-forward check (validation/walk_forward.py) needs neither, because its weight choice is made from a STRICTLY PRIOR training block and applied only to the STRICTLY SUBSEQUENT, not-yet-realized test block - there is no way for the test block's own returns to leak backward into that choice.
 - n_trials for this family may double-count the strategy's own headline run against a sensitivity grid's base point at the same parameters - the two use independent id schemes and the registry does not reconcile them (registry.py's module docstring). This over-counts N by one trial; unlike an earlier version of this note claimed, over-counting N is NOT generally conservative for DSR once var_sr_trials is estimated from the same trial set (quant-gate VERDICT.md M06 cycle-1 finding 1) - it is disclosed here because it is a small, one-trial effect, not because its direction is guaranteed safe.
@@ -52,7 +52,7 @@ this run's data_semantics_version (m09) is at or after M04b: this count is strat
 - at least one trial counted toward this family's N (or its dispersion estimate) was recorded from a dirty (uncommitted-changes) working tree - see the provenance section's dirty trial count.
 
 ## Validation badges
-N trials (distinct): **4** (raw key count: 4, 4 dirty) · PSR 0.9993 · DSR 0.9892 · min track-record length unbounded (n/a)
+N trials (distinct): **3** (raw key count: 4, 3 dirty) · PSR 0.9992 · DSR 0.9917 · min track-record length unbounded (n/a)
 
 Reality Check: K=4 realised trials over n_periods=173 common periods, B=200 bootstrap resamples, block_len=6.0. measured size ≈ 0.12 at the 0.10 bar (block length 6.0); treat the bar as approximate.
 
@@ -60,27 +60,27 @@ Hansen SPA: K=4 realised trials over n_periods=173 common periods, B=200 bootstr
 
 RC/SPA benchmark: embedded (result.benchmark_returns) - validation.yaml default · headline's own retained fraction: 100.00%
 
-Monte Carlo: CAGR p5/p50/p95: 10.16% / 17.65% / 24.73%  |  Max drawdown p5/p50/p95: -45.71% / -34.76% / -16.56%  |  Sharpe p5/p50/p95: 0.55 / 1.00 / 1.47  |  observed max drawdown: -34.76% (500 resamples, block_len=6.0).
+Monte Carlo: CAGR p5/p50/p95: 9.56% / 17.26% / 24.25%  |  Max drawdown p5/p50/p95: -47.10% / -34.75% / -14.96%  |  Sharpe p5/p50/p95: 0.53 / 0.97 / 1.43  |  observed max drawdown: -34.75% (500 resamples, block_len=6.0).
 
-Capacity: spread percentiles: p10=5.5bps, p25=11.8bps, p50=19.5bps, p75=25.4bps, p90=31.4bps, p99=41.1bps  |  AUM ceiling range: $89,751,248 - $264,962,831 across 4 liquidity assumption(s), 203 ticker(s). For scale only, NOT the output of this run: the old repo capacity estimate on real 2012-2026 S&P 500 data was $95,000,000-$335,000,000 AUM, under an assumed 50-name book (1/50 position_frac).
+Capacity: spread percentiles: p10=5.5bps, p25=11.5bps, p50=18.9bps, p75=24.6bps, p90=29.2bps, p99=39.9bps  |  AUM ceiling range: $92,965,329 - $266,760,498 across 4 liquidity assumption(s), 207 ticker(s). For scale only, NOT the output of this run: the old repo capacity estimate on real 2012-2026 S&P 500 data was $95,000,000-$335,000,000 AUM, under an assumed 50-name book (1/50 position_frac).
 
 | Gate | Kind | Value | Threshold | Result | Reason |
 |---|---|---|---|---|---|
-| deflated_sharpe_ratio | hard | 0.9892 | 0.9500 | PASS | DSR=0.9892 against the 0.95 bar for significance after correcting for N=4 distinct trials (computed on the PER-PERIOD Sharpe 0.2814, not the annualized 0.97 - see deflated_sharpe.py's 'same footing' contract). DSR is not monotone in N above the variance floor; near-duplicate reruns of one grid point can move it. |
+| deflated_sharpe_ratio | hard | 0.9917 | 0.9500 | PASS | DSR=0.9917 against the 0.95 bar for significance after correcting for N=3 distinct trials (computed on the PER-PERIOD Sharpe 0.2740, not the annualized 0.95 - see deflated_sharpe.py's 'same footing' contract). DSR is not monotone in N above the variance floor; near-duplicate reruns of one grid point can move it. |
 | reality_check_pvalue | hard | 0.0149 | 0.1000 | PASS | White Reality Check p=0.0149 against the 0.10 bar, over K=4 realised trials, benchmark=embedded (result.benchmark_returns) - validation.yaml default. |
-| net_sharpe_vs_benchmark | hard | 0.9747 | 1.0583 | FAIL | net Sharpe 0.97 vs benchmark Sharpe 1.06. |
-| coverage_bound | hard | 27.9678 | 15.0000 | FAIL | worst-year coverage bound 28.0% against the 15.0% ceiling. |
-| min_track_record_length | hard | unbounded (n/a) | 173.0000 | FAIL | needs >= unbounded observations for significance; 173 are available (computed on the PER-PERIOD Sharpe 0.2814, not the annualized 0.97). |
-| probabilistic_sharpe_ratio | soft | 0.9993 | 0.9500 | PASS | PSR=0.9993 against the 0.95 bar (computed on the PER-PERIOD Sharpe 0.2814, not the annualized 0.97). min_psr 0.95 binds only below an annualised Sharpe of about 0.47 on a 12-year monthly book - neither is evidence of quality. |
-| subperiod_oof_sharpe | soft | 1.1965 | 0.0000 | PASS | mean Sharpe 1.20 over 5 contiguous sub-periods of a strategy with NO FITTED PARAMETERS - purge/embargo have no effect on this value by construction (quant-gate VERDICT.md M06 cycle-1 finding 4); NOT a purged cross-validation. |
-| no_cliff_score | soft | 0.9420 | 0.5000 | PASS | no_cliff_score=0.9420 against 0.50 (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0) - a RELATIVE-SPREAD statistic only, never evidence of quality by itself (see min_net_sharpe below). |
-| min_net_sharpe | soft | 0.9747 | 0.3000 | PASS | net Sharpe 0.97 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). Sensitivity grid: (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0). |
-| max_drawdown_floor | soft | -0.3476 | -0.5000 | PASS | FULL-SAMPLE net max drawdown -34.76% against the -50.00% floor (never a rolling column - see max_negative_rolling_window_fraction below for that). |
-| max_negative_rolling_window_fraction | soft | 0.0072 | 0.5000 | PASS | 1% of rolling windows had negative CAGR against the 50% bar - computed from the FROZEN ported rolling_window_metrics table, whose CAGR is blind to each window's own first return (ported convention, see rolling.py's module docstring). |
-| monte_carlo_drawdown | soft | 0.3040 | 0.5000 | PASS | P(bootstrap drawdown worse than observed)=0.30. the Monte Carlo drawdown gate sits at the centre of its own statistic's null - neither is evidence of quality. |
+| net_sharpe_vs_benchmark | hard | 0.9493 | 1.0583 | FAIL | net Sharpe 0.95 vs benchmark Sharpe 1.06. |
+| coverage_bound | hard | 28.3702 | 15.0000 | FAIL | worst-year coverage bound 28.4% against the 15.0% ceiling. |
+| min_track_record_length | hard | unbounded (n/a) | 173.0000 | FAIL | needs >= unbounded observations for significance; 173 are available (computed on the PER-PERIOD Sharpe 0.2740, not the annualized 0.95). |
+| probabilistic_sharpe_ratio | soft | 0.9992 | 0.9500 | PASS | PSR=0.9992 against the 0.95 bar (computed on the PER-PERIOD Sharpe 0.2740, not the annualized 0.95). min_psr 0.95 binds only below an annualised Sharpe of about 0.47 on a 12-year monthly book - neither is evidence of quality. |
+| subperiod_oof_sharpe | soft | 1.1847 | 0.0000 | PASS | mean Sharpe 1.18 over 5 contiguous sub-periods of a strategy with NO FITTED PARAMETERS - purge/embargo have no effect on this value by construction (quant-gate VERDICT.md M06 cycle-1 finding 4); NOT a purged cross-validation. |
+| no_cliff_score | soft | 0.9322 | 0.5000 | PASS | no_cliff_score=0.9322 against 0.50 (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0) - a RELATIVE-SPREAD statistic only, never evidence of quality by itself (see min_net_sharpe below). |
+| min_net_sharpe | soft | 0.9493 | 0.3000 | PASS | net Sharpe 0.95 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). Sensitivity grid: (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0). |
+| max_drawdown_floor | soft | -0.3475 | -0.5000 | PASS | FULL-SAMPLE net max drawdown -34.75% against the -50.00% floor (never a rolling column - see max_negative_rolling_window_fraction below for that). |
+| max_negative_rolling_window_fraction | soft | 0.0000 | 0.5000 | PASS | 0% of rolling windows had negative CAGR against the 50% bar - computed from the FROZEN ported rolling_window_metrics table, whose CAGR is blind to each window's own first return (ported convention, see rolling.py's module docstring). |
+| monte_carlo_drawdown | soft | 0.3260 | 0.5000 | PASS | P(bootstrap drawdown worse than observed)=0.33. the Monte Carlo drawdown gate sits at the centre of its own statistic's null - neither is evidence of quality. |
 | spa_pvalue | soft | 0.0199 | 0.1000 | PASS | Hansen SPA p=0.0199 against the 0.10 bar, over K=4 realised trials, benchmark=embedded (result.benchmark_returns) - validation.yaml default. |
 | walk_forward_stability | soft | n/a (could not be computed) | 0.5000 | PASS | no walk-forward result was supplied - vacuously satisfied per 'if present'. |
-| capacity_ceiling | informational | 89751.2477 | 100.0000 | PASS | worst-case capacity ceiling is 89751x the resolved intended capital ($1,000, configs/validation.yaml intended_capital_usd) against the 100x bar. NOTE: the capacity gate is trivially passable at this stake (89751x against a 100x bar) - this is not evidence of edge, only that the resolved intended capital is small relative to the instrument's liquidity. |
+| capacity_ceiling | informational | 92965.3294 | 100.0000 | PASS | worst-case capacity ceiling is 92965x the resolved intended capital ($1,000, configs/validation.yaml intended_capital_usd) against the 100x bar. NOTE: the capacity gate is trivially passable at this stake (92965x against a 100x bar) - this is not evidence of edge, only that the resolved intended capital is small relative to the instrument's liquidity. |
 `informational` gates are always reported (value, threshold, result) but never affect the verdict above - see the verdict legend.
 
 ## Robustness
@@ -90,61 +90,61 @@ ported convention: each window's first return is omitted from CAGR and hidden fr
  Showing first/last 5 of 138 rows.
 | Window end | CAGR | Vol | Sharpe | Max DD |
 |---|---|---|---|---|
-| 2015-01-30 | 20.40% | 12.18% | 1.67 | -10.20% |
-| 2015-02-27 | 22.09% | 12.58% | 1.71 | -10.20% |
-| 2015-03-31 | 21.87% | 12.68% | 1.56 | -9.16% |
-| 2015-04-30 | 26.40% | 12.58% | 1.63 | -3.86% |
-| 2015-05-29 | 25.69% | 10.83% | 2.27 | -3.86% |
+| 2015-01-30 | 21.16% | 11.88% | 1.79 | -9.75% |
+| 2015-02-27 | 22.66% | 12.17% | 1.81 | -9.75% |
+| 2015-03-31 | 22.33% | 12.25% | 1.65 | -9.15% |
+| 2015-04-30 | 26.80% | 12.19% | 1.70 | -3.70% |
+| 2015-05-29 | 25.71% | 10.35% | 2.40 | -3.70% |
 | ... |  |  |  |  |
-| 2026-02-27 | 21.20% | 14.85% | 1.31 | -10.34% |
-| 2026-03-31 | 20.37% | 14.85% | 1.31 | -10.34% |
-| 2026-04-30 | 25.04% | 15.02% | 1.41 | -10.34% |
-| 2026-05-29 | 20.77% | 14.54% | 1.55 | -10.34% |
-| 2026-06-30 | 18.28% | 13.83% | 1.44 | -10.34% |
+| 2026-02-27 | 20.53% | 14.94% | 1.27 | -11.02% |
+| 2026-03-31 | 19.77% | 15.00% | 1.25 | -11.02% |
+| 2026-04-30 | 24.31% | 15.14% | 1.36 | -11.02% |
+| 2026-05-29 | 20.09% | 14.73% | 1.48 | -11.02% |
+| 2026-06-30 | 18.10% | 14.12% | 1.41 | -11.02% |
 ### Rolling 5y window
 
 ported convention: each window's first return is omitted from CAGR and hidden from drawdown (M05 carried item; frozen under CLAUDE.md invariant #4 - see validation/rolling.py's module docstring).
  Showing first/last 5 of 114 rows.
 | Window end | CAGR | Vol | Sharpe | Max DD |
 |---|---|---|---|---|
-| 2017-01-31 | 19.75% | 12.76% | 1.53 | -10.20% |
-| 2017-02-28 | 19.98% | 12.77% | 1.53 | -10.20% |
-| 2017-03-31 | 20.54% | 12.74% | 1.50 | -9.16% |
-| 2017-04-28 | 23.43% | 12.68% | 1.55 | -8.71% |
-| 2017-05-31 | 22.57% | 11.69% | 1.87 | -8.71% |
+| 2017-01-31 | 18.90% | 12.36% | 1.53 | -9.75% |
+| 2017-02-28 | 19.10% | 12.32% | 1.53 | -9.75% |
+| 2017-03-31 | 19.58% | 12.28% | 1.49 | -9.15% |
+| 2017-04-28 | 22.36% | 12.24% | 1.53 | -8.17% |
+| 2017-05-31 | 21.32% | 11.23% | 1.86 | -8.17% |
 | ... |  |  |  |  |
-| 2026-02-27 | 14.91% | 20.09% | 0.85 | -28.18% |
-| 2026-03-31 | 13.07% | 19.93% | 0.78 | -28.18% |
-| 2026-04-30 | 13.84% | 19.86% | 0.77 | -28.18% |
-| 2026-05-29 | 13.47% | 19.89% | 0.73 | -28.18% |
-| 2026-06-30 | 13.21% | 19.89% | 0.74 | -28.18% |
+| 2026-02-27 | 13.90% | 20.64% | 0.80 | -30.43% |
+| 2026-03-31 | 11.99% | 20.46% | 0.71 | -30.43% |
+| 2026-04-30 | 12.73% | 20.41% | 0.70 | -30.43% |
+| 2026-05-29 | 12.33% | 20.44% | 0.66 | -30.43% |
+| 2026-06-30 | 12.37% | 20.45% | 0.69 | -30.43% |
 
 ### Sub-period / regime table
 
 | Period | CAGR | Vol | Sharpe | Max DD | Growth |
 |---|---|---|---|---|---|
-| first_half | 18.81% | 13.02% | 1.40 | -16.56% | 3.4334 |
-| second_half | 16.47% | 22.83% | 0.79 | -34.76% | 3.0234 |
-| precovid_2012_2019 | 19.60% | 13.80% | 1.38 | -16.56% | 4.1247 |
-| covid_2020 | 4.30% | 39.13% | 0.30 | -34.76% | 1.0431 |
-| rate_shock_2021_2022 | 8.90% | 24.57% | 0.47 | -28.18% | 1.1854 |
-| recent_2023_plus | 22.52% | 15.95% | 1.36 | -10.34% | 2.0354 |
+| first_half | 18.89% | 12.57% | 1.45 | -14.23% | 3.4494 |
+| second_half | 15.54% | 23.27% | 0.74 | -34.75% | 2.8522 |
+| precovid_2012_2019 | 19.63% | 13.39% | 1.41 | -14.23% | 4.1318 |
+| covid_2020 | 3.70% | 39.62% | 0.29 | -34.75% | 1.0371 |
+| rate_shock_2021_2022 | 6.22% | 25.13% | 0.36 | -30.43% | 1.1279 |
+| recent_2023_plus | 22.52% | 16.46% | 1.32 | -11.02% | 2.0355 |
 
 ### Parameter sensitivity
 
-no_cliff_score = **0.9420** (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0) - shown ONLY beside min_net_sharpe below.
+no_cliff_score = **0.9322** (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0) - shown ONLY beside min_net_sharpe below.
 
-no_cliff_score=0.9420 against 0.50 (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0) - a RELATIVE-SPREAD statistic only, never evidence of quality by itself (see min_net_sharpe below).
+no_cliff_score=0.9322 against 0.50 (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0) - a RELATIVE-SPREAD statistic only, never evidence of quality by itself (see min_net_sharpe below).
 
-net Sharpe 0.97 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). Sensitivity grid: (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0).
+net Sharpe 0.95 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). Sensitivity grid: (neighbourhood_size=3, neighbourhood_truncated=False, nan_points=0).
 
 Base point: **n_holdings=30**
 
 | Grid point | Net Sharpe |
 |---|---|
-| n_holdings=20 | 1.02 |
-| n_holdings=30 (base point) | 0.97 |
-| n_holdings=40 | 0.97 |
+| n_holdings=20 | 1.01 |
+| n_holdings=30 (base point) | 0.95 |
+| n_holdings=40 | 0.96 |
 
 
 
@@ -152,7 +152,6 @@ Base point: **n_holdings=30**
 ### Flags
 - 173 rebalance date(s) had declared-universe tickers left unscored (unpriceable) and dropped from weights
 - benchmark Sharpe exceeds strategy Sharpe
-- 1% of rolling 3y windows negative (by CAGR)
 
 ## Execution conventions
 
@@ -173,12 +172,12 @@ Base point: **n_holdings=30**
 | | |
 |---|---|
 | Strategy id | `value_composite-b6fdfec048` |
-| Strategy params | `{'filing_lag_sessions': 1, 'n_holdings': 30}` |
-| Backtest config | `{'abort_on_unscoreable': True, 'benchmark': 'SPY', 'borrow_fee_annual_bps': 30.0, 'corwin_schultz_lookback_days': 60, 'cost_model': 'flat_bps', 'delisting_haircut': 0.0, 'end': '2026-06-30T00:00:00', 'execution': 'close', 'extreme_return_bound': 3.0, 'extreme_return_policy': 'exclude_legacy', 'initial_capital': 1000000.0, 'max_dropped_fraction': 0.05, 'one_way_cost_bps': 10.0, 'rebalance_freq': 'month_end', 'start': '2012-01-01T00:00:00', 'strategy_config': 'C:\\Users\\arwga\\Developer\\ClaudeProjects\\Trading\\quantlab\\configs\\strategies\\value_composite.yaml'}` |
-| Providers | `{'constituents': 'SP500CommunityConstituentsProvider', 'corporate_actions': 'YFinanceCorporateActionsProvider', 'fundamentals': 'EdgarFundamentalsProvider', 'prices': 'YFinancePriceProvider'}` |
+| Strategy params | `{'n_holdings': 30, 'filing_lag_sessions': 1}` |
+| Backtest config | `{'start': '2012-01-01T00:00:00', 'end': '2026-06-30T00:00:00', 'strategy_config': 'C:\\Users\\arwga\\Developer\\ClaudeProjects\\Trading\\quantlab\\configs\\strategies\\value_composite.yaml', 'rebalance_freq': 'month_end', 'initial_capital': 1000000.0, 'execution': 'close', 'cost_model': 'flat_bps', 'one_way_cost_bps': 10.0, 'corwin_schultz_lookback_days': 60, 'borrow_fee_annual_bps': 30.0, 'delisting_haircut': 0.0, 'extreme_return_bound': 3.0, 'extreme_return_policy': 'exclude_legacy', 'benchmark': 'SPY', 'max_dropped_fraction': 0.05, 'abort_on_unscoreable': True}` |
+| Providers | `{'prices': 'YFinancePriceProvider', 'constituents': 'SP500CommunityConstituentsProvider', 'fundamentals': 'EdgarFundamentalsProvider', 'corporate_actions': 'YFinanceCorporateActionsProvider'}` |
 | Actions-cache fetched_at range | 2026-09-13 - 2026-09-13 |
 | Cache dir | n/a (not recorded in the provenance for this run) |
-| Run seconds | 10278.07 |
-| Quarantined tickers | 0 |
-| Masked-start tickers | 27 |
+| Run seconds | 23373.25 |
+| Quarantined tickers | 36 |
+| Masked-start tickers | 0 |
 | quantlab version | 0.1.0 |

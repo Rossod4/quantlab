@@ -1,33 +1,34 @@
-# M09 HANDOFF (developer 3, DRAFT - value_composite results pending)
+# M09 HANDOFF (developer 3) - for the gate. Real runs at clean sha dc5356d; tree = m09-end-to-end
 
-Branch `m09-wire` (on dc5356d), merged into `m09-end-to-end` by the orchestrator. Real runs: clean sha dc5356d.
+## One-liners (reports/<name>/report_card.md|json, provenance.json; SPY 14.81% CAGR, Sharpe 1.06)
+- momentum_12_1 REJECTED: 17.66% / Sharpe 0.98 / maxDD -23.25%. Hard fails: net Sharpe vs SPY, coverage 28.4% (>15%), Reality Check p=0.144 (K=10), min TRL unbounded. Soft fails: SPA p=0.199, MC drawdown 0.50. DSR 0.982 (N=9) passes.
+- value_composite REJECTED: 17.19% / 0.95 / -34.75%. Hard fails: net Sharpe vs SPY, coverage, min TRL. DSR 0.992 (N=3), RC p=0.015 (K=4), SPA p=0.020, no-cliff 0.93 all pass.
+- blend_50_50 REJECTED: 17.67% / 1.03 / -28.36%. Hard fails: net Sharpe vs SPY, coverage, RC p=0.1045 (K=3, near miss), min TRL. DSR 0.985 (N=8), SPA p=0.080 pass. Soft fail: no_cliff only because no sensitivity grid is configured for the blend (weight grid is its only axis; none added).
+- Ranking agreement (blend card, `ranking_agreement`): 5 points, Kendall tau 1.0, top choice 75/25 agrees, netted vs blend-of-nets Sharpe within 0.0002, OOS window 2017-02..2026-06 (113 months). Walk-forward stability gate passes (70%) but the walk-forward picked 100% value in 7 of 10 steps.
+- Wall times (backtest only) 1329 / 23373 / 25352 s: NOT benchmarks (laptop standby, 5 concurrent jobs). Momentum full `run` 10.1 h.
 
-## Results (files under reports/<name>/: report_card.md/json, provenance.json)
-- momentum_12_1: REJECTED, 17.66% / 0.98 / -23.25% (SPY 14.81% / 1.06). Hard fails: net Sharpe vs SPY, coverage 28.4% > 15%, Reality Check p=0.144, min TRL. DSR 0.9823 (N=9) passes.
-- blend_50_50: REJECTED, 17.67% / 1.03 / -28.36%. Hard fails: net Sharpe vs SPY, coverage 28.4%, RC p=0.1045 (K=3), min TRL. DSR 0.9849 (N=8) and SPA p=0.0796 pass. no_cliff fails only because no sensitivity grid is configured for the blend (weight grid is its only axis; none added). Walk-forward stability passes (70% modal) but chose 100% value in 7 of 10 steps.
-- value_composite: PENDING (run in its validation grid).
-- Ranking agreement (blend card): 5 grid points, Kendall tau 1.0, top choice (75/25) agrees, netted vs blend-of-nets Sharpes within 0.0002; OOS window 2017-02..2026-06 (113 months).
-- Wall times (backtest only, shared/sleeping machine, upper bounds): momentum 1329 s, blend 25352 s, value 23373 s.
+## Reconciliation (detail: README "Reconciliation" and "Value composite" sections)
+- Momentum vs old repo (15.7/0.96/-19.7): engine at 7e904cd (pre-M08 merge) vs dc5356d on one cache copy: identical net returns (max abs diff 0.0), so the merge is numerics-neutral. Vs the 12 Sept run: 1.6e-7/period in all 173 periods = data vintage (price cache rebuilt 12 Sept 19:00-20:xx, actions refreshed 13 Sept). Window clamp and benchmark-from-store could not move it; symbol-reuse quarantine did (M04b: -0.18 pp). Residual ~2 pp / -3.5 pp drawdown vs the old repo is unexplained.
+- Value Sept vs final (17.63/0.9747/-34.76 -> 17.19/0.9493/-34.75): Sept ran on the unscanned cache (0 quarantined, 805 never scanned); final has 36 quarantined. Difference sits in 2020-22 (rate shock 8.9% -> 6.2% CAGR) with 2023+ identical; consistent with quarantine, not proven (old holdings overwritten).
 
-## Reconciliation with the old repo (15.7% / 0.96 / -19.7%): see README. Key A/B
-- Engine at 7e904cd (pre-M08 merge) vs dc5356d on one cache copy: net returns identical (max abs diff 0.0). The merge is numerics-neutral.
-- New vs the 12 Sept run: 1.6e-7 per period in all 173 periods; headline unchanged to 7 digits. Cause is data vintage: the price cache was rebuilt 2026-09-12 19:00-20:xx (after the old 17:18 run) and actions refreshed 09-13. Not separable further (old cache gone).
-- Residual vs the old repo is NOT decomposable; reported as open.
+## Why runs are at dc5356d, and what differs at HEAD
+Files changed dc5356d..HEAD: cli.py (ranking/--record-trial/--child-result), validation/{netted_grid,registry,report_card}.py, reporting/context.py (report text), data/{cache,quality}.py (scan-manifest JSON only), backtest/engine.py (one caveat string), 4 configs for netted-grid blends. None touches strategies/, price/return code or engine arithmetic; 7e904cd/dc5356d A/B and tests/test_blend_endpoint_equivalence.py (weight-1 blend == child incl. costs) support that. Re-rendering the momentum and value reports with HEAD code left every tracked file byte-identical.
 
-## Findings fixed in this branch
-1. Ranking agreement was never fed by the CLI. New `validation/netted_grid.py`; `validate --full`/`run` take `--child-result` and `--netted-grid-result "w1,w2=<dir>"`. Endpoints = standalone children (refused unless window/cost/semantics/params match); window = walk-forward OOS; each input's run dir + strategy id recorded; failures -> "not checked: <reason>" (also when no walk-forward is built).
-2. Trials registry: re-recording an identical key left a stale first row beside the new series. Now the latest row supersedes (N unchanged, old rows kept in jsonl); row/series hash mismatch raises `RegistryCoherenceError`, checked per returned family. Live registry was moved aside to `reports/trials.bak_pre_cleanrun_2026-10-01` before the runs recorded.
-3. Scan manifest: `refresh --unquarantine X` overwrote the manifest with just [X] (everything else became "never scanned"); a rewritten price file kept counting as scanned. Fixed (union on narrowed scan; `invalidate_scan_coverage` in the sidecar writer). Quarantine itself survives prefetch/refresh/clear-negative-cache (tests/test_quarantine_survival.py).
-4. Sensitivity registry rows read `dirty=True` because `run` rewrites its own tracked `reports/<name>/` artefacts before recording. Rows now take the headline run's `provenance.dirty`. The 9 momentum sensitivity rows already recorded (2026-10-01 18:33) stay `dirty=True, registry_at_record_time`: the run started from a clean tree; the only dirt was its own artefacts.
-5. Quarantine state was lost by the 2026-09-12 cache rebuild (all sidecars rewritten; no ordinary command does this). Pre-fix September grid trials ran on an unscanned cache; they are not in the current registry.
-6. Minor: never-scanned caveat wording (names with no cached series cannot be scanned; live-run provenance carries the old wording), refresh-level negative-sidecar tests, 75/25 and 25/75 netted-grid configs, `.gitignore` now commits `provenance.json` (quarantine/no-data/never-scanned counts live only there).
+## Decisions / deviations
+- Fresh registry: `reports/trials` moved to `reports/trials.bak_pre_cleanrun_2026-10-01` before the runs recorded (old rows came from an unscanned cache, first-seen-wins would have kept stale Sharpes).
+- Registry policy: latest row for an identical key supersedes (N unchanged, old rows stay in jsonl); row/series hash mismatch raises `RegistryCoherenceError` (family-scoped).
+- 75/25 and 25/75 blend backtests recorded as blend trials (`validate --record-trial`); endpoints are NOT blend trials; 0.50 counted twice (historical + headline), conservative. Their provenance `strategy_config` points at scratchpad YAMLs; committed configs/strategies/blend_{75_25,25_75}.yaml give the same ids (blend-a7f7c30ce1, blend-9231a3894e). Netted-grid run dirs are uncommitted; the blend card's `ranking_agreement` carries every number the README quotes.
+- Ranking uses all 5 points; endpoints are the standalone child runs, refused unless window/cost/semantics/params match; each input's run dir + strategy id recorded; failures render "not checked: <reason>".
+- Parallel launch before momentum fully exited (cache warm, 0 network fetches).
+- Scan fixes: narrowed re-scan no longer wipes the manifest; a rewritten price file stops counting as scanned. Quarantine itself survives prefetch/refresh/clear-negative-cache (tests/test_quarantine_survival.py).
 
-## Carried items: see audit in the phase A report; item 13 suite time: 873 passed, 100 deselected, 70 s pytest-reported with value still running (budget 90 s; slow marker deselects 100).
+## Closure
+Carried 1-12 closed (7: card wired; 3: provenance.json now committed, quarantined count stated in each report; 9: README). Item 13: `slow` marker in place; last measured 70 s (pytest-reported, 873 passed, 100 deselected, value still running); the final quiet re-run and `-m slow` were BLOCKED by Windows Application Control on pytest.exe (os error 4551) - see open questions. Criteria 2-6 met; criterion 1 green at 873 passed earlier, not re-run after the block. Data status now: prices 644, actions 811, fundamentals 609, actions fetched_at 2026-09-13, no_data 168, quarantined 36, masked truncations 18, never scanned 0 (last scan 2026-10-01). Ruff check and format clean.
 
-## Verification
-`uv run pytest` -> 873 passed, 100 deselected; `uv run ruff check` and `ruff format --check` clean (worktree, last run before the dirty-flag commit).
+## Known warts
+- Momentum's nine sensitivity rows are dirty=True/registry_at_record_time: `run` rewrote its own tracked artefacts before recording; fixed for new rows (take headline provenance.dirty), existing rows left as recorded.
+- A never-scanned cache is caveated (known_caveats, provenance), not refused. 168 no-data names always show as never scanned. Quarantine was lost by the 12 Sept cache rebuild, not by an ordinary command (circumstantial; no rebuild log).
+- Corporate-actions calls ~1,010 per rebalance (membership probe + per-context fetch): by design, no baseline.
 
-## Open questions
-- Blend N=8 = 5 historical + headline + the 75/25 and 25/75 grid backtests (recorded with `validate --record-trial`; orchestrator decision: they were live alternatives, so omitting them understated N and made RC/SPA/DSR uncomputable). Endpoints are NOT blend trials (momentum and value count in their own families); the 0.50 point is counted twice (historical + headline), conservative. The two grid runs' provenance `strategy_config` points at scratchpad YAMLs; the committed `configs/strategies/blend_{75_25,25_75}.yaml` hash to the same strategy ids (blend-a7f7c30ce1, blend-9231a3894e). The headline re-record left one live registry row whose hash matches its file (supersede fix).
-- Corporate-actions call count 1,010 per rebalance is design (membership probe plus per-context fetch); no baseline exists (counter new in M09).
-- Value card, README value cells and the final suite timing remain for phase B.
+## Open questions for the gate
+Should a run on a never-scanned cache be refused rather than caveated? Is the latest-supersedes registry policy acceptable? Is counting the two grid blends (and 0.50 twice) the right N for the blend DSR?

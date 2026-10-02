@@ -20,15 +20,15 @@ SEC EDGAR filings, real cached Yahoo Finance prices, `month_end` rebalance, 10 b
 
 | | Momentum (12-1) | Value composite | 50/50 blend |
 |---|---|---|---|
-| Net CAGR | 17.66% | _TBD (value run pending)_ | 17.67% |
-| Net Sharpe | 0.98 | _TBD_ | 1.03 |
-| Max drawdown | -23.25% | _TBD_ | -28.36% |
-| **Verdict** | **REJECTED** | _TBD_ | **REJECTED** |
+| Net CAGR | 17.66% | 17.19% | 17.67% |
+| Net Sharpe | 0.98 | 0.95 | 1.03 |
+| Max drawdown | -23.25% | -34.75% | -28.36% |
+| **Verdict** | **REJECTED** | **REJECTED** | **REJECTED** |
 
 SPY over the same window: CAGR 14.81%, Sharpe 1.06 (`reports/momentum_12_1/report_card.md`).
 
-**The honest reading.** Both finished strategies beat SPY on raw return (17.66% and 17.67% vs
-14.81% CAGR) but neither beats it risk-adjusted (Sharpe 0.98 and 1.03 vs SPY's 1.06) over this
+**The honest reading.** All three strategies beat SPY on raw return (17.66%, 17.19% and 17.67% vs
+14.81% CAGR) but none beats it risk-adjusted (Sharpe 0.98, 0.95 and 1.03 vs SPY's 1.06) over this
 window, and the measured 28.4% worst-year coverage gap alone exceeds the platform's 15% ceiling -
 independent, correct reasons to reject each. Momentum additionally fails White's Reality Check
 (p=0.144 against a 0.10 bar, over 10 realised trials) and the blend narrowly fails it too
@@ -191,25 +191,38 @@ one-way cost, from clean commit `dc5356d`.
 | | Momentum 12-1 | Value composite | Blend 50/50 |
 |---|---|---|---|
 | Config | [`momentum_12_1_2012_2026.yaml`](configs/backtests/momentum_12_1_2012_2026.yaml) | [`value_composite_2012_2026.yaml`](configs/backtests/value_composite_2012_2026.yaml) | [`blend_50_50_2012_2026.yaml`](configs/backtests/blend_50_50_2012_2026.yaml) |
-| Net CAGR | 17.66% | _TBD_ | 17.67% |
-| Net Sharpe | 0.98 | _TBD_ | 1.03 |
-| Max drawdown | -23.25% | _TBD_ | -28.36% |
-| Verdict | REJECTED | _TBD_ | REJECTED |
-| Backtest wall time | 1,329 s | _TBD_ | 25,352 s |
+| Net CAGR | 17.66% | 17.19% | 17.67% |
+| Net Sharpe | 0.98 | 0.95 | 1.03 |
+| Max drawdown | -23.25% | -34.75% | -28.36% |
+| Verdict | REJECTED | REJECTED | REJECTED |
+| Backtest wall time | 1,329 s | 23,373 s | 25,352 s |
 | Report | [reports/momentum_12_1/report.md](reports/momentum_12_1/report.md) | [reports/value_composite/report.md](reports/value_composite/report.md) | [reports/blend_50_50/report.md](reports/blend_50_50/report.md) |
 
 Every number above is in the committed `report_card.md` / `report_card.json` / `provenance.json` in
-each strategy's own `reports/<name>/` directory. "Backtest wall time" is `provenance.run_seconds`
-for the backtest alone; the blend and value figures include an overnight machine sleep and several
-runs sharing one machine, so they are upper bounds, not benchmarks. The full `quantlab run`
-(backtest plus the sensitivity grid, which re-runs the real engine nine times for momentum) took
-about ten hours for momentum on that shared machine.
+each strategy's own `reports/<name>/` directory. **The wall-clock figures are not benchmarks.**
+"Backtest wall time" is `provenance.run_seconds` for the backtest alone, and the runs shared one
+laptop that went into standby overnight while five jobs ran concurrently (momentum alone first,
+about 22 minutes; value and the three blend backtests together afterwards, 6.5-7 hours each). The
+only supportable statement is the ordering: value and blend are far slower than momentum because
+they read EDGAR fundamentals for every ticker at every rebalance (86,964 fundamentals calls each,
+against none for momentum), and the blend does that work for its value sleeve in addition to
+momentum's. The full `quantlab run` (backtest plus the sensitivity grid, which re-runs the real
+engine for every grid point) took 10.1 hours for momentum on that shared, sleeping machine.
 
 **Momentum - REJECTED.** Hard-gate failures: net Sharpe 0.98 vs SPY's 1.06; coverage bound 28.4%
 vs the 15% ceiling; White's Reality Check p=0.1443 vs 0.10 (K=10 trials); minimum track-record
 length unbounded. It passes the deflated Sharpe ratio (DSR 0.9823 vs 0.95, N=9 distinct trials), the
 probabilistic Sharpe ratio (0.9998) and the no-cliff sensitivity gate. Soft failures: Hansen SPA
 p=0.1990 and the Monte Carlo drawdown check (0.50 against a 0.50 bar - a coin flip).
+
+**Value composite - REJECTED.** Hard-gate failures: net Sharpe 0.95 vs SPY's 1.06; coverage bound
+28.4% vs the 15% ceiling; minimum track-record length unbounded. It passes the deflated Sharpe
+ratio (DSR 0.9917, N=3 distinct trials), White's Reality Check (p=0.0149, K=4) and Hansen SPA
+(p=0.0199), PSR (0.9992), no-cliff (0.9322 over a 3-point grid), and every other soft gate
+(Monte Carlo drawdown 0.33). The statistical machinery is saying that the value book is not
+noise, and the verdict is REJECTED for the two reasons above: it does not beat SPY risk-adjusted,
+and its 34.75% drawdown (the covid 2020 window) is the deepest of the three. Value has no
+walk-forward result of its own, so that gate is vacuous.
 
 **Blend 50/50 - REJECTED.** Hard-gate failures: net Sharpe 1.03 vs SPY's 1.06; coverage 28.4%;
 White's Reality Check p=0.1045 vs 0.10 (K=3 trials - a near miss, not a clear one); minimum
@@ -276,6 +289,36 @@ Sharpe, and a 3.55 pp deeper drawdown. Mechanism by mechanism:
   data layer, universe construction and adjustment handling differ in ways nobody isolated, and
   the symbol-reuse contamination channel could account for "an amount nobody can currently state".
   This is reported as an open finding, not papered over.
+
+### Value composite: the September run against the final run
+
+The 13 September value run (committed at `dc5356d`) read net CAGR 17.63%, Sharpe 0.9747, maximum
+drawdown -34.76%; the final run reads 17.19%, 0.9493, -34.75% (`reports/value_composite/`). Same
+strategy id (`value_composite-b6fdfec048`), same configuration, same code path for the
+strategy.
+
+- **Mechanism that accounts for it: the quarantine state of the cache.** The September value
+  backtest ran after the 12 September price-cache rebuild, which erased every quarantine verdict
+  (see Known limitations), so it ran on an UNSCANNED cache with 0 quarantined and 805 tickers never
+  scanned (its card's known caveats). The final run runs on a scanned cache with 36 tickers
+  quarantined: price series that belong to a different, later company trading under a reused
+  symbol. Momentum's September run pre-dated the rebuild, still had its 42 quarantine verdicts,
+  and reproduces to 1.6e-7 per period; value's did not, and differs by 0.44 pp CAGR. That
+  contrast is the strongest evidence for the mechanism.
+- **Where the difference sits** (`validation_basic.json`, sub-periods, old vs new CAGR): 2012-2019
+  19.60% vs 19.63% (Sharpe 1.376 vs 1.414), covid 2020 4.30% vs 3.70%, rate shock 2021-2022 8.90%
+  vs 6.22% (Sharpe 0.466 vs 0.362), 2023 onward 22.52% vs 22.52%. The coverage bound moved from
+  27.97% to 28.37%, i.e. the quarantined names are now counted as invisible rather than traded.
+  The quarantined names whose contaminated history begins in 2020-2022 (TE, BEAM, NE, S, STI) line
+  up with the 2020-2022 divergence; contaminated histories beginning earlier (BMC, COL, SUN, HAR,
+  GR, SCG, ADT and others) line up with the smaller earlier one.
+- **What cannot be established.** The September run's holdings and net returns were overwritten
+  by the final run, so no ticker-level attribution (which contaminated names the unscanned run
+  actually held, and when) is possible, and the effect of quarantine cannot be separated from
+  data-vintage noise by re-running without the quarantine (about 6.5 hours of compute). The
+  timing match is consistent with, not proof of, the mechanism. The residual that the quarantine
+  does not explain is not measurable from the committed files and is stated here as a finding for
+  the gate. Neither number changes the verdict: both are REJECTED on the same three hard gates.
 
 ## Known limitations
 

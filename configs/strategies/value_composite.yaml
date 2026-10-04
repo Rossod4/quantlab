@@ -1,4 +1,6 @@
-# Composite value (P/B, P/E, EV/EBITDA, growth-adjusted), quarterly.
+# Composite value (P/B, P/E, EV/EBITDA, growth-adjusted). The strategy has no rebalance
+# frequency of its own: the backtest config chooses it (configs/backtests/value_composite_
+# 2012_2026.yaml rebalances month_end; the predecessor repo's value sweep was quarterly).
 # filing_lag_sessions is DECIDED-default 1 (plans/QUANT-NOTES.md M02/M03
 # carried item) and is enforced by PITDataContext.fundamentals(): a filing
 # must be filed on or before the previous NYSE session to be visible.

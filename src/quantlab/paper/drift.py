@@ -26,11 +26,21 @@ one per journaled cycle is not a viable per-check cost):
   platform is that a `PITDataContext` at a FIXED `asof` should be
   reproducible regardless of when it is rebuilt, so a mismatch here is
   itself the finding.
-- **Fill-vs-model price gap**: for every actual `Fill` in the journaled
-  record's `results`, the ticker's raw close on the EXACT date
-  `price_asof_by_ticker` recorded (the bar the runner's own sizing actually
-  used that day - `runner._last_prices_with_dates`) is re-fetched and
-  compared to the fill price, in basis points.
+- **Fill gaps, split into the modelled timing convention and execution**
+  (quant-gate M09 cycle 1, finding 3). The paper runner decides at the
+  previous completed session's close and fills at the NEXT session's open,
+  about 1.5 sessions after the backtest's `close` convention. Comparing a
+  fill with the decision-bar close would report that overnight offset as
+  "drift". For every actual `Fill` this module therefore reports two
+  numbers, both in basis points:
+  `timing_gap_bps` = (open of `assumed_fill_session` - decision close) /
+  decision close, the convention's own offset (the decision close is the
+  raw close on the date `price_asof_by_ticker` recorded); and
+  `execution_gap_bps` = (fill price - open of `assumed_fill_session`) /
+  that open, the real execution slippage. `assumed_fill_session` (journaled
+  by the runner) is what selects the open; a record without one, a ticker
+  without a price-asof entry, or a missing/zero bar yields NO figure for
+  that ticker and an entry in `gaps_not_computed` naming why - never 0.
 - **Per-ticker data-asof lag**: trading SESSIONS between `asof` and each
   ticker's own `price_asof_by_ticker` entry - a stale/lagging per-ticker
   data sync (0 is a same-session bar; the benchmark-only staleness ceiling
@@ -75,8 +85,13 @@ class DriftRecord:
     max_abs_weight_diff: float | None = None
     tickers_only_in_journal: list[str] = field(default_factory=list)
     tickers_only_in_recomputed: list[str] = field(default_factory=list)
-    # ticker -> (fill_price - model_price) / model_price * 10_000.
-    fill_vs_model_price_gap_bps: dict[str, float] = field(default_factory=dict)
+    # ticker -> (open(assumed_fill_session) - decision close) / decision close
+    # * 10_000: the paper timing convention's own offset (see module docstring).
+    timing_gap_bps: dict[str, float] = field(default_factory=dict)
+    # ticker -> (fill_price - open(assumed_fill_session)) / that open * 10_000.
+    execution_gap_bps: dict[str, float] = field(default_factory=dict)
+    # ticker -> why neither gap could be computed (never reported as 0).
+    gaps_not_computed: dict[str, str] = field(default_factory=dict)
     # ticker -> trading sessions between `asof` and that ticker's own
     # `price_asof_by_ticker` entry (0 = same-session bar).
     price_asof_lag_sessions: dict[str, int] = field(default_factory=dict)
@@ -90,7 +105,9 @@ class DriftRecord:
             "max_abs_weight_diff": self.max_abs_weight_diff,
             "tickers_only_in_journal": self.tickers_only_in_journal,
             "tickers_only_in_recomputed": self.tickers_only_in_recomputed,
-            "fill_vs_model_price_gap_bps": self.fill_vs_model_price_gap_bps,
+            "timing_gap_bps": self.timing_gap_bps,
+            "execution_gap_bps": self.execution_gap_bps,
+            "gaps_not_computed": self.gaps_not_computed,
             "price_asof_lag_sessions": self.price_asof_lag_sessions,
         }
 
@@ -120,16 +137,18 @@ def _weight_agreement(
     return 1.0 - l1 / 2.0, max(diffs), only_journal, only_recomputed
 
 
-def _price_on_date(price_provider, ticker: str, date: pd.Timestamp) -> float | None:
-    """The raw close for `ticker` on EXACTLY `date`, or `None` if the
-    provider has no bar there (e.g. the sidecar has since been
+def _price_on_date(
+    price_provider, ticker: str, date: pd.Timestamp, column: str = "close"
+) -> float | None:
+    """The raw `column` (default close) for `ticker` on EXACTLY `date`, or
+    `None` if the provider has no bar there (e.g. the sidecar has since been
     healed/re-fetched and no longer covers that exact session)."""
     window_start = date - pd.Timedelta(days=10)
     panel = price_provider.get_prices([ticker], window_start, date)
     panel = panel[(panel["ticker"] == ticker) & (panel.index == date)]
     if panel.empty:
         return None
-    return float(panel["close"].iloc[0])
+    return float(panel[column].iloc[0])
 
 
 def compute_drift(
@@ -209,7 +228,12 @@ def compute_drift(
             price_date = normalize_timestamp(iso_date)
             price_asof_lag_sessions[ticker] = len(trading_days(price_date, asof)) - 1
 
-        fill_gaps: dict[str, float] = {}
+        timing_gaps: dict[str, float] = {}
+        execution_gaps: dict[str, float] = {}
+        not_computed: dict[str, str] = {}
+        fill_session_ts = (
+            normalize_timestamp(assumed_fill_session) if assumed_fill_session else None
+        )
         for result in r.get("results") or []:
             if "price" not in result or "ticker" not in result:
                 continue  # an OrderAck (no fill yet), not a Fill
@@ -217,13 +241,22 @@ def compute_drift(
             fill_price = result["price"]
             price_date_iso = price_asof_by_ticker.get(ticker)
             if price_date_iso is None:
+                not_computed[ticker] = "no price_asof_by_ticker entry in the journal record"
                 continue
-            model_price = _price_on_date(
-                providers.price, ticker, normalize_timestamp(price_date_iso)
+            if fill_session_ts is None:
+                not_computed[ticker] = "no assumed_fill_session in the journal record"
+                continue
+            decision_close = _price_on_date(
+                providers.price, ticker, normalize_timestamp(price_date_iso), "close"
             )
-            if model_price is None or model_price == 0:
+            fill_open = _price_on_date(providers.price, ticker, fill_session_ts, "open")
+            if not decision_close or not fill_open:
+                not_computed[ticker] = (
+                    "no usable decision-bar close or fill-session open in the price cache"
+                )
                 continue
-            fill_gaps[ticker] = (fill_price - model_price) / model_price * 10_000.0
+            timing_gaps[ticker] = (fill_open - decision_close) / decision_close * 10_000.0
+            execution_gaps[ticker] = (fill_price - fill_open) / fill_open * 10_000.0
 
         out.append(
             DriftRecord(
@@ -233,7 +266,9 @@ def compute_drift(
                 max_abs_weight_diff=max_diff,
                 tickers_only_in_journal=only_journal,
                 tickers_only_in_recomputed=only_recomputed,
-                fill_vs_model_price_gap_bps=fill_gaps,
+                timing_gap_bps=timing_gaps,
+                execution_gap_bps=execution_gaps,
+                gaps_not_computed=not_computed,
                 price_asof_lag_sessions=price_asof_lag_sessions,
             )
         )

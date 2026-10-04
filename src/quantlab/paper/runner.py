@@ -380,7 +380,10 @@ def _result_to_json(result) -> dict:
 
 
 def find_promoting_report_card(
-    reports_dir: str | Path, strategy_id: str, data_semantics_version: str
+    reports_dir: str | Path,
+    strategy_id: str,
+    data_semantics_version: str,
+    refused: list[tuple[Path, str]] | None = None,
 ) -> tuple[Path, dict] | None:
     """Search `reports_dir` (recursively - `quantlab validate --full` writes
     `report_card.json` under whatever `--out` directory the caller chose,
@@ -390,7 +393,14 @@ def find_promoting_report_card(
     (and its parsed content) if more than one qualifies, or `None` if none
     do. A malformed/unreadable `report_card.json` is skipped, not fatal -
     this is a best-effort search over a directory tree the runner does not
-    own the contents of."""
+    own the contents of.
+
+    An otherwise-matching ELIGIBLE card is REFUSED (never promotes) when its
+    provenance does not show a fully scanned cache: `unscanned_cached_tickers_
+    count` must be exactly 0 (names with no cached series at all are not
+    counted - they can never be scanned); a missing count (a card written
+    before the field existed) is refused too. Each such refusal is appended to
+    `refused` (path, reason) when given, so the caller can say why."""
     import json
 
     reports_dir = Path(reports_dir)
@@ -409,6 +419,18 @@ def find_promoting_report_card(
             and provenance.get("strategy_id") == strategy_id
             and provenance.get("data_semantics_version") == data_semantics_version
         ):
+            unscanned = provenance.get("unscanned_cached_tickers_count")
+            if unscanned != 0:
+                if refused is not None:
+                    refused.append(
+                        (
+                            path,
+                            "card was built on a cache with unscanned cached tickers "
+                            f"(unscanned_cached_tickers_count={unscanned!r}); run "
+                            "`quantlab data scan` and re-validate",
+                        )
+                    )
+                continue
             candidates.append((path, data))
 
     if not candidates:
@@ -623,8 +645,12 @@ def run_once(
 
     try:
         # -- promotion gate ---------------------------------------------
+        refused_cards: list[tuple[Path, str]] = []
         match = find_promoting_report_card(
-            platform_config.reports_dir, strategy.strategy_id, DATA_SEMANTICS_VERSION
+            platform_config.reports_dir,
+            strategy.strategy_id,
+            DATA_SEMANTICS_VERSION,
+            refused=refused_cards,
         )
         if match is not None:
             promoting_report_card_path, report_card_data = match
@@ -639,6 +665,10 @@ def run_once(
                 "`quantlab validate --full` on this strategy first, or pass --force-research "
                 "to bypass for testing the plumbing only (never for real money)."
             )
+            if refused_cards:
+                reason += " Refused ELIGIBLE card(s): " + "; ".join(
+                    f"{path}: {why}" for path, why in refused_cards
+                )
             _refuse(reason, known_caveats)
             raise PromotionGateError(reason)
         else:

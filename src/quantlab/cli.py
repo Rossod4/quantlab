@@ -714,7 +714,11 @@ def _build_ranking_kwargs(
         return {"ranking_not_checked_reason": outcome.reason}
     return {
         "netted_book_grid_sharpes": outcome.sharpes,
-        "ranking_agreement_detail": {"window": outcome.window, "inputs": outcome.inputs},
+        "ranking_agreement_detail": {
+            "window": outcome.window,
+            "inputs": outcome.inputs,
+            "vintage_mismatches": outcome.vintage_mismatches,
+        },
     }
 
 
@@ -1172,7 +1176,8 @@ def paper_drift(
     """Forward-vs-backtest drift check (M09, carried from the M08 verdict):
     for every journaled, actually-traded cycle, recompute the strategy's
     targets for that SAME asof on today's cache and report target-weight
-    agreement, the fill-vs-model price gap, and per-ticker data-asof lag.
+    agreement, the timing-convention gap and the execution gap of each fill, and
+    per-ticker data-asof lag.
     See `quantlab.paper.drift`'s module docstring for the timing convention
     this models and why it does not re-run a parallel backtest."""
     import json
@@ -1208,8 +1213,12 @@ def paper_drift(
             f"only_in_journal={rec.tickers_only_in_journal} "
             f"only_in_recomputed={rec.tickers_only_in_recomputed}"
         )
-        if rec.fill_vs_model_price_gap_bps:
-            typer.echo(f"  fill_vs_model_price_gap_bps={rec.fill_vs_model_price_gap_bps}")
+        if rec.timing_gap_bps or rec.execution_gap_bps:
+            typer.echo(
+                f"  timing_gap_bps={rec.timing_gap_bps} execution_gap_bps={rec.execution_gap_bps}"
+            )
+        if rec.gaps_not_computed:
+            typer.echo(f"  gaps_not_computed={rec.gaps_not_computed}")
         if rec.price_asof_lag_sessions:
             typer.echo(f"  price_asof_lag_sessions={rec.price_asof_lag_sessions}")
     typer.echo(json.dumps(report.to_json(), sort_keys=True))

@@ -171,7 +171,8 @@ uv run quantlab report --result reports/blend_50_50 --out reports/blend_50_50
 
 `--record-trial` records the two interior blends as blend-family trials (with their return series)
 so the multiple-testing correction counts them; the endpoints are the momentum and value
-strategies and count in their own families.
+strategies, counted in their own families (and in the blend family only through the five
+historical rows).
 
 Both conventions are measured on the walk-forward's out-of-sample window; each grid point's source
 run and strategy id is recorded in the card's `ranking_agreement` block, and any missing or
@@ -250,12 +251,16 @@ and the probabilistic Sharpe ratio (0.9997), and Hansen SPA (p=0.0796). Soft fai
 because no sensitivity grid is configured for the blend (its weight grid is its only explored axis);
 that is a "not evaluated" failure, not evidence of a cliff.
 
-The blend family's N=8 is the five historical rows from the predecessor repo's sweep, the 50/50
-headline, and the two interior-weight backtests (75/25 and 25/75) that were really run through the
-engine as live alternatives to the headline and are recorded as trials with their return series.
-The grid endpoints (100% momentum, 100% value) are not blend trials: they are the momentum and
-value strategies and count in their own families. The 0.50 hypothesis is counted twice (once as the
-historical row, once as the headline), which can only make the correction more conservative.
+The blend family's N=8 is the five historical rows from the predecessor repo's weight sweep
+(momentum weight 1.00 / 0.75 / 0.50 / 0.25 / 0.00: seeded with no return series and no Sharpe),
+the 50/50 headline, and the two interior-weight backtests (75/25 and 25/75) that were really run
+through the engine as live alternatives and are recorded as trials with their return series. So
+the 0.75, 0.50 and 0.25 hypotheses are each counted twice (historical row plus a real backtest),
+and the two endpoints enter the blend family only through their historical rows (the standalone
+momentum and value runs are additionally counted in their own families). The series-less
+historical rows raise N but stay out of the trial-variance estimate (only the three finite-Sharpe
+trials enter it, floored at 1/(n-1)), which can only lower the deflated Sharpe ratio: the count is
+conservative.
 
 Its walk-forward weight check passes (the modal weight tuple was chosen in 70% of steps against a
 50% bar), but the walk-forward chose 0% momentum / 100% value in seven of its ten steps and
@@ -268,76 +273,97 @@ out-of-sample window (2017-02-28 to 2026-06-30, 113 months) the five fixed-weigh
 momentum weight 1.00 / 0.75 / 0.50 / 0.25 / 0.00: netted book 0.957 / 0.967 / 0.943 / 0.884 / 0.801,
 blend-of-nets 0.957 / 0.967 / 0.943 / 0.884 / 0.801 (every point agrees to within 0.0002). Kendall
 tau = 1.0 over five points and the top choice (75/25) agrees, so on this data the netted-book
-costing does not change which weight the walk-forward would prefer. The endpoints are the standalone
+costing does not change which weight the walk-forward would prefer. This is weak evidence: two of
+the five points are the same runs by construction, and on long-only sleeves netting barely matters. The endpoints are the standalone
 sleeve runs; `tests/test_blend_endpoint_equivalence.py` pins that a weight-1.0 blend reproduces its
 child's returns exactly, costs included. All five inputs, with run directory and strategy id, are in
 `reports/blend_50_50/report_card.json` (`ranking_agreement`).
 
 ### Reconciliation against the predecessor repo's momentum result
 
-The predecessor [MomentumValueStrategy](../MomentumValueStrategy) repo measured the SAME 12-1
-long-only momentum strategy at **net CAGR 15.7%, Sharpe 0.96, max drawdown -19.7%**. QuantLab
-measures **17.66% / 0.98 / -23.25%** (`reports/momentum_12_1/report_card.md`): +1.96 pp CAGR, +0.02
-Sharpe, and a 3.55 pp deeper drawdown. Mechanism by mechanism:
+The predecessor [MomentumValueStrategy](../MomentumValueStrategy) repo reports net CAGR 15.7%,
+Sharpe 0.96, max drawdown -19.7% for 12-1 long-only momentum. **It is not the same strategy as
+QuantLab's headline:** the predecessor holds the top 50 names (`src/config.py`, `top_n=50`;
+"equal-weight top-50 portfolios"), QuantLab's headline holds 30 (`n_long: 30` in
+`configs/strategies/momentum_12_1.yaml`, unchanged since M03 and not chosen after seeing results).
+QuantLab's own committed sensitivity grid contains the predecessor's exact parameterisation,
+lookback 12 / skip 1 / 50 names, so the comparison can be made like for like:
 
-- **Engine and merge history (cannot have moved it).** The same configuration run on the engine
-  from before M08 was merged (commit `7e904cd`) and on the final engine (`dc5356d`), against one
-  cache, gives identical net returns (maximum absolute difference 0.0 over 173 periods). The only
-  difference from the 12 September run of the same code is 1.6e-7 per period (all 173 periods),
-  which is data vintage (the price cache was rebuilt and the corporate-actions cache refreshed
-  between the two runs), not code; headline metrics agree to seven digits. The exact commands,
-  shas and series hashes are in `plans/state/M09/EVIDENCE.md`.
+| | net CAGR | Sharpe | max drawdown |
+|---|---|---|---|
+| predecessor (top 50, its own data layer) | 15.7% | 0.96 | -19.7% |
+| QuantLab, same parameters (grid point lookback 12, n_long 50) | 16.29% | 0.991 | -20.09% |
+| QuantLab headline (lookback 12, n_long 30) | 17.65% | 0.978 | -23.25% |
+
+(QuantLab rows recomputed from the trials-registry series, `momentum_12_1-c993bc68ed` and
+`momentum-2b2c9fd50a`; `plans/state/M09/EVIDENCE.md` gives the exact command, series hashes and
+conventions. The headline's card says 17.66% under the card's CAGR convention.)
+
+- **Portfolio size is the dominant mechanism.** Holding 30 instead of 50 names moves QuantLab's
+  own number by +1.36 pp CAGR and -3.16 pp drawdown. That is about 1.4 of the 1.96 pp CAGR gap and
+  about 3.2 of the 3.55 pp drawdown gap between the predecessor and QuantLab's headline. The
+  Sharpe barely moves (0.991 vs 0.978), consistent with a more concentrated book taking more risk
+  for more return. Of the nine grid points the headline has the second-lowest Sharpe, so it was
+  not selected from the grid for looking good.
+- **What is left after matching portfolio size:** about +0.6 pp CAGR, +0.03 Sharpe and -0.4 pp
+  drawdown against the predecessor. For scale, SPY over the same window differs by about +0.3 pp
+  between the two code bases (the quant gate's comparison: 14.5% in the predecessor, 14.81% here),
+  which is the size of the price-vintage and price-basis noise between them, before quarantine
+  (below) is counted. This residual is not decomposable further from the outputs of this run.
+- **Engine and merge history (cannot have moved it).** The same configuration on the engine from
+  before M08 was merged (commit `7e904cd`) and on the final engine (`dc5356d`), against one cache,
+  gives identical net returns (maximum absolute difference 0.0 over 173 periods). The only
+  difference from the 12 September run of the same code is 1.6e-7 per period (all 173 periods):
+  data vintage, not code. Commands, shas and series hashes are in `plans/state/M09/EVIDENCE.md`.
 - **M04b mechanisms that could NOT have moved it:** the backtest window clamp and the
   benchmark-from-store change (the M04b gate verified a bit-identical A/B, `plans/QUANT-NOTES.md`).
-- **Mechanism that DID move it - symbol-reuse quarantine.** The predecessor had no quality-scan
-  layer, so its universe could include price series spliced from two unrelated companies under one
-  reused ticker. QuantLab quarantines 36 such names today (42 at the 12 September run; six of those
-  now have no cached series at all and are suppressed by the negative cache instead). The M04b gate
-  measured the effect of quarantining at -0.18 pp CAGR (17.84% to 17.66%) on 0.42% of
-  position-periods - small, and in the return-lowering direction.
-- **Forced exits:** 1 across the run (`report_card.md` trust panel) - immaterial.
-- **Extreme-return guard:** 0 long-book and 0 short-book exclusions (`report_card.md`), so the
-  guard's policy cannot explain any of the gap.
+- **Symbol-reuse quarantine DID move it**, by -0.18 pp CAGR at the M04b gate (17.84% to 17.66%, on
+  0.42% of position-periods). The predecessor had no quality-scan layer. QuantLab quarantines 36
+  such names today (42 at the 12 September run; six of those now have no cached series and sit in
+  the negative cache instead).
+- **Forced exits:** 1 across the run, **extreme-return guard:** 0 long-book and 0 short-book
+  exclusions (`report_card.md` trust panel) - neither can explain any of the gap.
 - **Adjustment replay (M02b):** QuantLab replays every corporate action into the as-of price
   adjustment; whether the predecessor's own split handling diverges is not independently
-  re-measurable from this run and is not assumed to be zero.
-- **Filing lag, netted-book blend costs:** not applicable to momentum (no fundamentals, not a
-  blend).
-- **What is left unexplained.** After the above, the residual ~2 pp CAGR and the 3.5 pp deeper
-  drawdown against the predecessor are NOT decomposable from this run's outputs: the predecessor's
-  data layer, universe construction and adjustment handling differ in ways nobody isolated, and
-  the symbol-reuse contamination channel could account for "an amount nobody can currently state".
-  This is reported as an open finding, not papered over.
+  re-measurable here and is not assumed to be zero.
+- **Filing lag, netted-book blend costs:** not applicable to momentum.
 
 ### Value composite: the September run against the final run
 
 The 13 September value run (committed at `dc5356d`) read net CAGR 17.63%, Sharpe 0.9747, maximum
-drawdown -34.76%; the final run reads 17.19%, 0.9493, -34.75% (`reports/value_composite/`). Same
-strategy id (`value_composite-b6fdfec048`), same configuration, same code path for the
-strategy.
+drawdown -34.76%; the final run reads 17.19%, 0.9493, -34.75%. The repository also holds a second
+September run of the SAME strategy at the SAME parameters: the 25 September sensitivity grid
+contains the headline's own point (`value_composite-b67309d696`, n_holdings=30). Both September
+runs ran on the same rebuilt, unscanned cache (0 quarantined, 805 tickers never scanned); the
+final run ran after the 1 October scan (36 quarantined). The three series, recomputed from the
+registry backups (`plans/state/M09/EVIDENCE.md`, `plans/state/M09/recon_tables.py`):
 
-- **Mechanism that accounts for it: the quarantine state of the cache.** The September value
-  backtest ran after the 12 September price-cache rebuild, which erased every quarantine verdict
-  (see Known limitations), so it ran on an UNSCANNED cache with 0 quarantined and 805 tickers never
-  scanned (its card's known caveats). The final run runs on a scanned cache with 36 tickers
-  quarantined: price series that belong to a different, later company trading under a reused
-  symbol. Momentum's September run pre-dated the rebuild, still had its 42 quarantine verdicts,
-  and reproduces to 1.6e-7 per period; value's did not, and differs by 0.44 pp CAGR. That
-  contrast is the strongest evidence for the mechanism.
-- **Where the difference sits** (`validation_basic.json`, sub-periods, old vs new CAGR): 2012-2019
-  19.60% vs 19.63% (Sharpe 1.376 vs 1.414), covid 2020 4.30% vs 3.70%, rate shock 2021-2022 8.90%
-  vs 6.22% (Sharpe 0.466 vs 0.362), 2023 onward 22.52% vs 22.52%. The coverage bound moved from
-  27.97% to 28.37%, i.e. the quarantined names are now counted as invisible rather than traded.
-  The quarantined names whose contaminated history begins in 2020-2022 (TE, BEAM, NE, S, STI) line
-  up with the 2020-2022 divergence; contaminated histories beginning earlier (BMC, COL, SUN, HAR,
-  GR, SCG, ADT and others) line up with the smaller earlier one.
-- **What cannot be established.** The September run's holdings and net returns were overwritten
-  by the final run, so no ticker-level attribution (which contaminated names the unscanned run
-  actually held, and when) is possible, and the effect of quarantine cannot be separated from
-  data-vintage noise by re-running without the quarantine (about 6.5 hours of compute). The
-  timing match is consistent with, not proof of, the mechanism. The residual that the quarantine
-  does not explain is not measurable from the committed files and is stated here as a finding for
-  the gate. Neither number changes the verdict: both are REJECTED on the same three hard gates.
+| run | net CAGR | Sharpe | 2012-19 | 2020 | 2021-22 | 2023+ |
+|---|---|---|---|---|---|---|
+| 13 Sept (unscanned) | 17.62% | 0.9747 | 19.60% | 4.31% | 8.88% | 22.51% |
+| 25 Sept (unscanned, same params) | 17.49% | 0.9701 | 19.63% | 3.71% | 6.52% | 23.65% |
+| final, 1 Oct (36 quarantined) | 17.19% | 0.9493 | 19.63% | 3.71% | 6.20% | 22.52% |
+
+- **13 -> 25 September (-0.13 pp CAGR, -0.005 Sharpe) is NOT quarantine:** the quarantine count
+  was 0 on both, yet 172 of 173 periods differ, the whole 2020 move (4.31% to 3.71%) and most of
+  the 2021-22 move (8.88% to 6.52%) happen here. **This part is UNRESOLVED.** Candidate causes:
+  (a) the 13 September run came from a dirty tree (`395bd98`, M09 iteration 1 in progress) and the
+  25 September run from a different dirty tree, so the code itself differed (the 7e904cd/dc5356d
+  A/B covers momentum only and says nothing about the fundamentals path); (b) fundamentals cache
+  vintage: the EDGAR facts for 66 tickers were first written on 23-24 September, after the 13
+  September run had finished (the run took 2h51m, so it ended well before 23 September): LVS, SNDK, SO, SPG, SPGI, SRE, STI, STT,
+  STZ, SUN, SWK, SYK, SYY, T, TAP, TDC, TE, TEL, TER, TGT, THC, TJX, TMO, TMUS, TPR, TRIP, TROW,
+  TRV, TSN, TXN, TXT, UNH, UNM, UNP, UPS, URBN, USB, V, VFC, VIAV, VLO, VMC, VNO, VRSN, VTR, VZ,
+  WAT, WDC, WEC, WELL, WFC, WHR, WM, WMB, WMT, WU, WY, WYNN, XEL, XOM, XRAY, XRX, XYL, YUM, ZBH,
+  ZION. Neither is established.
+- **25 September -> final (-0.30 pp CAGR, -0.021 Sharpe) is the only part consistent with
+  quarantine**: only 39 periods differ, the first on 2021-09-30, and that is the only window in
+  which the 36 contaminated series could matter. Even here it is "consistent with", not proven: the
+  code also moved between those two dirty trees.
+- **What cannot be established.** The September holdings were overwritten, so there is no
+  ticker-level attribution, and no re-run was done. The unresolved 13 -> 25 September movement is
+  a finding for the gate, not an explained difference. Neither number changes the verdict: all of
+  them are REJECTED on the same three hard gates.
 
 ## Known limitations
 

@@ -74,6 +74,27 @@ _COMPARABLE_CONFIG_KEYS = (
 )
 
 
+_VINTAGE_KEYS = (
+    "quantlab_git_sha",
+    "dirty",
+    "actions_cache_fetched_at",
+    "quarantined_count",
+)
+
+
+def _vintage_mismatches(label: str, headline: BacktestResult, other: BacktestResult) -> list[str]:
+    """Data/code vintage differences between the headline blend run and a run
+    supplying a grid point. DISCLOSED, not refused: a child run from another
+    code or cache state is still the same strategy on the same window, but a
+    reader must be able to see that the five Sharpes do not share one vintage."""
+    out = []
+    for key in _VINTAGE_KEYS:
+        h, o = headline.provenance.get(key), other.provenance.get(key)
+        if h != o:
+            out.append(f"{label}: {key} {o!r} vs the headline's {h!r}")
+    return out
+
+
 @dataclass
 class NettedGridOutcome:
     """`sharpes`/`inputs`/`window` are set when every grid point resolved;
@@ -83,6 +104,7 @@ class NettedGridOutcome:
     inputs: list[dict[str, Any]] = field(default_factory=list)
     window: dict[str, Any] | None = None
     reason: str | None = None
+    vintage_mismatches: list[str] = field(default_factory=list)
 
 
 def parse_grid_spec(spec: str) -> tuple[tuple[float, ...], Path]:
@@ -195,6 +217,8 @@ def build_netted_book_grid(
 
     sharpes: dict[tuple[float, ...], float] = {}
     inputs: list[dict[str, Any]] = []
+    vintage: list[str] = []
+    vintage: list[str] = []
     for weights in weight_grid:
         weights = tuple(weights)
         label = f"grid point {list(weights)}"
@@ -214,11 +238,20 @@ def build_netted_book_grid(
                             f"headline blend's child {expected!r}"
                         )
                     own = source.provenance.get("strategy_params")
-                    for key, want in (h_children[hot].get("params") or {}).items():
-                        if isinstance(own, dict) and own.get(key, want) != want:
+                    for key, want in (
+                        (h_children[hot].get("params") or {}).items() if problem is None else ()
+                    ):
+                        if not isinstance(own, dict) or key not in own:
+                            problem = (
+                                f"{label} ({directory.name}): strategy param {key} missing from "
+                                "the child run's provenance, cannot verify it matches the blend's "
+                                "child"
+                            )
+                            break
+                        if own[key] != want:
                             problem = (
                                 f"{label} ({directory.name}): strategy param {key}="
-                                f"{own.get(key)!r} differs from the blend's child ({want!r})"
+                                f"{own[key]!r} differs from the blend's child ({want!r})"
                             )
                             break
         else:
@@ -245,6 +278,7 @@ def build_netted_book_grid(
             )
         value = float(sharpe_ratio(returns.loc[oos_dates], 0.0, ppy))
         sharpes[weights] = value
+        vintage.extend(_vintage_mismatches(f"{label} ({directory.name})", headline, source))
         inputs.append(
             {
                 "weights": list(weights),
@@ -262,4 +296,6 @@ def build_netted_book_grid(
         "n_periods": int(len(oos_dates)),
         "periods_per_year": ppy,
     }
-    return NettedGridOutcome(sharpes=sharpes, inputs=inputs, window=window)
+    return NettedGridOutcome(
+        sharpes=sharpes, inputs=inputs, window=window, vintage_mismatches=vintage
+    )

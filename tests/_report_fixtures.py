@@ -261,7 +261,10 @@ def save_result_and_card(result: BacktestResult, card: ReportCard, out_dir: Path
 
 
 def write_real_eligible_report_card(
-    reports_dir, strategy_id: str, data_semantics_version: str | None = None
+    reports_dir,
+    strategy_id: str,
+    data_semantics_version: str | None = None,
+    unscanned_cached: list[str] | None = None,
 ) -> dict:
     """Write a `report_card.json` produced by the REAL `build_report_card`
     (verdict ELIGIBLE_FOR_PAPER) for `strategy_id` under `reports_dir`, and
@@ -288,6 +291,10 @@ def write_real_eligible_report_card(
             data_semantics_version=data_semantics_version or DATA_SEMANTICS_VERSION,
             holdings_history=trc._holdings_history(),
         )
+        # a fully scanned cache (names without any cached series cannot be
+        # scanned and are listed as no_data, so they do not count)
+        result.provenance["never_scanned_tickers"] = ["DEAD1"] + list(unscanned_cached or [])
+        result.provenance["no_data_suppressed_tickers"] = ["DEAD1"]
         card = build_report_card(
             result,
             None,

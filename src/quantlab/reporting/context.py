@@ -610,6 +610,9 @@ def _ranking_agreement_line(agreement: dict[str, Any] | None) -> str:
             f"({window['start']} to {window['end']}, {window['n_periods']} periods, "
             f"{window['periods_per_year']}/year)."
         )
+    vintage = agreement.get("vintage_mismatches")
+    if vintage:
+        line += " DISCLOSED vintage mismatches between the five inputs: " + "; ".join(vintage) + "."
     inputs = agreement.get("inputs")
     if inputs:
         line += " Netted-book inputs: " + "; ".join(

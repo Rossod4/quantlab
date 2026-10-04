@@ -361,6 +361,15 @@ class ReportCardProvenance:
     # field existed.
     validated_by_git_sha: str = "unknown"
     validated_by_dirty: bool | None = None
+    # ADDITIVE (M09, quant-gate cycle 1 finding 7): how many tickers of the
+    # run's tracked universe that HAVE a cached price series were never
+    # visited by `quantlab data scan` (names with no cached series at all -
+    # the negative-cache `no_data` ones - can never be scanned and are
+    # excluded). The paper promotion gate refuses an ELIGIBLE card whose
+    # count is not exactly 0; None means "not recorded" (a card written
+    # before this field existed) and is refused too, since an unscanned cache
+    # cannot back a promotion.
+    unscanned_cached_tickers_count: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -379,7 +388,18 @@ class ReportCardProvenance:
             "sharpe_sortino_convention": self.sharpe_sortino_convention,
             "validated_by_git_sha": self.validated_by_git_sha,
             "validated_by_dirty": self.validated_by_dirty,
+            "unscanned_cached_tickers_count": self.unscanned_cached_tickers_count,
         }
+
+
+def _unscanned_cached_count(run_provenance: dict[str, Any]) -> int | None:
+    """Never-scanned tickers that could have been scanned (see
+    `ReportCardProvenance.unscanned_cached_tickers_count`); None when the run
+    predates the scan-coverage provenance."""
+    if "never_scanned_tickers" not in run_provenance:
+        return None
+    unscannable = set(run_provenance.get("no_data_suppressed_tickers", []))
+    return len(set(run_provenance["never_scanned_tickers"]) - unscannable)
 
 
 _SHARPE_SORTINO_CONVENTION = (
@@ -650,6 +670,7 @@ def build_report_card(
         sharpe_sortino_convention=_SHARPE_SORTINO_CONVENTION,
         validated_by_git_sha=str(validating_code.get("sha", "unknown")),
         validated_by_dirty=validating_code.get("dirty"),
+        unscanned_cached_tickers_count=_unscanned_cached_count(prov),
     )
 
     known_caveats = list(result.provenance.get("known_caveats", []))

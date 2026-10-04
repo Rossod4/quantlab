@@ -181,6 +181,15 @@ Every journal record carries `assumed_fill_session` (the ISO date this
 convention implies) precisely so M09's forward-vs-backtest drift check can
 model the lag explicitly rather than misattributing it to strategy drift.
 
+`quantlab paper drift` models that convention explicitly and reports TWO numbers
+per fill, never one blended figure: `timing_gap_bps` = (open of
+`assumed_fill_session` - the decision-bar close) / that close, the convention's
+own overnight offset (expected, not a defect); and `execution_gap_bps` =
+(fill price - open of `assumed_fill_session`) / that open, the actual execution
+slippage. `assumed_fill_session` is what selects the open: a record without
+one, or a ticker with no usable decision close / fill-session open in the price
+cache, gets no figure and an entry in `gaps_not_computed` saying why (never 0).
+
 ## 8. Data degradation and coverage
 
 The runner builds its decision context through the SAME per-ticker

@@ -31,3 +31,25 @@ Not committed (about 7 h each). Regenerate with the commands in README "How to r
 | blend_50_50 | 25352.4 | 521 / 261703 / 86964 / 14123 | 363311 | 0 | 36 | 168 | 168 | 30 | dc5356d | 2026-10-01T16:09:57 |
 
 The 'never scanned' count is the no_data names (no cached series, so nothing to scan); `quantlab data status` reports 0 never scanned among cached tickers. The two netted-grid runs share the blend's call counts (same universe and fundamentals access).
+
+## 5. Momentum: portfolio size vs the predecessor (quant-gate cycle 1, finding 1)
+The predecessor holds 50 names (`MomentumValueStrategy/src/config.py` `top_n=50`); the QuantLab headline holds 30 (`configs/strategies/momentum_12_1.yaml`, `n_long: 30`). QuantLab's committed sensitivity grid contains lookback 12 / n_long 50 (registry trial `momentum_12_1-c993bc68ed`).
+
+| | net CAGR | Sharpe | max DD | series hash (first 10) |
+|---|---|---|---|---|
+| predecessor (top 50, own data layer) | 15.7% | 0.96 | -19.7% | n/a |
+| QuantLab grid point (12, 50) | 16.2899% | 0.9906 | -20.0879% | 9d6aa6d258 |
+| QuantLab headline (12, 30) | 17.6532% | 0.9783 | -23.2508% | d02dafe6e9 |
+
+Recompute (nothing is re-run; reads the git-ignored registry series): `uv run python plans/state/M09/recon_tables.py` from the repo root. Conventions: equity = cumprod(1+r) from 1.0, CAGR over n/12 years, Sharpe = mean/std(ddof=1)*sqrt(12), max DD from an equity curve that starts at 1.0. The card's 17.66% headline CAGR uses the card's own convention (it differs from the recomputed 17.65% by under 0.01 pp). Of the nine grid points the headline (12, 30) has the second-lowest Sharpe (grid range 0.968-1.022, from `reports/momentum_12_1/report_card.json` `basic.sensitivity.surface`). The predecessor's SPY figure (14.5%, quoted from the quant gate's comparison) is not reproduced here.
+
+## 6. Value: three-way September comparison (quant-gate cycle 1, finding 2)
+Series: 13 Sept headline `value_composite-b6fdfec048` (`reports/trials.bak_pre_cleanrun_2026-10-01/series/f22358628c03a714.parquet`, hash 3638bf89f9); 25 Sept grid point with the headline's own params `value_composite-b67309d696` (`.../cbc6db3a900b31e5.parquet`, hash dd28f8c2bd); final `reports/value_composite/net_returns.parquet`. Same script as section 5.
+
+| run | net CAGR | Sharpe | 2012-19 | 2020 | 2021-22 | 2023+ |
+|---|---|---|---|---|---|---|
+| 13 Sept (unscanned, git 395bd98 dirty) | 17.62% | 0.9747 | 19.60% | 4.31% | 8.88% | 22.51% |
+| 25 Sept (unscanned, same params, dirty tree) | 17.49% | 0.9701 | 19.63% | 3.71% | 6.52% | 23.65% |
+| final 1 Oct (36 quarantined, clean dc5356d) | 17.19% | 0.9493 | 19.63% | 3.71% | 6.20% | 22.52% |
+
+13 vs 25 Sept: 172 of 173 periods differ with the quarantine count unchanged (0). 25 Sept vs final: 39 periods differ, the first on 2021-09-30. The script also lists the 66 fundamentals files in `data/cache/fundamentals` first written 2026-09-23 00:29 to 2026-09-24 15:14 (after the 13 Sept run ended; names in the README). Their creation time equals their last-write time and fundamentals are fetch-once with no TTL; a force-refresh on those dates cannot be excluded, which would not change the finding that the facts changed after the 13 Sept run. The attribution of the 13 -> 25 Sept movement is UNRESOLVED.

@@ -6,6 +6,7 @@ fixture style."""
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 from pydantic import BaseModel, ConfigDict
 
 from quantlab.backtest.engine import BacktestProviders
@@ -179,31 +180,101 @@ def test_disagreement_is_measured_not_hidden(tmp_path):
     assert rec.tickers_only_in_recomputed == ["BBB"]
 
 
-def test_fill_vs_model_price_gap_is_computed_in_bps(tmp_path):
-    strategy = _strategy({"AAA": 1.0})
-    # The raw close on 2024-01-10 is 100.0 (flat panel); the recorded fill
-    # was at 101.5 - a 150 bps gap (next-session-open slippage vs. the
-    # decision-time close the runner sized against).
-    append_journal(
-        tmp_path,
-        _trading_record(
-            "2024-01-10",
-            {"AAA": 1.0},
-            results=[
-                {"kind": "Fill", "client_order_id": "x", "ticker": "AAA", "price": 101.5, "qty": 5}
-            ],
-            price_asof_by_ticker={"AAA": "2024-01-10"},
-            assumed_fill_session="2024-01-11",
-            strategy_id=strategy.strategy_id,
-        ),
+def _priced_providers(tmp_path, *, decision_close, fill_open, drop_fill_session=False):
+    """A panel whose decision-day close, fill-session open and everything else
+    are all DIFFERENT, so the two gaps cannot be confused."""
+    sessions = trading_days("2024-01-01", "2024-02-01")
+    frame = pd.DataFrame(
+        {
+            "ticker": "AAA",
+            "open": 90.0,
+            "high": 120.0,
+            "low": 80.0,
+            "close": 95.0,
+            "adj_close": 95.0,
+            "volume": 1000,
+        },
+        index=sessions,
     )
-    providers = _providers({"AAA": 100.0}, tmp_path)
+    frame.loc[pd.Timestamp("2024-01-10"), "close"] = decision_close
+    frame.loc[pd.Timestamp("2024-01-11"), "open"] = fill_open
+    if drop_fill_session:
+        frame = frame.drop(pd.Timestamp("2024-01-11"))
+    return BacktestProviders(
+        price=_FakePriceProvider(frame),
+        constituents=_FakeConstituentsProvider(),
+        fundamentals=_NoOpFundamentalsProvider(),
+        corporate_actions=_EmptyActionsProvider(),
+        cache_dir=tmp_path / "cache",
+    )
 
-    report = compute_drift(tmp_path, strategy, providers)
+
+def _fill_record(strategy, fill_price=103.5, assumed_fill_session="2024-01-11"):
+    return _trading_record(
+        "2024-01-10",
+        {"AAA": 1.0},
+        results=[
+            {"kind": "Fill", "client_order_id": "x", "ticker": "AAA", "price": fill_price, "qty": 5}
+        ],
+        price_asof_by_ticker={"AAA": "2024-01-10"},
+        assumed_fill_session=assumed_fill_session,
+        strategy_id=strategy.strategy_id,
+    )
+
+
+def test_timing_and_execution_gaps_are_separated_in_bps(tmp_path):
+    """Decision close 100, fill-session open 103, fill 103.5: the overnight
+    convention offset is +300 bps and the real slippage is only +48.5 bps -
+    one blended 'fill vs close' figure (350 bps) would mislabel the former as
+    drift."""
+    strategy = _strategy({"AAA": 1.0})
+    append_journal(tmp_path, _fill_record(strategy))
+
+    report = compute_drift(
+        tmp_path, strategy, _priced_providers(tmp_path, decision_close=100.0, fill_open=103.0)
+    )
 
     rec = report.records[0]
-    assert rec.fill_vs_model_price_gap_bps["AAA"] == 150.0
+    assert rec.timing_gap_bps["AAA"] == pytest.approx(300.0)
+    assert rec.execution_gap_bps["AAA"] == pytest.approx((103.5 - 103.0) / 103.0 * 10_000.0)
+    assert rec.gaps_not_computed == {}
     assert rec.assumed_fill_session == "2024-01-11"
+
+
+def test_assumed_fill_session_selects_which_open_is_used(tmp_path):
+    strategy = _strategy({"AAA": 1.0})
+    providers = _priced_providers(tmp_path, decision_close=100.0, fill_open=103.0)
+    # fill-session 2024-01-12's open is the flat 90.0 of the panel
+    append_journal(tmp_path, _fill_record(strategy, assumed_fill_session="2024-01-12"))
+
+    rec = compute_drift(tmp_path, strategy, providers).records[0]
+
+    assert rec.timing_gap_bps["AAA"] == pytest.approx((90.0 - 100.0) / 100.0 * 10_000.0)
+
+
+def test_missing_fill_session_open_is_not_computed_never_zero(tmp_path):
+    strategy = _strategy({"AAA": 1.0})
+    append_journal(tmp_path, _fill_record(strategy))
+    providers = _priced_providers(
+        tmp_path, decision_close=100.0, fill_open=103.0, drop_fill_session=True
+    )
+
+    rec = compute_drift(tmp_path, strategy, providers).records[0]
+
+    assert rec.timing_gap_bps == {} and rec.execution_gap_bps == {}
+    assert "fill-session open" in rec.gaps_not_computed["AAA"]
+
+
+def test_a_record_without_an_assumed_fill_session_reports_no_gap(tmp_path):
+    strategy = _strategy({"AAA": 1.0})
+    append_journal(tmp_path, _fill_record(strategy, assumed_fill_session=None))
+
+    rec = compute_drift(
+        tmp_path, strategy, _priced_providers(tmp_path, decision_close=100.0, fill_open=103.0)
+    ).records[0]
+
+    assert rec.timing_gap_bps == {} and rec.execution_gap_bps == {}
+    assert "assumed_fill_session" in rec.gaps_not_computed["AAA"]
 
 
 def test_order_ack_without_a_price_is_not_treated_as_a_fill(tmp_path):
@@ -224,7 +295,8 @@ def test_order_ack_without_a_price_is_not_treated_as_a_fill(tmp_path):
 
     report = compute_drift(tmp_path, strategy, providers)
 
-    assert report.records[0].fill_vs_model_price_gap_bps == {}
+    assert report.records[0].timing_gap_bps == {}
+    assert report.records[0].execution_gap_bps == {}
 
 
 def test_price_asof_lag_sessions_counts_trading_sessions_behind_asof(tmp_path):

@@ -306,6 +306,7 @@ def _write_report_card(reports_dir, strategy_id: str, verdict: str) -> None:
         "provenance": {
             "strategy_id": strategy_id,
             "data_semantics_version": DATA_SEMANTICS_VERSION,
+            "unscanned_cached_tickers_count": 0,
         },
         "known_caveats": ["some caveat from the promoting report card"],
     }
@@ -1560,3 +1561,52 @@ def test_accept_broker_state_rebaseline_records_a_loud_diff_and_unblocks_the_sch
     # The NEXT ordinary run reconciles cleanly against the rebaseline.
     record_next = run_once(strategy_config, platform_config, broker)
     assert record_next.refused_reason is None
+
+
+def test_promotion_gate_refuses_an_eligible_card_built_on_an_unscanned_cache(monkeypatch, tmp_path):
+    """Quant-gate cycle 1 finding 7: a card whose provenance shows cached
+    tickers `quantlab data scan` never visited cannot promote, however
+    ELIGIBLE its verdict; the refusal names the cause."""
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    card = write_real_eligible_report_card(
+        platform_config.reports_dir, strategy_id, unscanned_cached=["AAA", "BBB"]
+    )
+    assert card["verdict"] == "ELIGIBLE_FOR_PAPER"
+    assert card["provenance"]["unscanned_cached_tickers_count"] == 2
+
+    with pytest.raises(PromotionGateError, match="unscanned_cached_tickers_count=2"):
+        run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+
+def test_promotion_gate_refuses_an_eligible_card_with_no_scan_provenance_at_all(
+    monkeypatch, tmp_path
+):
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    out = platform_config.reports_dir / "validate" / strategy_id
+    out.mkdir(parents=True)
+    (out / "report_card.json").write_text(
+        json.dumps(
+            {
+                "verdict": "ELIGIBLE_FOR_PAPER",
+                "provenance": {
+                    "strategy_id": strategy_id,
+                    "data_semantics_version": DATA_SEMANTICS_VERSION,
+                },
+            }
+        )
+    )
+
+    with pytest.raises(PromotionGateError, match="unscanned_cached_tickers_count=None"):
+        run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+
+def test_names_with_no_cached_series_do_not_block_promotion(monkeypatch, tmp_path):
+    """The default fixture lists DEAD1 as never-scanned AND no_data (it can
+    never be scanned): that must not count against the card."""
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    card = write_real_eligible_report_card(platform_config.reports_dir, strategy_id)
+    assert card["provenance"]["unscanned_cached_tickers_count"] == 0
+    assert (
+        run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0})).refused_reason
+        is None
+    )

@@ -498,3 +498,54 @@ def test_the_comparable_key_set_itself_is_pinned():
         "extreme_return_bound",
         "corwin_schultz_lookback_days",
     }
+
+
+def test_a_child_param_missing_from_provenance_is_a_refusal_not_a_match(world, tmp_path):
+    child = _result(world["results"]["mom"].net_returns, "momentum-aaaa", params={})  # no n_long
+    child_dir = tmp_path / "mom_no_params"
+    child.save(child_dir)
+
+    outcome = _build(
+        world,
+        child_results=[child, world["results"]["val"]],
+        child_dirs=[child_dir, world["dirs"]["val"]],
+    )
+
+    assert outcome.sharpes is None
+    assert "n_long missing from the child run's provenance" in outcome.reason
+
+
+def test_data_vintage_differences_are_disclosed_not_refused(world, tmp_path):
+    child = _result(world["results"]["mom"].net_returns, "momentum-aaaa", params={"n_long": 30})
+    child.provenance["quarantined_count"] = 0  # e.g. a run on an unscanned cache
+    child.provenance["quantlab_git_sha"] = "other-sha"
+    child_dir = tmp_path / "mom_other_vintage"
+    child.save(child_dir)
+
+    outcome = _build(
+        world,
+        child_results=[child, world["results"]["val"]],
+        child_dirs=[child_dir, world["dirs"]["val"]],
+    )
+
+    assert outcome.reason is None and outcome.sharpes is not None
+    joined = " ".join(outcome.vintage_mismatches)
+    assert "quarantined_count 0" in joined and "quantlab_git_sha 'other-sha'" in joined
+
+    registry = TrialsRegistry(tmp_path / "reg", repo_root=tmp_path)
+    kwargs = {
+        "netted_book_grid_sharpes": outcome.sharpes,
+        "ranking_agreement_detail": {
+            "window": outcome.window,
+            "inputs": outcome.inputs,
+            "vintage_mismatches": outcome.vintage_mismatches,
+        },
+    }
+    card = build_report_card(
+        world["headline"], None, registry, _config(), walk_forward=world["wf"], **kwargs
+    )
+    assert "DISCLOSED vintage mismatches" in _ranking_agreement_line(card.ranking_agreement)
+
+
+def test_matching_vintage_discloses_nothing(world):
+    assert _build(world).vintage_mismatches == []

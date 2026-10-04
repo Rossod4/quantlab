@@ -226,7 +226,10 @@ engine for every grid point) took 10.1 hours for momentum on that shared, sleepi
 **Momentum - REJECTED.** Hard-gate failures: net Sharpe 0.98 vs SPY's 1.06; coverage bound 28.4%
 vs the 15% ceiling; White's Reality Check p=0.1443 vs 0.10 (K=10 trials); minimum track-record
 length unbounded. It passes the deflated Sharpe ratio (DSR 0.9823 vs 0.95, N=9 distinct trials), the
-probabilistic Sharpe ratio (0.9998) and the no-cliff sensitivity gate. Soft failures: Hansen SPA
+probabilistic Sharpe ratio (0.9998) and the no-cliff sensitivity gate (0.9720, but over a truncated
+neighbourhood: the headline `n_long=30` sits at the edge of the `[30,50,70]` grid, so only 6 grid
+points are compared and the score is mechanically flattered; the card shows `neighbourhood_size=6,
+neighbourhood_truncated=True`). Soft failures: Hansen SPA
 p=0.1990 and the Monte Carlo drawdown check (0.50 against a 0.50 bar - a coin flip).
 
 **Value composite - REJECTED.** Hard-gate failures: net Sharpe 0.95 vs SPY's 1.06; coverage bound

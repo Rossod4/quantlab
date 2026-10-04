@@ -538,3 +538,28 @@ def test_unbounded_min_track_record_length_is_worded_unbounded_never_inf(tmp_pat
     assert not gate.passed
     assert "needs >= unbounded observations" in gate.reason
     assert "inf" not in gate.reason.replace("information", "")
+
+
+def test_unscanned_cached_count_excludes_no_data_names_and_pins_the_none_case():
+    """The exclusion is what lets a legitimately scanned cache promote (the
+    168 negative-cache names can never be scanned). Mutating it to `set()`
+    must fail the first assertion."""
+    from quantlab.validation.report_card import _unscanned_cached_count
+
+    assert _unscanned_cached_count({}) is None  # no scan provenance at all
+    assert (
+        _unscanned_cached_count(
+            {
+                "never_scanned_tickers": ["DEAD1", "DEAD2", "LIVE1"],
+                "no_data_suppressed_tickers": ["DEAD1", "DEAD2"],
+            }
+        )
+        == 1
+    )
+    assert (
+        _unscanned_cached_count(
+            {"never_scanned_tickers": ["DEAD1"], "no_data_suppressed_tickers": ["DEAD1"]}
+        )
+        == 0
+    )
+    assert _unscanned_cached_count({"never_scanned_tickers": ["A", "B"]}) == 2

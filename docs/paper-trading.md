@@ -190,6 +190,11 @@ slippage. `assumed_fill_session` is what selects the open: a record without
 one, or a ticker with no usable decision close / fill-session open in the price
 cache, gets no figure and an entry in `gaps_not_computed` saying why (never 0).
 
+Limitation: both gaps compare RAW prices, so a split ex-dated between the decision close
+and the fill-session open would read as a huge spurious timing gap. The check detects such
+a split (or unreadable corporate actions) and reports the ticker in `gaps_not_computed`
+instead; it does not re-express the prices in a common share basis.
+
 ## 8. Data degradation and coverage
 
 The runner builds its decision context through the SAME per-ticker

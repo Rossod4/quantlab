@@ -462,3 +462,66 @@ def test_drift_recompute_blend_children_contexts_are_bound_to_the_journaled_asof
     compute_drift(tmp_path, strategy, _providers({"AAA": 100.0}, tmp_path))
 
     assert _OBSERVED_ASOFS == [e for e in expected for _ in range(2)]
+
+
+class _SplitActionsProvider(CorporateActionsProvider):
+    def __init__(self, ex_date: str, stale: bool = False):
+        self._ex_date = ex_date
+        self._stale = stale
+
+    def get_actions(self, ticker, start, end) -> pd.DataFrame:
+        if self._stale:
+            raise RuntimeError("actions cache stale")
+        frame = pd.DataFrame(
+            {"ticker": [ticker], "action_type": ["split"], "value": [2.0]},
+            index=pd.DatetimeIndex([self._ex_date], name="date"),
+        )
+        return frame[frame.index <= pd.Timestamp(end)]
+
+
+def _providers_with_actions(tmp_path, actions) -> BacktestProviders:
+    base = _priced_providers(tmp_path, decision_close=100.0, fill_open=103.0)
+    return BacktestProviders(
+        price=base.price,
+        constituents=base.constituents,
+        fundamentals=base.fundamentals,
+        corporate_actions=actions,
+        cache_dir=base.cache_dir,
+    )
+
+
+def test_a_split_between_decision_close_and_fill_open_is_flagged_not_a_timing_gap(tmp_path):
+    strategy = _strategy({"AAA": 1.0})
+    append_journal(tmp_path, _fill_record(strategy))  # decision 2024-01-10, fill session 01-11
+
+    rec = compute_drift(
+        tmp_path, strategy, _providers_with_actions(tmp_path, _SplitActionsProvider("2024-01-11"))
+    ).records[0]
+
+    assert rec.timing_gap_bps == {} and rec.execution_gap_bps == {}
+    assert "split ex-dated between" in rec.gaps_not_computed["AAA"]
+
+
+def test_a_split_outside_the_two_sessions_does_not_block_the_gaps(tmp_path):
+    strategy = _strategy({"AAA": 1.0})
+    append_journal(tmp_path, _fill_record(strategy))
+
+    rec = compute_drift(
+        tmp_path, strategy, _providers_with_actions(tmp_path, _SplitActionsProvider("2024-01-10"))
+    ).records[0]  # ex-date ON the decision date is before the fill session's open
+
+    assert rec.timing_gap_bps["AAA"] == pytest.approx(300.0)
+
+
+def test_unreadable_actions_means_the_gap_is_not_computed(tmp_path):
+    strategy = _strategy({"AAA": 1.0})
+    append_journal(tmp_path, _fill_record(strategy))
+
+    rec = compute_drift(
+        tmp_path,
+        strategy,
+        _providers_with_actions(tmp_path, _SplitActionsProvider("2024-01-11", stale=True)),
+    ).records[0]
+
+    assert rec.timing_gap_bps == {}
+    assert "cannot rule out a split" in rec.gaps_not_computed["AAA"]

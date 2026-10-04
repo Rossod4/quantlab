@@ -18,3 +18,9 @@ Not committed. No real-data run was needed or done. Default suite 908 passed / 1
 ## Notes
 - Carried: committed cards for momentum, value and blend were NOT regenerated (no real-data run); the new card field and `vintage_mismatches` appear on cards validated from now on.
 - Open for the gate: is the 13->25 Sept value movement worth resolving (a clean re-run of the fundamentals path from an empty fundamentals cache would settle it, at about 7 h per backtest)?
+
+## REVIEW.3 minors (closed)
+1. `_unscanned_cached_count` guard: `test_unscanned_cached_count_excludes_no_data_names_and_pins_the_none_case`; mutating the exclusion to `set()` fails it (checked, restored).
+2. Duplicate `vintage: list[str] = []` in netted_grid.py removed.
+3. README momentum no-cliff sentence: the truncated-neighbourhood qualifier was NOT lost (README lines 229-233: "0.9720, but over a truncated neighbourhood ... only 6 grid points ... `neighbourhood_truncated=True`"); it sits one line lower than the reviewer's cited line after the reconciliation rewrite. No change needed.
+4. Drift split between sessions: `compute_drift` now asks the shared actions path (`providers.corporate_actions.get_actions`) whether a split is ex-dated in (decision date, fill session]; if so, or if actions are unreadable, the ticker gets no gap and a `gaps_not_computed` reason (raw prices are compared, so a split would otherwise read as a spurious gap). Three tests (split between the sessions flagged; split on the decision date does not block; unreadable actions not computed). Documented as a limitation in docs/paper-trading.md section 7 and the drift.py docstring: prices are not re-expressed in a common share basis.

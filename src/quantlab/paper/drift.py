@@ -37,7 +37,10 @@ one per journaled cycle is not a viable per-check cost):
   decision close, the convention's own offset (the decision close is the
   raw close on the date `price_asof_by_ticker` recorded); and
   `execution_gap_bps` = (fill price - open of `assumed_fill_session`) /
-  that open, the real execution slippage. `assumed_fill_session` (journaled
+  that open, the real execution slippage. Raw (unadjusted) prices are compared, so a
+  split ex-dated between the decision close and the fill-session open - or unreadable
+  actions - yields no figure (listed in `gaps_not_computed`) instead of a spurious gap.
+  `assumed_fill_session` (journaled
   by the runner) is what selects the open; a record without one, a ticker
   without a price-asof entry, or a missing/zero bar yields NO figure for
   that ticker and an entry in `gaps_not_computed` naming why - never 0.
@@ -135,6 +138,25 @@ def _weight_agreement(
     diffs = [abs(journaled.get(t, 0.0) - recomputed.get(t, 0.0)) for t in tickers]
     l1 = sum(diffs)
     return 1.0 - l1 / 2.0, max(diffs), only_journal, only_recomputed
+
+
+def _split_between(
+    corporate_actions, ticker: str, after: pd.Timestamp, through: pd.Timestamp
+) -> bool | None:
+    """Whether `ticker` has a split with ex-date in (`after`, `through`], from
+    the shared actions path (`providers.corporate_actions`); `None` if the
+    actions cannot be read (stale cache, fetch error) - the caller then
+    treats the gap as not computed rather than risk reporting a split as
+    slippage. Raw opens/closes are compared across the two sessions, so a
+    split in between would show up as a spurious timing gap."""
+    try:
+        actions = corporate_actions.get_actions(ticker, pd.Timestamp("1900-01-01"), through)
+    except Exception:  # noqa: BLE001 - stale/failed actions: not computable, not fatal
+        return None
+    if actions is None or actions.empty:
+        return False
+    splits = actions[actions["action_type"] == "split"]
+    return bool(((splits.index > after) & (splits.index <= through)).any())
 
 
 def _price_on_date(
@@ -253,6 +275,19 @@ def compute_drift(
             if not decision_close or not fill_open:
                 not_computed[ticker] = (
                     "no usable decision-bar close or fill-session open in the price cache"
+                )
+                continue
+            decision_date = normalize_timestamp(price_date_iso)
+            split = _split_between(
+                providers.corporate_actions, ticker, decision_date, fill_session_ts
+            )
+            if split is None or split:
+                not_computed[ticker] = (
+                    "a split ex-dated between the decision close and the fill-session open "
+                    "would be mistaken for a price move (raw prices are compared)"
+                    if split
+                    else "corporate actions unreadable, cannot rule out a split between the "
+                    "decision close and the fill-session open"
                 )
                 continue
             timing_gaps[ticker] = (fill_open - decision_close) / decision_close * 10_000.0

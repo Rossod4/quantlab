@@ -218,7 +218,6 @@ def build_netted_book_grid(
     sharpes: dict[tuple[float, ...], float] = {}
     inputs: list[dict[str, Any]] = []
     vintage: list[str] = []
-    vintage: list[str] = []
     for weights in weight_grid:
         weights = tuple(weights)
         label = f"grid point {list(weights)}"

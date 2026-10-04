@@ -22,6 +22,17 @@ from tests._report_fixtures import (
     save_result_and_card,
 )
 
+# M09 packet item 13 (binding): the whole-suite 90s budget this module's own
+# module-scoped `rendered` fixture was ALREADY written to respect (see its
+# docstring below, dated M07) has been exceeded again by the platform's
+# organic growth since (M08 paper trading alone added ~150 tests). Nearly
+# every test in this file shares that one fixture, so deselecting only SOME
+# of them would not save the (~2s x 4 fixture-params) setup cost that
+# dominates this file's contribution - marking the whole module `slow`
+# (excluded by default, run explicitly with `-m slow` or in CI nightly) does,
+# without deleting or narrowing any of it.
+pytestmark = pytest.mark.slow
+
 _EXTERNAL_REF_RE = re.compile(r'(?:src|href)\s*=\s*["\']https?://', re.IGNORECASE)
 _NUMBER_RE = re.compile(r"-?\d[\d,]*\.?\d*%?")
 # quant-gate VERDICT.md M07 cycle-1 finding 1: a 4th fixture with a REAL

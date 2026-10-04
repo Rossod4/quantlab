@@ -1,0 +1,10 @@
+# 75/25 momentum/value blend: an INTERIOR point of the walk-forward weight grid,
+# run only to measure the netted-book Sharpe for the ranking-agreement check
+# (validation/netted_grid.py). Same window/cost/execution as blend_50_50_2012_2026.yaml.
+start: 2012-01-01
+end: 2026-06-30
+strategy_config: configs/strategies/blend_75_25.yaml
+rebalance_freq: month_end
+execution: close
+cost_model: flat_bps
+one_way_cost_bps: 10.0

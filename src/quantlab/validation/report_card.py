@@ -17,9 +17,8 @@ Verdict logic (from the work packet, verbatim):
     finding 4, see below), no_cliff_score >= `min_no_cliff_score` (ALWAYS
     paired with `min_net_sharpe` - see the M05 carried item below, binding), MC
     P(drawdown worse than observed) <= `mc_max_prob_drawdown_worse_than_
-    observed`, capacity ceiling >= `capacity_min_multiple_of_intended_
-    capital` x intended capital, Hansen SPA p-value <= `max_spa_pvalue`,
-    and (if a walk-forward result was supplied) chosen-weight stability >=
+    observed`, Hansen SPA p-value <= `max_spa_pvalue`, and (if a walk-forward
+    result was supplied) chosen-weight stability >=
     `min_walk_forward_stability_fraction`. Two additional SOFT gates,
     orchestrator-added (2026-09-11, see below) rather than in the packet's
     own bulleted list: `max_drawdown_floor` (on the FULL-SAMPLE net max
@@ -29,6 +28,18 @@ A soft gate this report card could not compute at all (no walk-forward
 supplied is the one exception - "if present" per the packet - which is
 vacuously satisfied) is treated as a FAILURE, not a silent pass, and says so
 in its own reason string.
+
+Capacity is now an `informational` gate class, not a soft gate (orchestrator
+decision, 2026-09-12, plans/QUANT-NOTES.md "Orchestrator decisions - Capacity
+gate at retail stake"): Alex's real stake is GBP100-500. At `intended_capital_
+usd: 1000`, the capacity gate is trivially, almost vacuously passable against
+any real strategy's liquidity - a green badge there would imply capacity
+headroom the result does not evidence (see the M06 cycle-3 "trivially
+passable" note this module already emits). `informational` gates are ALWAYS
+computed and reported - value, the AUM ceiling, spread percentiles, and the
+old repo's $95M-$335M context - but never enter `hard_failed`/`soft_failed`
+and can never move the verdict. If Alex later trades institutional size, flip
+this back to a soft gate.
 
 Carried, binding items addressed here:
   - M04 verdict item 2: PSR/DSR's `skew`/`kurt` inputs come from the same
@@ -198,12 +209,22 @@ _WALK_FORWARD_RANKING_NOTE = (
     "weights). Read this result as 'is the weight choice stable', not as a stand-in for the "
     "netted book's own net_returns."
 )
-_WALK_FORWARD_NAN_TIEBREAK_NOTE = (
+_WALK_FORWARD_NAN_TIEBREAK_UNVERIFIABLE_NOTE = (
     "Whether any CHOSEN walk-forward step had a NaN training Sharpe (which would lock in the "
     "first grid weight regardless of the others - see walk_forward.py's module docstring) "
-    "cannot be checked from a WalkForwardResult alone: per-step training Sharpes are not "
-    "retained on the object. Left as an open item for whoever runs the walk-forward "
-    "experiment to verify independently."
+    "cannot be checked: this WalkForwardResult carries no per-step training Sharpes (built "
+    "before the M09 `training_sharpes` field existed, or by a caller that stripped it)."
+)
+_WALK_FORWARD_NAN_TIEBREAK_CLEAN_NOTE = (
+    "Verified (M09, WalkForwardResult.training_sharpes): no chosen walk-forward step had a NaN "
+    "training Sharpe - the NaN-seeded-tie-break hazard described in walk_forward.py's module "
+    "docstring did not fire on this result."
+)
+_WALK_FORWARD_NAN_TIEBREAK_FIRED_NOTE = (
+    "Verified (M09, WalkForwardResult.training_sharpes): at least one CHOSEN walk-forward step "
+    "had a NaN training Sharpe - the tie-break `s > best_sharpe` (walk_forward.py's module "
+    "docstring) locked in that grid point regardless of the others' real performance. Read the "
+    "chosen-weight sequence with this in mind."
 )
 _REGISTRY_BASE_POINT_NOTE = (
     "n_trials for this family may double-count the strategy's own headline run against a "
@@ -333,6 +354,22 @@ class ReportCardProvenance:
     headline_retained_fraction: float | None
     untrusted_fraction_line: str
     sharpe_sortino_convention: str
+    # ADDITIVE (M09): the code that built THIS card (`validate`/`run`), as
+    # opposed to `quantlab_git_sha`/`dirty` above, which describe the code
+    # that produced the backtest. They differ whenever a result is validated
+    # later, by a newer tree. "unknown"/None on cards written before this
+    # field existed.
+    validated_by_git_sha: str = "unknown"
+    validated_by_dirty: bool | None = None
+    # ADDITIVE (M09, quant-gate cycle 1 finding 7): how many tickers of the
+    # run's tracked universe that HAVE a cached price series were never
+    # visited by `quantlab data scan` (names with no cached series at all -
+    # the negative-cache `no_data` ones - can never be scanned and are
+    # excluded). The paper promotion gate refuses an ELIGIBLE card whose
+    # count is not exactly 0; None means "not recorded" (a card written
+    # before this field existed) and is refused too, since an unscanned cache
+    # cannot back a promotion.
+    unscanned_cached_tickers_count: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -349,7 +386,20 @@ class ReportCardProvenance:
             "headline_retained_fraction": self.headline_retained_fraction,
             "untrusted_fraction_line": self.untrusted_fraction_line,
             "sharpe_sortino_convention": self.sharpe_sortino_convention,
+            "validated_by_git_sha": self.validated_by_git_sha,
+            "validated_by_dirty": self.validated_by_dirty,
+            "unscanned_cached_tickers_count": self.unscanned_cached_tickers_count,
         }
+
+
+def _unscanned_cached_count(run_provenance: dict[str, Any]) -> int | None:
+    """Never-scanned tickers that could have been scanned (see
+    `ReportCardProvenance.unscanned_cached_tickers_count`); None when the run
+    predates the scan-coverage provenance."""
+    if "never_scanned_tickers" not in run_provenance:
+        return None
+    unscannable = set(run_provenance.get("no_data_suppressed_tickers", []))
+    return len(set(run_provenance["never_scanned_tickers"]) - unscannable)
 
 
 _SHARPE_SORTINO_CONVENTION = (
@@ -378,6 +428,15 @@ class ReportCard:
     gates: list[GateResult]
     verdict: Verdict
     provenance: ReportCardProvenance
+    # M09 (plans/M09-end-to-end.md carried item 7): the walk-forward's
+    # blend-of-net-returns Sharpe ranking checked against the REAL engine's
+    # netted-book costing at the same grid points
+    # (`validation/walk_forward.py`'s `walk_forward_ranking_agreement`).
+    # `None` when no walk-forward was supplied, or the caller did not supply
+    # `netted_book_grid_sharpes` (the machinery exists but was not run
+    # against the real engine this time) - the report must then keep saying
+    # "not checked", never fabricate a number.
+    ranking_agreement: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -397,6 +456,7 @@ class ReportCard:
             "gates": [g.to_json() for g in self.gates],
             "verdict": self.verdict,
             "provenance": self.provenance.to_json(),
+            "ranking_agreement": self.ranking_agreement,
         }
 
 
@@ -411,6 +471,10 @@ def build_report_card(
     price_panel: dict[str, pd.DataFrame] | None = None,
     price_panel_missing_tickers: list[str] | None = None,
     family: str | None = None,
+    netted_book_grid_sharpes: dict[tuple[float, ...], float] | None = None,
+    ranking_agreement_detail: dict[str, Any] | None = None,
+    ranking_not_checked_reason: str | None = None,
+    validating_code: dict[str, Any] | None = None,
 ) -> ReportCard:
     """Build the full report card for `result`. Registers `result` itself
     into `registry` (idempotent by key - see registry.py) so the current
@@ -425,6 +489,18 @@ def build_report_card(
     every ticker the strategy ever held) names any of THOSE held tickers the
     provider could not supply data for, so the capacity gate's reason can
     say which ones rather than a generic "no panel" message.
+
+    `netted_book_grid_sharpes` (M09, only meaningful with `walk_forward` also
+    supplied): grid weight tuple -> net Sharpe from an INDEPENDENT run of the
+    real engine's blend strategy at that weight, on the SAME grid
+    `walk_forward`'s own `weight_grid` used. When supplied,
+    `validation/walk_forward.py`'s `walk_forward_ranking_agreement` checks
+    the walk-forward's blend-of-net-returns Sharpe ranking against this
+    netted-book ranking and the result replaces the standing "not checked"
+    disclosure (`_WALK_FORWARD_RANKING_NOTE`) with the real Kendall tau and
+    top-choice agreement. Omitted (the common case - it needs `len(weight_
+    grid)` additional real backtests), the honest "not checked" disclosure
+    stands.
     """
     basic = validate_basic(
         result, benchmark_result, config, walk_forward=walk_forward, sensitivity=sensitivity
@@ -574,6 +650,10 @@ def build_report_card(
     distinct_trials = registry.distinct_trials(fam)
     dirty_trial_count = sum(1 for r in distinct_trials if r.dirty)
     prov = result.provenance
+    if validating_code is None:
+        from quantlab.validation.registry import current_code_state
+
+        validating_code = current_code_state()
     provenance = ReportCardProvenance(
         strategy_id=strategy_id,
         data_semantics_version=prov.get("data_semantics_version", "unknown"),
@@ -588,15 +668,54 @@ def build_report_card(
         headline_retained_fraction=headline_retained_fraction,
         untrusted_fraction_line=basic.flags[0] if basic.flags else "",
         sharpe_sortino_convention=_SHARPE_SORTINO_CONVENTION,
+        validated_by_git_sha=str(validating_code.get("sha", "unknown")),
+        validated_by_dirty=validating_code.get("dirty"),
+        unscanned_cached_tickers_count=_unscanned_cached_count(prov),
     )
 
     known_caveats = list(result.provenance.get("known_caveats", []))
     known_caveats.append(_PURGE_VS_WALK_FORWARD_NOTE)
     known_caveats.append(_REGISTRY_BASE_POINT_NOTE)
     known_caveats.append(_SUBPERIOD_OOF_CAVEAT)
+    ranking_agreement: dict[str, Any] | None = None
     if walk_forward is not None:
-        known_caveats.append(_WALK_FORWARD_RANKING_NOTE)
-        known_caveats.append(_WALK_FORWARD_NAN_TIEBREAK_NOTE)
+        if netted_book_grid_sharpes:
+            from quantlab.validation.walk_forward import walk_forward_ranking_agreement
+
+            agreement = walk_forward_ranking_agreement(walk_forward, netted_book_grid_sharpes)
+            ranking_agreement = {"status": "checked", **agreement.to_json()}
+            if ranking_agreement_detail:
+                ranking_agreement.update(ranking_agreement_detail)
+            known_caveats.append(
+                f"Walk-forward Sharpe ranking checked against the real engine's netted-book "
+                f"costing at the same {agreement.n_points} grid points (M09): Kendall tau="
+                f"{agreement.kendall_tau:.4f}, top choice "
+                f"{'AGREES' if agreement.top_choice_agrees else 'DISAGREES'} between the two "
+                "cost conventions."
+            )
+        elif ranking_not_checked_reason:
+            ranking_agreement = {"status": "not_checked", "reason": ranking_not_checked_reason}
+            known_caveats.append(
+                f"Walk-forward ranking agreement under both cost conventions: not checked - "
+                f"{ranking_not_checked_reason}. {_WALK_FORWARD_RANKING_NOTE}"
+            )
+        else:
+            known_caveats.append(_WALK_FORWARD_RANKING_NOTE)
+        nan_tiebreak_clean = walk_forward.no_chosen_step_has_nan_training_sharpe()
+        if nan_tiebreak_clean is None:
+            known_caveats.append(_WALK_FORWARD_NAN_TIEBREAK_UNVERIFIABLE_NOTE)
+        elif nan_tiebreak_clean:
+            known_caveats.append(_WALK_FORWARD_NAN_TIEBREAK_CLEAN_NOTE)
+        else:
+            known_caveats.append(_WALK_FORWARD_NAN_TIEBREAK_FIRED_NOTE)
+    if ranking_agreement is None and ranking_not_checked_reason and walk_forward is None:
+        # The caller supplied ranking inputs but no walk-forward was built (the
+        # branch above only runs with one): still say so on the card.
+        ranking_agreement = {"status": "not_checked", "reason": ranking_not_checked_reason}
+        known_caveats.append(
+            f"Walk-forward ranking agreement under both cost conventions: not checked - "
+            f"{ranking_not_checked_reason}"
+        )
     if dirty_trial_count > 0:
         known_caveats.append(_DIRTY_TRIAL_CAVEAT)
     known_caveats.extend(rc_excluded)
@@ -618,6 +737,7 @@ def build_report_card(
         gates=gates,
         provenance=provenance,
         verdict=verdict,
+        ranking_agreement=ranking_agreement,
     )
 
 
@@ -725,9 +845,10 @@ def _evaluate_gates(
     )
 
     trl_ok = pd.notna(min_trl) and min_trl <= n
+    min_trl_display = "unbounded" if math.isinf(min_trl) else f"{min_trl:.0f}"
     reason = (
-        f"needs >= {min_trl:.0f} observations for significance; {n} are available (computed on "
-        f"the PER-PERIOD Sharpe {sr_per_period:.4f}, not the annualized {m.net_sharpe:.2f})."
+        f"needs >= {min_trl_display} observations for significance; {n} are available (computed "
+        f"on the PER-PERIOD Sharpe {sr_per_period:.4f}, not the annualized {m.net_sharpe:.2f})."
     )
     if extreme_caveat:
         reason += " " + extreme_caveat
@@ -928,9 +1049,17 @@ def _evaluate_gates(
                 "no price panel was supplied - capacity was not estimated - treated as a "
                 "FAILURE, not a pass by default."
             )
+    # Orchestrator decision, 2026-09-12 (plans/QUANT-NOTES.md, Capacity gate
+    # at retail stake): `informational`, not `soft` - always reported, never
+    # affects the verdict. See this module's own docstring.
     gates.append(
         GateResult(
-            "capacity_ceiling", "soft", cap_multiple, capacity_multiple, bool(capacity_ok), reason
+            "capacity_ceiling",
+            "informational",
+            cap_multiple,
+            capacity_multiple,
+            bool(capacity_ok),
+            reason,
         )
     )
 

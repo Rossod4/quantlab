@@ -893,3 +893,80 @@ def test_canary_paper_runner_asof_never_exceeds_the_price_caches_last_bar(monkey
     observed_asof = pd.Timestamp(records[0]["asof"])
 
     assert observed_asof <= cutoff
+
+
+# -- (l) per-component TTM EPS (M09): a quarter FILED after asof, or a split -
+# -- ex-dated after asof, must have zero effect on ttm_eps -------------------
+
+
+def _ttm_quarter(start: str, end: str, filed: str, val: float) -> dict:
+    return {
+        "tag": "EarningsPerShareDiluted",
+        "start": pd.Timestamp(start),
+        "end": pd.Timestamp(end),
+        "filed": pd.Timestamp(filed),
+        "val": val,
+    }
+
+
+@pytest.mark.parametrize("future_split", [False, True], ids=["no_split", "future_split"])
+def test_canary_future_filed_quarter_and_future_split_have_zero_effect_on_ttm_eps(
+    store_mode, future_split
+):
+    """M09 per-component TTM EPS restatement (data/pit.py's
+    `_restate_ttm_eps_per_component`, fed by edgar_fundamentals.py's
+    `_ttm_duration_components`): four standalone quarters filed on or before
+    asof, a 2:1 split between the first and second quarters' filings (so the
+    per-component branch really restates), plus a FIFTH quarter filed AFTER
+    asof (EPS 100.0 - an unmistakable look-ahead if it enters the sum) and,
+    in one variant, a 4:1 split ex-dated after asof. `fundamentals()` must
+    be byte-identical to a world containing neither.
+
+    Mutation check (recorded in plans/state/M09/HANDOFF.2.md): passing
+    `as_of_date + 3650 days` to `_duration_facts` inside
+    `_ttm_duration_components` pulls the future-filed quarter into the
+    component set and makes this canary fail."""
+    asof = pd.Timestamp("2020-11-30")
+    base_rows = [
+        _ttm_quarter("2019-01-01", "2019-03-31", "2019-05-10", 4.0),
+        _ttm_quarter("2019-04-01", "2019-06-30", "2019-08-10", 4.0),
+        _ttm_quarter("2019-07-01", "2019-09-30", "2019-11-10", 2.0),
+        _ttm_quarter("2019-10-01", "2019-12-31", "2020-02-10", 2.0),
+    ]
+    future_rows = [_ttm_quarter("2020-01-01", "2020-03-31", "2020-12-15", 100.0)]
+    facts_base = pd.DataFrame(base_rows)
+    facts_future = pd.DataFrame(base_rows + future_rows)
+
+    past_split = pd.DataFrame(
+        {"ticker": ["AAA"], "action_type": ["split"], "value": [2.0]},
+        index=pd.DatetimeIndex([pd.Timestamp("2019-06-01")], name="date"),
+    )
+    actions_future = past_split
+    if future_split:
+        later = pd.DataFrame(
+            {"ticker": ["AAA"], "action_type": ["split"], "value": [4.0]},
+            index=pd.DatetimeIndex([asof + pd.Timedelta(days=1)], name="date"),
+        )
+        actions_future = pd.concat([past_split, later]).sort_index()
+
+    requirements = DataRequirements(fundamental_fields=frozenset({"ttm_eps"}))
+    price_provider = _AlwaysReturnsFullPanelPriceProvider(pd.DataFrame())
+    panel_store = _store_for(store_mode, price_provider, [])
+
+    def _fundamentals(facts: pd.DataFrame, actions: pd.DataFrame) -> dict:
+        ctx = _minimal_context(
+            asof,
+            requirements,
+            price_provider=price_provider,
+            fundamentals_provider=_FactsBackedFundamentalsProvider(facts),
+            corporate_actions_provider=_AlwaysReturnsFullActionsProvider(actions),
+            panel_store=panel_store,
+        )
+        return ctx.fundamentals("AAA")
+
+    clean = _fundamentals(facts_base, past_split)
+    hostile = _fundamentals(facts_future, actions_future)
+
+    assert hostile == clean
+    # the per-component restatement really ran: 4/2 + 4 + 2 + 2 = 10.0
+    assert clean["ttm_eps"] == pytest.approx(10.0)

@@ -52,16 +52,26 @@ Check the printed verdict. Only `ELIGIBLE_FOR_PAPER` unlocks paper trading.
 
 ## 3. Try it with `--dry-run` first
 
-`--dry-run` builds the exact same decision context and rebalance plan a real
-run would, but never calls `broker.submit()` - nothing is sent anywhere:
+`--dry-run` runs the exact same decision pipeline a real run would (promotion
+gate included) but stops the instant orders are planned - it never calls
+`broker.cancel()` or `broker.submit()`, and it writes nothing to the journal:
 
 ```
 uv run quantlab paper run --strategy configs/strategies/momentum_12_1.yaml --broker mock --dry-run
 ```
 
+Because the promotion gate still applies, previewing a strategy with no
+`ELIGIBLE_FOR_PAPER` report card needs `--force-research` too (testing the
+plumbing only, never for real money):
+
+```
+uv run quantlab paper run --strategy configs/strategies/momentum_12_1.yaml --broker mock --dry-run --force-research
+```
+
 This prints the planned buy/sell orders (or "no orders" if the current mock
-account is already within every drift band). Once you're ready for a real
-paper run:
+account is already within every drift band), or `REFUSED: ...` if the gate
+(or anything else in the pipeline) would have refused a real run. Once
+you're ready for a real paper run:
 
 ```
 uv run quantlab paper run --strategy configs/strategies/momentum_12_1.yaml --broker alpaca
@@ -170,6 +180,20 @@ placed after a session has closed cannot fill at that session's own close.
 Every journal record carries `assumed_fill_session` (the ISO date this
 convention implies) precisely so M09's forward-vs-backtest drift check can
 model the lag explicitly rather than misattributing it to strategy drift.
+
+`quantlab paper drift` models that convention explicitly and reports TWO numbers
+per fill, never one blended figure: `timing_gap_bps` = (open of
+`assumed_fill_session` - the decision-bar close) / that close, the convention's
+own overnight offset (expected, not a defect); and `execution_gap_bps` =
+(fill price - open of `assumed_fill_session`) / that open, the actual execution
+slippage. `assumed_fill_session` is what selects the open: a record without
+one, or a ticker with no usable decision close / fill-session open in the price
+cache, gets no figure and an entry in `gaps_not_computed` saying why (never 0).
+
+Limitation: both gaps compare RAW prices, so a split ex-dated between the decision close
+and the fill-session open would read as a huge spurious timing gap. The check detects such
+a split (or unreadable corporate actions) and reports the ticker in `gaps_not_computed`
+instead; it does not re-express the prices in a common share basis.
 
 ## 8. Data degradation and coverage
 

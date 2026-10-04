@@ -323,6 +323,10 @@ def test_validate_full_reaches_eligible_for_paper_through_the_cli(tmp_path, monk
         end="2019-12-31",
         strategy_config="configs/strategies/momentum.yaml",
     )
+    # the headline must be a point on the configured grid (the sensitivity
+    # base point is now the strategy's own params): shipped axes are
+    # lookback_months [9, 12, 15], n_long [30, 50, 70]
+    result.provenance["strategy_params"] = {"lookback_months": 12, "n_long": 30}
     result_dir = tmp_path / "result"
     result.save(result_dir)
 
@@ -487,3 +491,182 @@ def test_build_walk_forward_result_degrades_gracefully_on_frequency_mismatch(tmp
         headline, [momentum_dir, value_dir], ValidationConfig()
     )
     assert result is None  # degraded, not a crash, not a nonsense blend
+
+
+def test_record_sensitivity_result_persists_series_bearing_trials(tmp_path):
+    """M09 fix (orchestrator-directed): `_record_sensitivity_result` must
+    forward `SensitivityResult.net_returns_by_strategy_id` so the registry
+    ends up with series-bearing sensitivity trials - before this fix, every
+    sensitivity trial was recorded Sharpe-only, so `build_trial_matrix`
+    (reality_check.py) could never find >= 2 trials with a stored series
+    for White's Reality Check / Hansen SPA to run on, no matter how many
+    grid points had actually executed."""
+    import quantlab.cli as cli_module
+    from quantlab.validation.registry import TrialsRegistry
+    from quantlab.validation.sensitivity import SensitivityResult, SensitivityTrial
+
+    dates = pd.date_range("2015-01-31", periods=24, freq="ME")
+    series_a = pd.Series([0.01, -0.01] * 12, index=dates)
+    series_b = pd.Series([0.02, -0.02] * 12, index=dates)
+    sensitivity_result = SensitivityResult(
+        param_axes={"lookback_months": [9, 12]},
+        base_point={"lookback_months": 9},
+        trials=[
+            SensitivityTrial(
+                strategy_id="momentum-aaa", params={"lookback_months": 9}, net_sharpe=1.0
+            ),
+            SensitivityTrial(
+                strategy_id="momentum-bbb", params={"lookback_months": 12}, net_sharpe=2.0
+            ),
+        ],
+        surface=pd.Series([1.0, 2.0], index=pd.Index([(9,), (12,)], name=("lookback_months",))),
+        no_cliff_score=0.9,
+        neighbourhood_size=2,
+        neighbourhood_truncated=True,
+        net_returns_by_strategy_id={"momentum-aaa": series_a, "momentum-bbb": series_b},
+    )
+    headline = make_backtest_result(net_returns=series_a, strategy_id="momentum-headline1")
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+
+    cli_module._record_sensitivity_result(headline, sensitivity_result, "momentum", registry)
+
+    series_bearing = registry.trials("momentum", with_series_only=True)
+    assert len(series_bearing) == 2
+    assert {r.key[0] for r in series_bearing} == {"momentum-aaa", "momentum-bbb"}
+
+
+def test_build_walk_forward_result_uses_the_childrens_own_rebalance_freq(tmp_path):
+    """M09 fix: `_build_walk_forward_result` used to call `walk_forward_blend`
+    with no explicit `periods_per_year`, silently defaulting to that
+    function's own QUARTERS_PER_YEAR=4 - correct for the old repo's
+    quarterly blend sweep, but WRONG for quantlab's own shipped
+    momentum_12_1/value_composite configs, which both rebalance MONTHLY
+    (rebalance_freq: month_end). A 5-year train window must consume 60
+    monthly periods, not 20 (5 * the wrong 4/year) - reproduced directly by
+    checking `train_len` requires enough real periods to run at all."""
+    import quantlab.cli as cli_module
+    from quantlab.validation.basic import ValidationConfig, WalkForwardAxisConfig
+
+    n = 70  # 70 monthly periods: enough for a 60-period (5yr @ 12/yr) train
+    # window plus >=1 test period, but NOT enough for a 20-period (5yr @
+    # the WRONG 4/yr) train window repeated to require 4x fewer periods -
+    # the wrong periods_per_year would happily run on far less data, so
+    # this alone would not distinguish the two; instead assert the CHOSEN
+    # weight tuples align with a genuine 5-YEAR (60-month) training window
+    # by checking the first out-of-sample date lands 60 months in, not 20.
+    dates = pd.date_range("2015-01-31", periods=n, freq="ME")
+    momentum = make_backtest_result(
+        net_returns=pd.Series([0.01, -0.01] * (n // 2), index=dates),
+        strategy_id="momentum-child01",
+    )
+    value = make_backtest_result(
+        net_returns=pd.Series([0.02, 0.0] * (n // 2), index=dates),
+        strategy_id="value_composite-child01",
+    )
+    momentum_dir, value_dir = tmp_path / "momentum", tmp_path / "value"
+    momentum.save(momentum_dir)
+    value.save(value_dir)
+    headline = make_backtest_result(
+        net_returns=pd.Series([0.015] * n, index=dates), strategy_id="blend-headline1"
+    )
+    config = ValidationConfig(
+        walk_forward=WalkForwardAxisConfig(
+            train_years=5, test_years=1, weight_grid=[[1.0, 0.0], [0.0, 1.0]]
+        )
+    )
+
+    result = cli_module._build_walk_forward_result(headline, [momentum_dir, value_dir], config)
+
+    assert result is not None
+    # 5 years @ 12/month = 60-period train window -> the first OOS date is
+    # the 61st monthly period (index 60), not the 21st (a wrong 4/yr read).
+    assert result.oos_returns.index[0] == dates[60]
+
+
+# --- sensitivity base point = the headline strategy's own params -------------
+
+
+def _sensitivity_headline(tmp_path, params: dict):
+    dates = pd.date_range("2015-01-31", periods=24, freq="ME")
+    result = make_backtest_result(
+        net_returns=pd.Series([0.01, -0.005] * 12, index=dates),
+        strategy_id="momentum-headline01",
+        strategy_config=str(tmp_path / "strategy.yaml"),
+    )
+    result.provenance["strategy_params"] = params
+    return result
+
+
+def _validation_config_with_axes(axes: dict):
+    from quantlab.validation.basic import ValidationConfig
+
+    return ValidationConfig(sensitivity={"momentum": axes})
+
+
+def test_sensitivity_grid_is_centred_on_the_headline_params_not_the_axis_middle(
+    monkeypatch, tmp_path
+):
+    import quantlab.cli as cli_module
+
+    captured: dict = {}
+
+    def _fake_grid(strategy_config, param_axes, backtest_config, runner, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(failed_points={}, provider_call_warnings=[])
+
+    monkeypatch.setattr("quantlab.validation.sensitivity.sensitivity_grid", _fake_grid)
+    monkeypatch.setattr(cli_module, "_make_sensitivity_runner", lambda _pc: None)
+    monkeypatch.setattr(
+        "quantlab.core.config.load_platform_config", lambda _path: SimpleNamespace()
+    )
+    # headline n_long=30 is the FIRST value of the axis, not its middle (50)
+    headline = _sensitivity_headline(tmp_path, {"lookback_months": 12, "n_long": 30})
+    axes = {"lookback_months": [9, 12, 15], "n_long": [30, 50, 70]}
+
+    out = cli_module._build_sensitivity_result(
+        headline, tmp_path / "platform.yaml", _validation_config_with_axes(axes)
+    )
+
+    assert out is not None
+    assert captured["base_point"] == {"lookback_months": 12, "n_long": 30}
+
+
+def test_sensitivity_refuses_a_headline_that_is_not_a_point_on_the_configured_grid(tmp_path):
+    import typer
+
+    import quantlab.cli as cli_module
+
+    headline = _sensitivity_headline(tmp_path, {"lookback_months": 12, "n_long": 40})
+    axes = {"lookback_months": [9, 12, 15], "n_long": [30, 50, 70]}
+
+    with pytest.raises(typer.BadParameter, match="not a point on the configured sensitivity axis"):
+        cli_module._build_sensitivity_result(
+            headline, tmp_path / "platform.yaml", _validation_config_with_axes(axes)
+        )
+
+
+def test_sensitivity_refuses_an_axis_the_headline_strategy_does_not_have(tmp_path):
+    import typer
+
+    import quantlab.cli as cli_module
+
+    headline = _sensitivity_headline(tmp_path, {"lookback_months": 12})
+    axes = {"lookback_months": [9, 12, 15], "n_long": [30, 50, 70]}
+
+    with pytest.raises(typer.BadParameter, match="not a parameter of the headline strategy"):
+        cli_module._build_sensitivity_result(
+            headline, tmp_path / "platform.yaml", _validation_config_with_axes(axes)
+        )
+
+
+def test_value_composite_headline_is_the_middle_of_its_configured_axis_so_unaffected():
+    """The shipped value_composite headline (n_holdings=30) is already the
+    middle of configs/validation.yaml's [20, 30, 40], so passing it as the
+    base point is identical to the old middle-of-axis default."""
+    from quantlab.validation.basic import load_validation_config
+
+    config = load_validation_config(
+        Path(__file__).resolve().parents[1] / "configs" / "validation.yaml"
+    )
+    values = config.sensitivity["value_composite"]["n_holdings"]
+    assert values[len(values) // 2] == 30

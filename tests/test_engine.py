@@ -23,6 +23,7 @@ from quantlab.backtest.engine import (
 )
 from quantlab.core.calendar import trading_days
 from quantlab.core.errors import StaleActionsCacheError
+from quantlab.core.semantics import DATA_SEMANTICS_VERSION
 from quantlab.core.types import TargetWeights
 from quantlab.data.interfaces import (
     ConstituentsProvider,
@@ -245,7 +246,7 @@ def test_run_backtest_basic_shape_and_equity_starts_at_one():
     assert (result.net_returns.abs() < 1e-9).all()
     assert (result.gross_returns.abs() < 1e-9).all()
     assert result.provenance["strategy_id"] == strategy.strategy_id
-    assert result.provenance["data_semantics_version"] == "m03b"
+    assert result.provenance["data_semantics_version"] == DATA_SEMANTICS_VERSION
 
 
 def test_benchmark_first_return_date_matches_strategy_first_return_date():
@@ -1020,6 +1021,163 @@ def test_provenance_records_quarantined_tickers(tmp_path):
     assert "BBB" in result.coverage_report.quarantined_tickers.get(2020, [])
 
 
+def test_provenance_flags_tickers_never_visited_by_a_scan(tmp_path):
+    """M09 (plans/QUANT-NOTES.md "M09 (quantlab data scan), must-fix"):
+    quarantine coverage must be distinguishable from "never scanned" - a
+    run whose universe contains a ticker `quantlab data scan` never visited
+    must say so, not silently read it as confirmed-clean."""
+    from quantlab.data.cache import price_cache_path, write_cache, write_price_cache_meta
+    from quantlab.data.quality import scan_price_cache
+
+    sessions = trading_days("2019-06-01", "2020-05-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BBB": 20.0, "BENCH": 100.0})
+    providers = BacktestProviders(
+        price=_FakePriceProvider(panel),
+        constituents=_FakeConstituentsProvider(["AAA", "BBB"]),
+        fundamentals=_NoOpFundamentalsProvider(),
+        corporate_actions=_EmptyActionsProvider(),
+        cache_dir=tmp_path,
+    )
+    cached = pd.DataFrame(
+        {
+            "Open": [20.0] * len(sessions),
+            "High": [20.0] * len(sessions),
+            "Low": [20.0] * len(sessions),
+            "Close": [20.0] * len(sessions),
+            "Adj Close": [20.0] * len(sessions),
+            "Volume": [1000] * len(sessions),
+        },
+        index=sessions,
+    )
+    write_cache(cached, price_cache_path("AAA", tmp_path))
+    write_price_cache_meta("AAA", sessions[0], sessions[-1], tmp_path)
+    # BBB is never written to disk at all - scan_price_cache below only ever
+    # visits AAA, so BBB stays permanently "never scanned" regardless.
+    scan_price_cache(tmp_path)  # scans AAA only (the one real parquet)
+
+    result = run_backtest(_EqualWeightStrategy(), _config(), providers)
+
+    assert "BBB" in result.provenance["never_scanned_tickers"]
+    assert "AAA" not in result.provenance["never_scanned_tickers"]
+    assert any("NEVER been visited by" in c for c in result.provenance["known_caveats"])
+
+
+def test_provenance_records_retry_after_days_and_no_data_suppressed_tickers(tmp_path):
+    """M09 work packet carried item 3 (QUANT-NOTES.md "From M04b verdict"
+    item 3 / M06-M09 carried item): the negative-cache TTL makes a run's
+    data visibility wall-clock dependent - provenance must record the TTL
+    itself and which tracked-universe tickers are currently suppressed by
+    an active no_data verdict, not just leave the mechanism implicit."""
+    from quantlab.data.cache import write_price_cache_no_data_meta
+
+    sessions = trading_days("2019-06-01", "2020-05-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BENCH": 100.0})
+    providers = BacktestProviders(
+        price=_FakePriceProvider(panel),
+        constituents=_FakeConstituentsProvider(["AAA", "BBB"]),
+        fundamentals=_NoOpFundamentalsProvider(),
+        corporate_actions=_EmptyActionsProvider(),
+        cache_dir=tmp_path,
+        retry_after_days=30,
+    )
+    # BBB has no real parquet, only a FRESH no_data sidecar (well within the
+    # 30-day TTL) - a genuine "currently suppressed" ticker, distinct from
+    # AAA (has real data) and from a ticker with no sidecar at all.
+    write_price_cache_no_data_meta("BBB", "2010-01-01", "2020-05-31", tmp_path)
+
+    result = run_backtest(_EqualWeightStrategy(params={"exclude": ["BBB"]}), _config(), providers)
+
+    assert result.provenance["retry_after_days"] == 30
+    assert result.provenance["no_data_suppressed_tickers"] == ["BBB"]
+    assert result.provenance["no_data_suppressed_count"] == 1
+    assert any("negative-cache 'no_data' sidecar" in c for c in result.provenance["known_caveats"])
+
+
+class _NetworkAttemptCountingPriceProvider(_FakePriceProvider):
+    """Exposes `network_fetch_attempts` like the real `YFinancePriceProvider`
+    (M09 observability guard), pre-seeded to whatever value the test wants -
+    a fake specifically for exercising `run_backtest`'s DELTA computation,
+    not the counting logic itself (that belongs to `YFinancePriceProvider`'s
+    own tests, tests/test_prices_provider.py). Distinct from the OTHER
+    `_CountingPriceProvider` fixture below, which counts CALLS for a
+    different acceptance criterion."""
+
+    def __init__(self, panel: pd.DataFrame, network_fetch_attempts: int):
+        super().__init__(panel)
+        self.network_fetch_attempts = network_fetch_attempts
+
+    def get_prices(self, tickers: list[str], start: object, end: object) -> pd.DataFrame:
+        # A large fixed increment PER CALL, deliberately far bigger than the
+        # 1-2 real tickers this fixture's own panel-store build asks for -
+        # simulates "many repeated live fetch attempts" robustly, without
+        # this test depending on exactly how many internal `get_prices`
+        # calls `run_backtest` happens to make.
+        self.network_fetch_attempts += 10
+        return super().get_prices(tickers, start, end)
+
+
+def test_provenance_flags_excessive_network_fetch_attempts_for_a_small_universe(tmp_path):
+    """M09 observability guard (orchestrator-directed, closing the
+    negative-cache range-check regression): a run whose price provider
+    attempted far more live fetches than its own tracked universe has
+    tickers is named in a caveat, not silently absorbed into a merely
+    slower run - this is the DELTA since this call started, not the
+    provider's raw (shared-across-calls) counter."""
+    sessions = trading_days("2019-06-01", "2020-05-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BENCH": 100.0})
+    # Universe is just {"AAA"} (1 ticker) - seed a starting count high enough
+    # that even the handful of real per-rebalance fetches this fixture makes
+    # push the DELTA past 3x that universe size.
+    price_provider = _NetworkAttemptCountingPriceProvider(panel, network_fetch_attempts=0)
+    providers = BacktestProviders(
+        price=price_provider,
+        constituents=_FakeConstituentsProvider(["AAA"]),
+        fundamentals=_NoOpFundamentalsProvider(),
+        corporate_actions=_EmptyActionsProvider(),
+        cache_dir=tmp_path,
+    )
+
+    result = run_backtest(_EqualWeightStrategy(), _config(), providers)
+
+    attempts = result.provenance["price_provider_network_fetch_attempts"]
+    assert attempts is not None and attempts > 3  # well past 3x a 1-ticker universe
+    assert any(
+        "more than 3x suggests the SAME already-unfetchable ticker" in c
+        for c in result.provenance["known_caveats"]
+    )
+
+
+def test_provenance_network_fetch_attempts_is_none_for_a_provider_without_the_counter():
+    sessions = trading_days("2019-06-01", "2020-05-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BENCH": 100.0})
+    providers = _providers(panel, ["AAA"])  # the plain _FakePriceProvider - no counter attribute
+
+    result = run_backtest(_EqualWeightStrategy(), _config(), providers)
+
+    assert result.provenance["price_provider_network_fetch_attempts"] is None
+
+
+def test_no_data_suppressed_tickers_excludes_a_ttl_expired_sidecar(tmp_path):
+    from quantlab.backtest import engine as engine_module
+    from quantlab.data.cache import (
+        price_meta_path,
+        read_json_meta,
+        write_json_meta,
+        write_price_cache_no_data_meta,
+    )
+
+    write_price_cache_no_data_meta("BBB", "2010-01-01", "2020-05-31", tmp_path)
+    # Backdate fetched_at to 2020 - far more than 30 days before the real
+    # "today" this test runs under, so the TTL has long since lapsed.
+    meta = read_json_meta(price_meta_path("BBB", tmp_path))
+    meta["fetched_at"] = "2020-01-01"
+    write_json_meta(price_meta_path("BBB", tmp_path), meta)
+
+    result = engine_module._no_data_suppressed_tickers(tmp_path, {"BBB"}, retry_after_days=30)
+
+    assert result == []
+
+
 def test_price_provider_is_called_once_for_the_whole_run_not_once_per_rebalance():
     """M04b acceptance criterion 4(d): over a 3-rebalance fixture, the
     engine's provider call count is ONE `get_prices` per ticker SET (the
@@ -1043,6 +1201,51 @@ def test_price_provider_is_called_once_for_the_whole_run_not_once_per_rebalance(
     run_backtest(_EqualWeightStrategy(), config, providers)
 
     assert counting_provider.call_count == 1
+
+
+def test_provenance_records_total_provider_calls_per_provider(tmp_path):
+    """M09 orchestrator-directed item: `provenance.provider_call_counts`
+    breaks down calls by provider and `provenance.total_provider_calls` is
+    their sum - the signal `cli.py`'s `_make_sensitivity_runner` compares a
+    sensitivity grid point's own run against the headline run's own figure
+    to catch a caching/memoisation regression (a grid point should never
+    need materially MORE provider calls than the base run over the SAME
+    strategy family and window)."""
+    sessions = trading_days("2019-06-01", "2020-03-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BENCH": 100.0})
+    providers = BacktestProviders(
+        price=_FakePriceProvider(panel),
+        constituents=_FakeConstituentsProvider(["AAA"]),
+        fundamentals=_NoOpFundamentalsProvider(),
+        corporate_actions=_EmptyActionsProvider(),
+        cache_dir=tmp_path,
+    )
+    config = _config(start="2020-01-01", end="2020-03-31")
+
+    result = run_backtest(_EqualWeightStrategy(), config, providers)
+
+    counts = result.provenance["provider_call_counts"]
+    assert set(counts) == {"price", "constituents", "fundamentals", "corporate_actions"}
+    assert all(n >= 0 for n in counts.values())
+    assert counts["price"] >= 1  # at least the panel store's own upfront load
+    assert result.provenance["total_provider_calls"] == sum(counts.values())
+    assert result.provenance["total_provider_calls"] > 0
+
+
+def test_provider_call_counting_does_not_disturb_the_real_provider_class_names(tmp_path):
+    """The `providers` sub-dict of provenance must still name the REAL
+    provider classes (e.g. for a config regression check that the intended
+    vendor is actually wired up) - not the internal call-counting wrapper
+    class this milestone introduces around them."""
+    sessions = trading_days("2019-06-01", "2020-03-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BENCH": 100.0})
+    providers = _providers(panel, ["AAA"])
+    config = _config(start="2020-01-01", end="2020-03-31")
+
+    result = run_backtest(_EqualWeightStrategy(), config, providers)
+
+    assert result.provenance["providers"]["prices"] == "_FakePriceProvider"
+    assert "Counting" not in result.provenance["providers"]["prices"]
 
 
 def test_next_open_return_excludes_the_fill_day_intraday_move_from_the_outgoing_book():

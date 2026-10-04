@@ -4,6 +4,7 @@ files."""
 
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
 from quantlab.cli import app
@@ -20,6 +21,7 @@ def test_report_help_works():
     assert "--format" in result.output
 
 
+@pytest.mark.slow  # M09 packet item 13: full backtest+report fixture pipeline
 def test_report_end_to_end_writes_both_files(tmp_path):
     result, card = build_eligible(tmp_path / "build")
     result_dir = save_result_and_card(result, card, tmp_path / "result")
@@ -34,6 +36,7 @@ def test_report_end_to_end_writes_both_files(tmp_path):
     assert "wrote md" in invocation.output
 
 
+@pytest.mark.slow  # M09 packet item 13: full backtest+report fixture pipeline
 def test_report_format_html_only(tmp_path):
     result, card = build_eligible(tmp_path / "build")
     result_dir = save_result_and_card(result, card, tmp_path / "result")
@@ -62,6 +65,7 @@ def test_report_rejects_invalid_format(tmp_path):
     assert invocation.exit_code != 0
 
 
+@pytest.mark.slow  # M09 packet item 13: full backtest+report fixture pipeline
 def test_report_passes_the_validation_config_for_the_monte_carlo_seed(tmp_path, monkeypatch):
     # quant-gate VERDICT.md M07 cycle-1 finding 11: `quantlab report` used to
     # never pass a `config` through, so `_monte_carlo_seed(None)` silently
@@ -104,6 +108,7 @@ def test_report_passes_the_validation_config_for_the_monte_carlo_seed(tmp_path, 
     assert captured["config"].bootstrap.monte_carlo_seed == 42
 
 
+@pytest.mark.slow  # M09 packet item 13: full backtest+report fixture pipeline
 def test_report_with_explicit_card_dir(tmp_path):
     result, card = build_eligible(tmp_path / "build")
     result_dir = tmp_path / "result"

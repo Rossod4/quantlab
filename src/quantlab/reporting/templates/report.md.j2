@@ -75,8 +75,11 @@ Capacity: {{ gates.capacity_detail }}
 
 | Gate | Kind | Value | Threshold | Result | Reason |
 |---|---|---|---|---|---|
-{% for g in gates.hard + gates.soft %}| {{ g.name }} | {{ g.kind }} | {{ g.value }} | {{ g.threshold }} | {{ g.status }} | {{ g.reason }}{% if g.note %} {{ g.note }}{% endif %} |
+{% for g in gates.hard + gates.soft + gates.informational %}| {{ g.name }} | {{ g.kind }} | {{ g.value }} | {{ g.threshold }} | {{ g.status }} | {{ g.reason }}{% if g.note %} {{ g.note }}{% endif %} |
 {% endfor %}
+{% if gates.informational %}
+`informational` gates are always reported (value, threshold, result) but never affect the verdict above - see the verdict legend.
+{% endif %}
 {% else %}
 _No report card was supplied - run `quantlab validate --full` for gate results._
 {% endif %}

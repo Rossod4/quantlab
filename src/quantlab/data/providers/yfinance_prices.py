@@ -88,6 +88,23 @@ class YFinancePriceProvider(PriceProvider):
         # M04b work packet item 3 - `PlatformConfig.retry_after_days`
         # (core/config.py), wired through `data/interfaces.py.build_provider`.
         self._retry_after_days = retry_after_days
+        # M09 observability guard (orchestrator-directed, closing the
+        # negative-cache range-check regression that turned a multi-minute
+        # backtest into a multi-hour one): a per-INSTANCE running count of
+        # tickers this provider actually decided needed a live fetch (i.e.
+        # `has_sufficient_price_cache` returned None for them - a cache miss
+        # OR a deliberate re-fetch), regardless of whether the fetch itself
+        # succeeded. A single `run_backtest` call constructs one provider
+        # instance and reuses it for the whole run (including every
+        # sensitivity-grid point sharing the same `providers` object - see
+        # `backtest/engine.py`'s `build_backtest_providers`/`_make_sensitivity_
+        # runner`), so this is a genuine per-run total, not per-call - a
+        # caller comparing it against the run's own tracked-universe size
+        # (`backtest/engine.py`'s `_price_provider_network_fetch_caveat`) can
+        # tell "one pass over a cold cache" from "the same names re-fetched
+        # over and over", which is exactly the class of regression this
+        # counter exists to make visible instead of silently slow.
+        self.network_fetch_attempts = 0
 
     def get_prices(self, tickers: list[str], start: object, end: object) -> pd.DataFrame:
         start_ts = pd.Timestamp(start).normalize()
@@ -103,6 +120,8 @@ class YFinancePriceProvider(PriceProvider):
                 cached_frames[ticker] = cached
             else:
                 to_fetch.append(ticker)
+
+        self.network_fetch_attempts += len(to_fetch)
 
         downloaded_frames: dict[str, pd.DataFrame] = {}
         for i in range(0, len(to_fetch), BATCH_SIZE):

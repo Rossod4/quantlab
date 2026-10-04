@@ -1,7 +1,36 @@
 # caches & generated output (anchored to repo root: these are the runtime
 # cache/report dirs from configs/platform.yaml, NOT src/quantlab/data/ etc.)
 /data/
-/reports/
+
+# reports/: M09 commits the THREE REAL 2012-2026 STRATEGIES' small,
+# human-readable artefacts (the point of the project) - report_card.json,
+# validation_basic.json, report_card.md (the M06 gate-table render),
+# report.md (the full M07 report) and every PNG. Everything else under
+# reports/ - parquet result series, report.html (self-contained, can be
+# regenerated with `quantlab report`), the trials registry, and any OTHER
+# strategy's run - stays regenerable and ignored.
+/reports/*
+!/reports/momentum_12_1/
+!/reports/value_composite/
+!/reports/blend_50_50/
+/reports/momentum_12_1/*
+/reports/value_composite/*
+/reports/blend_50_50/*
+!/reports/momentum_12_1/report_card.json
+!/reports/momentum_12_1/validation_basic.json
+!/reports/momentum_12_1/report_card.md
+!/reports/momentum_12_1/report.md
+!/reports/momentum_12_1/*.png
+!/reports/value_composite/report_card.json
+!/reports/value_composite/validation_basic.json
+!/reports/value_composite/report_card.md
+!/reports/value_composite/report.md
+!/reports/value_composite/*.png
+!/reports/blend_50_50/report_card.json
+!/reports/blend_50_50/validation_basic.json
+!/reports/blend_50_50/report_card.md
+!/reports/blend_50_50/report.md
+!/reports/blend_50_50/*.png
 .pytest_cache/
 .ruff_cache/
 __pycache__/

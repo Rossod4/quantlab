@@ -1,0 +1,17 @@
+# 25/75 momentum/value blend of the long-only momentum and composite value books (an interior
+# point of the walk-forward weight grid; backtested only to measure the netted-book Sharpe).
+strategy: blend
+params:
+  children:
+    - strategy: momentum
+      params:
+        book: long_only
+        n_long: 30
+        lookback_months: 12
+        skip_months: 1
+      weight: 0.25
+    - strategy: value_composite
+      params:
+        n_holdings: 30
+        filing_lag_sessions: 1
+      weight: 0.75

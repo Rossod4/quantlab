@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from quantlab.backtest.config import BacktestConfig
-from quantlab.validation.sensitivity import sensitivity_grid
+from quantlab.validation.sensitivity import SensitivityGridError, sensitivity_grid
 
 
 @dataclass
@@ -303,3 +303,141 @@ def test_sensitivity_grid_trials_record_params_and_sharpe():
     assert lookbacks == [9, 12, 15]
     for trial in result.trials:
         assert trial.net_sharpe == pytest.approx(result.trials[0].net_sharpe)
+
+
+def test_sensitivity_grid_captures_each_trials_own_return_series():
+    """M09 fix (orchestrator-directed): before this, `sensitivity_grid`
+    discarded each grid point's `result.net_returns` right after extracting
+    its Sharpe, so `TrialsRegistry.record_sensitivity` could NEVER be given
+    a series to store, which permanently starved White's Reality Check /
+    Hansen SPA (reality_check.py's `build_trial_matrix`, which needs >= 2
+    series-bearing trials) of enough trials to ever run - regardless of how
+    many grid points had actually executed. `net_returns_by_strategy_id`
+    must carry each trial's OWN distinct series, keyed by its OWN
+    `strategy_id` (not one shared object)."""
+    returns_by_lookback = {9: _alternating(0.01, 0.0), 12: _alternating(0.02, 0.0)}
+
+    def runner(strategy_config, params, backtest_config):
+        return _FakeResult(net_returns=returns_by_lookback[params["lookback_months"]])
+
+    result = sensitivity_grid(
+        "configs/strategies/momentum.yaml",
+        {"lookback_months": [9, 12]},
+        _backtest_config(),
+        runner,
+        base_point={"lookback_months": 9},
+    )
+
+    assert len(result.net_returns_by_strategy_id) == 2
+    for trial in result.trials:
+        stored = result.net_returns_by_strategy_id[trial.strategy_id]
+        pd.testing.assert_series_equal(stored, returns_by_lookback[trial.params["lookback_months"]])
+    # Excluded from the JSON payload (a raw pd.Series per point has no
+    # business in report_card.json) - the field exists for cli.py's
+    # `_record_sensitivity_result` to read directly, not to be serialized.
+    assert "net_returns_by_strategy_id" not in result.to_json()
+
+
+def test_sensitivity_grid_one_bad_point_does_not_kill_the_others():
+    """M09 fix ("make grid-point failures loud"): before this, ANY runner()
+    exception - e.g. a config param that pydantic's `extra='forbid'` model
+    rejects, the actual root cause of the real value_composite grid
+    recording NOTHING at the 2026-09-13 run - propagated uncaught out of
+    sensitivity_grid, killing every point, good or bad, and was then
+    silently swallowed whole by cli.py's `_build_sensitivity_result`."""
+
+    def runner(strategy_config, params, backtest_config):
+        if params["lookback_months"] == 12:
+            raise ValueError("lookback_months is not a field on this strategy's params model")
+        return _FakeResult(net_returns=_alternating(0.01, 0.0))
+
+    result = sensitivity_grid(
+        "configs/strategies/momentum.yaml",
+        {"lookback_months": [9, 12, 15]},
+        _backtest_config(),
+        runner,
+    )
+    assert len(result.trials) == 2
+    assert {t.params["lookback_months"] for t in result.trials} == {9, 15}
+    assert len(result.failed_points) == 1
+    reason = next(iter(result.failed_points.values()))
+    assert "lookback_months is not a field" in reason
+    # The base point (12) itself was the one that failed - the neighbourhood
+    # for a 3-point axis is the whole axis, so it degrades to the 2
+    # survivors rather than crashing.
+    assert result.neighbourhood_size == 2
+
+
+def test_sensitivity_grid_raises_a_named_error_when_every_point_fails():
+    def runner(strategy_config, params, backtest_config):
+        raise ValueError(f"bad params {params}")
+
+    with pytest.raises(SensitivityGridError) as excinfo:
+        sensitivity_grid(
+            "configs/strategies/value_composite.yaml",
+            {"n_holdings": [20, 30, 40]},
+            _backtest_config(),
+            runner,
+        )
+    message = str(excinfo.value)
+    # Every point's own reason is named, not just the first one encountered.
+    assert "20" in message
+    assert "30" in message
+    assert "40" in message
+
+
+@dataclass
+class _FakeResultWithProvenance:
+    net_returns: pd.Series
+    provenance: dict
+
+
+def test_sensitivity_grid_warns_when_a_point_makes_more_provider_calls_than_the_base_run():
+    def runner(strategy_config, params, backtest_config):
+        calls = 5 if params["lookback_months"] == 15 else 2
+        return _FakeResultWithProvenance(
+            net_returns=_alternating(0.01, 0.0), provenance={"total_provider_calls": calls}
+        )
+
+    result = sensitivity_grid(
+        "configs/strategies/momentum.yaml",
+        {"lookback_months": [9, 12, 15]},
+        _backtest_config(),
+        runner,
+        base_provider_calls=3,
+    )
+    assert len(result.provider_call_warnings) == 1
+    assert "15" in result.provider_call_warnings[0]
+    assert "5" in result.provider_call_warnings[0]
+
+
+def test_sensitivity_grid_no_provider_call_warning_when_base_provider_calls_omitted():
+    def runner(strategy_config, params, backtest_config):
+        return _FakeResultWithProvenance(
+            net_returns=_alternating(0.01, 0.0), provenance={"total_provider_calls": 999}
+        )
+
+    result = sensitivity_grid(
+        "configs/strategies/momentum.yaml",
+        {"lookback_months": [9, 12, 15]},
+        _backtest_config(),
+        runner,
+    )
+    assert result.provider_call_warnings == []
+
+
+def test_sensitivity_result_to_json_includes_failed_points_and_provider_call_warnings():
+    def runner(strategy_config, params, backtest_config):
+        if params["lookback_months"] == 9:
+            raise ValueError("boom")
+        return _FakeResult(net_returns=_alternating(0.01, 0.0))
+
+    result = sensitivity_grid(
+        "configs/strategies/momentum.yaml",
+        {"lookback_months": [9, 12, 15]},
+        _backtest_config(),
+        runner,
+    )
+    payload = result.to_json()
+    assert len(payload["failed_points"]) == 1
+    assert payload["provider_call_warnings"] == []

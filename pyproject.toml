@@ -57,7 +57,17 @@ extend-immutable-calls = ["typer.Option", "typer.Argument", "pathlib.Path"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -m 'not network'"
+addopts = "-q -m 'not network and not slow'"
 markers = [
     "network: touches live APIs (excluded by default; run explicitly)",
+    # M09 packet item 13 (binding): the offline default suite must stay
+    # under 90s. Deselected by default (run explicitly with `-m slow`, or
+    # in CI nightly) - reserved for tests that are individually expensive
+    # (repeated statistical simulation/calibration, or a full
+    # backtest+validate+report pipeline run on a fixture) but not more
+    # informative per second than the rest of the default suite. Nothing
+    # marked `slow` is deleted or reduced in scope - this changes WHEN it
+    # runs, never WHETHER it exists, per the packet's explicit "prefer a
+    # slow marker ... over shrinking test coverage".
+    "slow: individually expensive; excluded by default, run explicitly with -m slow",
 ]

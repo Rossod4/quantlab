@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
 from typing import Any, Protocol
@@ -34,6 +35,19 @@ import pandas as pd
 from quantlab.backtest.config import BacktestConfig
 from quantlab.core.semantics import DATA_SEMANTICS_VERSION
 from quantlab.validation.metrics import PERIODS_PER_YEAR, sharpe_ratio
+
+logger = logging.getLogger(__name__)
+
+
+class SensitivityGridError(RuntimeError):
+    """Raised by `sensitivity_grid` when EVERY grid point's `runner()` call
+    failed - i.e. there is nothing to report at all (see `sensitivity_grid`'s
+    docstring's "loud grid-point failures" section). Distinct from a bare
+    `Exception` so a caller (`cli.py`'s `_build_sensitivity_result`) can
+    still degrade `--full` to "no sensitivity result" without a broad
+    `except Exception` also hiding an unrelated programming error - and so
+    the message ALWAYS names every failing point and its own reason,
+    never just the first one encountered."""
 
 
 class HasNetReturns(Protocol):
@@ -82,6 +96,49 @@ class SensitivityResult:
     # many were excluded, so a caller can tell "flat because the surface
     # is genuinely flat" from "flat because most of the sample was NaN".
     nan_points: int = 0
+    # M09 fix (orchestrator-directed): `record_sensitivity` (registry.py)
+    # can only store a grid point's return series when the CALLER supplies
+    # one via `net_returns_by_strategy_id` - before this field existed,
+    # `sensitivity_grid` (below) discarded each point's `result.net_returns`
+    # right after extracting its Sharpe, so every sensitivity trial was
+    # PERMANENTLY series-less and `build_trial_matrix` (reality_check.py)
+    # could never find enough trials WITH a series to run White's Reality
+    # Check / Hansen SPA (K stays 0 or 1 forever, regardless of how many
+    # grid points ran) - a silent, structural hard-gate failure, not a
+    # missing-data one. Populated automatically by `sensitivity_grid`
+    # (keyed by each trial's own `strategy_id`, matching `SensitivityTrial.
+    # strategy_id`); deliberately excluded from `to_json()` (a raw
+    # `pd.Series` per grid point, not meant for the report card's JSON) -
+    # `cli.py`'s `_record_sensitivity_result` reads this field directly and
+    # forwards it to `TrialsRegistry.record_sensitivity`.
+    net_returns_by_strategy_id: dict[str, pd.Series] = field(default_factory=dict)
+    # M09 fix (orchestrator-directed, "make grid-point failures loud"):
+    # before this field existed, `sensitivity_grid` let the FIRST
+    # `runner()` exception from ANY point propagate uncaught, which killed
+    # the ENTIRE grid - including every point that would have succeeded -
+    # and `cli.py`'s `_build_sensitivity_result` then swallowed that single
+    # exception into a quiet stderr echo with `return None`, so a whole
+    # family's sensitivity check could silently vanish (N stuck at 1,
+    # DSR/no_cliff both NaN) from ONE bad grid point (e.g. an axis name that
+    # is not actually a field on the strategy's own params model). Now each
+    # point's failure is caught individually, logged immediately (loud, not
+    # deferred), and recorded here keyed by the point's own params repr;
+    # the grid continues with whatever points DID succeed. Only when EVERY
+    # point fails does `sensitivity_grid` raise (`SensitivityGridError`,
+    # naming every point and its own reason - never just the first).
+    failed_points: dict[str, str] = field(default_factory=dict)
+    # M09 orchestrator-directed item: one entry per grid point whose OWN
+    # backtest made MORE provider calls (see `_wrap_providers_for_call_
+    # counting` in backtest/engine.py) than the `base_provider_calls` this
+    # call of `sensitivity_grid` was given - a caching/memoisation
+    # regression signal (the SAME strategy family rerun over the SAME
+    # window should never need materially more provider calls than the
+    # headline run), not evidence about the strategy itself. Populated by
+    # `sensitivity_grid` from each point's own `result.provenance` when the
+    # runner returns a real `BacktestResult` (a test fake with only
+    # `net_returns` simply never triggers this - `getattr` degrades
+    # cleanly); logged immediately, same as `failed_points`.
+    provider_call_warnings: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -93,6 +150,8 @@ class SensitivityResult:
             "neighbourhood_size": self.neighbourhood_size,
             "neighbourhood_truncated": self.neighbourhood_truncated,
             "nan_points": self.nan_points,
+            "failed_points": self.failed_points,
+            "provider_call_warnings": self.provider_call_warnings,
         }
 
 
@@ -168,6 +227,7 @@ def sensitivity_grid(
     backtest_config: BacktestConfig,
     runner: SensitivityRunner,
     base_point: dict[str, Any] | None = None,
+    base_provider_calls: int | None = None,
 ) -> SensitivityResult:
     """Rerun (via `runner`) over the Cartesian product of `param_axes`
     (1 or 2 parameters; more raises `ValueError` - the work packet's own
@@ -179,6 +239,16 @@ def sensitivity_grid(
     parameter dict (one value per axis). `periods_per_year` for the Sharpe
     computation comes from `backtest_config.rebalance_freq`, exactly as
     `metrics.summary()` derives it.
+
+    A point whose `runner()` call raises is caught, logged immediately, and
+    recorded in the result's `failed_points` rather than aborting the whole
+    grid (M09 fix, "make grid-point failures loud" - see `SensitivityResult.
+    failed_points`'s own docstring for why this matters); `SensitivityGridError`
+    is raised only if EVERY point fails. `base_provider_calls`, when given,
+    is compared against each SUCCESSFUL point's own `result.provenance
+    ["total_provider_calls"]` (only meaningful when `runner` returns a real
+    `BacktestResult`) and any point exceeding it is recorded in
+    `provider_call_warnings`.
 
     `base_point` defaults to the middle value of each axis (e.g. the middle
     of [9, 12, 15] is 12) when omitted, but ONLY for ODD-length axes, which
@@ -226,18 +296,61 @@ def sensitivity_grid(
     surface_index: list[tuple[Any, ...]] = []
     surface_values: list[float] = []
     neighbourhood_sharpes: list[float] = []
+    net_returns_by_strategy_id: dict[str, pd.Series] = {}
+    failed_points: dict[str, str] = {}
+    provider_call_warnings: list[str] = []
 
     for point in points:
         strategy_id = _strategy_id_for_point(strategy_config, point, backtest_config)
-        result = runner(strategy_config, point, backtest_config)
+        try:
+            result = runner(strategy_config, point, backtest_config)
+        except Exception as exc:  # noqa: BLE001 - deliberately broad; see below
+            # M09 fix ("make grid-point failures loud"): caught HERE, per
+            # point, rather than letting the first bad point kill the
+            # WHOLE grid (the pre-fix behaviour) or letting a caller's
+            # broad except silently discard every point that already
+            # succeeded. Logged immediately - a real multi-hour grid run
+            # must not have to wait for the end, or for someone to notice a
+            # quiet stderr line, to learn a point failed and why.
+            reason = f"{type(exc).__name__}: {exc}"
+            logger.warning("sensitivity grid point %r failed: %s", point, reason)
+            failed_points[repr(point)] = reason
+            continue
         net_sharpe = sharpe_ratio(result.net_returns, periods_per_year=periods_per_year)
         trials.append(
             SensitivityTrial(strategy_id=strategy_id, params=point, net_sharpe=net_sharpe)
         )
+        # M09 fix: capture the series HERE, while `result` is still in hand
+        # - the whole point of `SensitivityResult.net_returns_by_strategy_id`
+        # (see its own docstring) is that this is the ONLY place a grid
+        # point's real return series is ever available at all.
+        net_returns_by_strategy_id[strategy_id] = result.net_returns
         surface_index.append(tuple(point[name] for name in param_axes))
         surface_values.append(net_sharpe)
         if _neighbourhood_mask(param_axes, base_point, point):
             neighbourhood_sharpes.append(net_sharpe)
+
+        # M09 orchestrator-directed item: only meaningful when `runner`
+        # returns a real `BacktestResult` (a test fake with just
+        # `net_returns` has no `.provenance` - `getattr` degrades cleanly).
+        point_provenance = getattr(result, "provenance", None)
+        if base_provider_calls is not None and isinstance(point_provenance, dict):
+            point_calls = point_provenance.get("total_provider_calls")
+            if point_calls is not None and point_calls > base_provider_calls:
+                warning = (
+                    f"sensitivity grid point {point} made {point_calls} provider call(s) "
+                    f"against {base_provider_calls} for the headline run - possible "
+                    "caching/memoisation regression, not evidence about the strategy"
+                )
+                logger.warning(warning)
+                provider_call_warnings.append(warning)
+
+    if not trials:
+        detail = "; ".join(f"{params}: {reason}" for params, reason in failed_points.items())
+        raise SensitivityGridError(
+            f"every grid point failed ({len(failed_points)}/{len(points)}) - nothing to report: "
+            f"{detail}"
+        )
 
     surface = pd.Series(
         surface_values,
@@ -282,4 +395,7 @@ def sensitivity_grid(
         neighbourhood_size=len(neighbourhood_sharpes),
         neighbourhood_truncated=neighbourhood_truncated,
         nan_points=nan_points,
+        net_returns_by_strategy_id=net_returns_by_strategy_id,
+        failed_points=failed_points,
+        provider_call_warnings=provider_call_warnings,
     )

@@ -131,7 +131,7 @@
     <table>
       <thead><tr><th>Gate</th><th>Kind</th><th>Value</th><th>Threshold</th><th>Result</th><th>Reason</th></tr></thead>
       <tbody>
-      {% for g in gates.hard + gates.soft %}
+      {% for g in gates.hard + gates.soft + gates.informational %}
         <tr>
           <td class="{{ 'kind-hard' if g.kind == 'hard' else '' }}">{{ g.name }}</td>
           <td>{{ g.kind }}</td><td>{{ g.value }}</td><td>{{ g.threshold }}</td>
@@ -142,6 +142,9 @@
       </tbody>
     </table>
   </div>
+  {% if gates.informational %}
+  <p class="muted"><code>informational</code> gates are always reported (value, threshold, result) but never affect the verdict above - see the verdict legend.</p>
+  {% endif %}
   {% else %}
   <p class="muted">No report card was supplied - run <code>quantlab validate --full</code> for gate results.</p>
   {% endif %}

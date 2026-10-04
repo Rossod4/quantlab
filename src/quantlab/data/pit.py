@@ -521,7 +521,28 @@ class PITDataContext:
         figure, so a split leaves it untouched; `annual_eps_growth` is a
         ratio of two same-vintage EPS figures, so a share-count rescaling
         cancels out of it and it is likewise left untouched. Fields not
-        declared are still filtered out first, as before."""
+        declared are still filtered out first, as before.
+
+        M09 per-component TTM EPS restatement (plans/M09-end-to-end.md,
+        closing plans/QUANT-NOTES.md's "From M03b verdict" item 1): `ttm_eps`
+        is typically a SUM of up to four quarterly components, each with its
+        OWN `filed` date (`full["ttm_eps_components"]`,
+        data/providers/edgar_fundamentals.py's `_ttm_duration_components`).
+        Restating the SUM by one factor keyed to the LATEST component's
+        filed date (the pre-M09 approach, still used below as a fallback
+        when a provider supplies no `ttm_eps_components`) is exact only when
+        every component shares one filed date; it silently under-restates
+        whenever a split falls BETWEEN two component filings - the summed
+        components straddling it are then in DIFFERENT share terms and no
+        single factor can correct both. This restates EACH component by the
+        splits between ITS OWN filed date and asof, THEN sums - frozen
+        numerics when every component shares one filed date (the common
+        case, including every pre-M09 fixture), since the per-component and
+        single-factor approaches are then algebraically identical.
+        `ttm_eps_split_factor` still reports ONE number for backward-
+        compatible provenance: the effective ratio `raw_sum / restated_sum`
+        (1.0 when nothing changed) - the per-component factors that actually
+        drove the restatement are not separately serialized."""
         if not self._requirements.fundamental_fields:
             raise UndeclaredDataError(
                 f"fundamentals() called for {ticker!r} but DataRequirements declares no "
@@ -537,20 +558,50 @@ class PITDataContext:
             actions = self._gated_actions_by_ticker([ticker])[ticker]
             for field in share_terms_fields:
                 factor = 1.0
-                if result.get(field) is not None:
+                if field == "ttm_eps" and result.get(field) is not None:
+                    factor = self._restate_ttm_eps_per_component(result, full, actions)
+                elif result.get(field) is not None:
                     filed = full.get(_SHARE_TERMS_FILED_KEYS[field])
                     if filed is not None and not pd.isna(filed):
                         factor = _split_factor_since_filed(pd.Timestamp(filed), actions, self._asof)
-                        if field == "shares_outstanding":
-                            result[field] = result[field] * factor
-                        else:  # ttm_eps
-                            result[field] = result[field] / factor
+                        result[field] = result[field] * factor
                 # Per-field provenance key (M03b REVIEW.md finding 2) - see
                 # docstring above for why this is two keys, not one shared
                 # scalar.
                 result[f"{field}_split_factor"] = factor
             result["share_terms_asof"] = self._asof
         return result
+
+    def _restate_ttm_eps_per_component(
+        self, result: dict[str, Any], full: dict[str, Any], actions: pd.DataFrame
+    ) -> float:
+        """The `ttm_eps` half of `fundamentals()`'s M09 restatement - see
+        that method's docstring. Mutates `result["ttm_eps"]` in place and
+        returns the single effective `ttm_eps_split_factor` to report.
+        Falls back to the pre-M09 single-`ttm_eps_filed`-date restatement
+        when the provider supplies no `ttm_eps_components` (e.g. a test
+        double implementing `FundamentalsProvider` directly)."""
+        components = full.get("ttm_eps_components")
+        if not components:
+            filed = full.get(_SHARE_TERMS_FILED_KEYS["ttm_eps"])
+            if filed is None or pd.isna(filed):
+                return 1.0
+            factor = _split_factor_since_filed(pd.Timestamp(filed), actions, self._asof)
+            result["ttm_eps"] = result["ttm_eps"] / factor
+            return factor
+
+        raw_sum = 0.0
+        restated_sum = 0.0
+        for value, filed in components:
+            raw_sum += value
+            component_factor = 1.0
+            if filed is not None and not pd.isna(filed):
+                component_factor = _split_factor_since_filed(
+                    pd.Timestamp(filed), actions, self._asof
+                )
+            restated_sum += value / component_factor
+        result["ttm_eps"] = restated_sum
+        return raw_sum / restated_sum if restated_sum else 1.0
 
     # -- universe -----------------------------------------------------------
 

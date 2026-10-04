@@ -127,6 +127,36 @@ def test_stale_cache_without_metadata_triggers_refetch_attempt(tmp_path, monkeyp
     assert "GONE" not in set(panel["ticker"])  # whole-batch failure: ticker absent
 
 
+# --- network_fetch_attempts counter (M09 observability guard) --------------
+
+
+def test_network_fetch_attempts_counts_cache_misses_not_cache_hits(tmp_path, no_network):
+    _write_fake_cache(tmp_path, "CACHED", "2012-01-01", "2020-12-31")
+    write_price_cache_meta("CACHED", "2012-01-01", "2020-12-31", tmp_path)
+    provider = YFinancePriceProvider(cache_dir=tmp_path)
+
+    provider.get_prices(["CACHED"], "2012-01-01", "2020-12-31")
+
+    assert provider.network_fetch_attempts == 0  # served entirely from cache
+
+
+def test_network_fetch_attempts_counts_each_cache_miss_and_accumulates_across_calls(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(yfinance_prices_module, "_download_batch", lambda *a, **k: pd.DataFrame())
+    provider = YFinancePriceProvider(cache_dir=tmp_path)
+
+    provider.get_prices(["AAA", "BBB"], "2012-01-01", "2020-12-31")
+    assert provider.network_fetch_attempts == 2
+
+    # A SECOND call, on the SAME instance, ACCUMULATES rather than resets -
+    # the whole point (see the field's own docstring) is a per-run total
+    # across every backtest sharing one provider instance (e.g. every
+    # sensitivity-grid point), not a per-call figure.
+    provider.get_prices(["CCC"], "2012-01-01", "2020-12-31")
+    assert provider.network_fetch_attempts == 3
+
+
 def test_get_prices_reads_committed_fixture_cache_exactly(tmp_path, no_network):
     """Uses the committed tests/fixtures/prices_slice.parquet directly as a
     ticker's cache file (rather than a synthetic in-test frame), proving

@@ -9,10 +9,12 @@ from quantlab.data.quality import (
     QualityGate,
     heal_or_flag_new_listings,
     membership_start_by_ticker,
+    read_scan_manifest,
     scan_price_cache,
     symbol_reuse_gap_reasons,
     symbol_reuse_new_listing_reason,
     unexplained_jump_dates,
+    unscanned_tickers,
     zero_volume_fraction,
 )
 
@@ -784,3 +786,70 @@ def test_heal_or_flag_new_listings_never_touches_a_genuine_new_member(tmp_path):
 
     assert result == {}
     assert provider.requested is None
+
+
+# --- scan-coverage manifest (M09, plans/QUANT-NOTES.md "M09 (quantlab data
+# scan), must-fix": a never-scanned cache must be distinguishable from a
+# scanned-and-clean one) -----------------------------------------------------
+
+
+def test_scan_price_cache_writes_a_coverage_manifest_covering_every_visited_ticker(tmp_path):
+    from quantlab.core.calendar import trading_days
+    from quantlab.data.cache import price_cache_path
+
+    sessions = trading_days("2020-01-01", "2020-12-30")
+    for ticker in ("AAA", "BBB"):
+        df = pd.DataFrame(
+            {
+                "Open": [10.0] * len(sessions),
+                "High": [10.1] * len(sessions),
+                "Low": [9.9] * len(sessions),
+                "Close": [10.0] * len(sessions),
+                "Adj Close": [10.0] * len(sessions),
+                "Volume": [1000] * len(sessions),
+            },
+            index=sessions,
+        )
+        path = price_cache_path(ticker, tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(path)
+
+    assert read_scan_manifest(tmp_path) is None  # never scanned yet
+    assert unscanned_tickers(tmp_path, ["AAA", "BBB", "CCC"]) == ["AAA", "BBB", "CCC"]
+
+    scan_price_cache(tmp_path)
+
+    manifest = read_scan_manifest(tmp_path)
+    assert manifest is not None
+    assert sorted(manifest["scanned_tickers"]) == ["AAA", "BBB"]
+    assert manifest["checked_at"]
+    # AAA/BBB were visited (clean); CCC never had a cache file to visit.
+    assert unscanned_tickers(tmp_path, ["AAA", "BBB", "CCC"]) == ["CCC"]
+
+
+def test_scan_price_cache_tickers_param_restricts_the_scan(tmp_path):
+    from quantlab.core.calendar import trading_days
+    from quantlab.data.cache import price_cache_path
+
+    sessions = trading_days("2020-01-01", "2020-12-30")
+    for ticker in ("AAA", "BBB"):
+        df = pd.DataFrame(
+            {
+                "Open": [10.0] * len(sessions),
+                "High": [10.1] * len(sessions),
+                "Low": [9.9] * len(sessions),
+                "Close": [10.0] * len(sessions),
+                "Adj Close": [10.0] * len(sessions),
+                "Volume": [1000] * len(sessions),
+            },
+            index=sessions,
+        )
+        path = price_cache_path(ticker, tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(path)
+
+    report = scan_price_cache(tmp_path, tickers=["AAA"])
+
+    assert report.scanned_count == 1
+    manifest = read_scan_manifest(tmp_path)
+    assert manifest["scanned_tickers"] == ["AAA"]

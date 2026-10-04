@@ -25,7 +25,7 @@ from quantlab.core.errors import (
 )
 from quantlab.core.errors import ReconcileError as ReconcileErrorType
 from quantlab.core.semantics import DATA_SEMANTICS_VERSION
-from quantlab.core.types import Position, TargetWeights
+from quantlab.core.types import Order, Position, TargetWeights
 from quantlab.data.interfaces import (
     ConstituentsProvider,
     CorporateActionsProvider,
@@ -44,6 +44,7 @@ from quantlab.paper.runner import (
 )
 from quantlab.strategies.base import Strategy
 from quantlab.strategies.registry import register_strategy
+from tests._report_fixtures import write_real_eligible_report_card
 
 # -- fakes --------------------------------------------------------------------
 
@@ -305,6 +306,7 @@ def _write_report_card(reports_dir, strategy_id: str, verdict: str) -> None:
         "provenance": {
             "strategy_id": strategy_id,
             "data_semantics_version": DATA_SEMANTICS_VERSION,
+            "unscanned_cached_tickers_count": 0,
         },
         "known_caveats": ["some caveat from the promoting report card"],
     }
@@ -460,6 +462,50 @@ def test_promotion_gate_refuses_a_rejected_strategy(monkeypatch, tmp_path):
     assert records[0]["planned_orders"] == []
 
 
+def _gate_setup(monkeypatch, tmp_path):
+    platform_config = _platform_config(tmp_path)
+    strategy_config = {"strategy": "paper-runner-fixed-weight", "params": {"weights": {"AAA": 1.0}}}
+    from quantlab.strategies.registry import load_strategy
+
+    strategy_id = load_strategy(strategy_config).strategy_id
+    providers = _fake_providers({"AAA": 100.0, "BENCH": 50.0}, tmp_path)
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _: providers)
+    return platform_config, strategy_config, strategy_id
+
+
+def test_promotion_gate_refuses_an_eligible_card_for_a_different_strategy_id(monkeypatch, tmp_path):
+    platform_config, strategy_config, _strategy_id = _gate_setup(monkeypatch, tmp_path)
+    _write_report_card(platform_config.reports_dir, "paper-runner-other-0000", "ELIGIBLE_FOR_PAPER")
+
+    with pytest.raises(PromotionGateError):
+        run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+
+def test_promotion_gate_refuses_an_eligible_card_from_an_older_data_semantics_version(
+    monkeypatch, tmp_path
+):
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    write_real_eligible_report_card(
+        platform_config.reports_dir, strategy_id, data_semantics_version="m03b"
+    )
+
+    with pytest.raises(PromotionGateError):
+        run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+
+def test_promotion_gate_accepts_a_card_written_by_the_real_report_card_builder(
+    monkeypatch, tmp_path
+):
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    card = write_real_eligible_report_card(platform_config.reports_dir, strategy_id)
+    assert card["verdict"] == "ELIGIBLE_FOR_PAPER"
+
+    record = run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+    assert record.refused_reason is None
+    assert record.promoting_report_card is not None
+
+
 def test_promotion_gate_refuses_when_no_report_card_exists_at_all(monkeypatch, tmp_path):
     platform_config = _platform_config(tmp_path)
     strategy_config = {"strategy": "paper-runner-fixed-weight", "params": {"weights": {"AAA": 1.0}}}
@@ -494,6 +540,98 @@ def test_force_research_bypasses_the_gate_and_flags_the_journal(monkeypatch, tmp
 
     records = read_journal(platform_config.reports_dir, strategy_id)
     assert records[-1]["force_research"] is True
+
+
+def test_dry_run_plans_the_identical_orders_a_real_run_would_and_writes_no_journal_record(
+    monkeypatch, tmp_path
+):
+    """M09 fix (quant-gate carried item): `run_once(..., dry_run=True)` must
+    run the SAME pipeline as a real cycle - not the old CLI's hand-rolled
+    second decide-and-plan path, which wired none of `set_context_factory`,
+    the proactive actions-cache refresh, forced exits or `attempt`
+    numbering, and measurably diverged from a real run on a stale-cache
+    fixture. Calling dry_run first (non-mutating) and then a real run on the
+    SAME broker/state proves the orders match, and that the dry run left no
+    trace in the journal or on the broker for the real run to react to."""
+    platform_config = _platform_config(tmp_path)
+    strategy_config = {"strategy": "paper-runner-fixed-weight", "params": {"weights": {"AAA": 1.0}}}
+    from quantlab.strategies.registry import load_strategy
+
+    strategy_id = load_strategy(strategy_config).strategy_id
+    _write_report_card(platform_config.reports_dir, strategy_id, "ELIGIBLE_FOR_PAPER")
+
+    providers = _fake_providers({"AAA": 100.0, "BENCH": 50.0}, tmp_path)
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _: providers)
+
+    broker = _mock_broker({"AAA": 100.0})
+    account_before_dry_run = broker.account()
+
+    dry_record = run_once(strategy_config, platform_config, broker, dry_run=True)
+
+    # No lasting side effect anywhere.
+    assert read_journal(platform_config.reports_dir, strategy_id) == []
+    assert broker.account().cash == account_before_dry_run.cash
+    assert broker.account().positions == account_before_dry_run.positions
+    assert broker.open_orders() == []
+    assert dry_record.results == []
+    assert any("DRY RUN" in c for c in dry_record.known_caveats)
+
+    real_record = run_once(strategy_config, platform_config, broker)
+
+    assert dry_record.refused_reason is None
+    assert real_record.refused_reason is None
+    assert dry_record.planned_orders == real_record.planned_orders
+    assert dry_record.targets == real_record.targets
+    # The real run DID leave a trace; the dry run still shows up as zero.
+    assert len(read_journal(platform_config.reports_dir, strategy_id)) == 1
+
+
+def test_dry_run_refusal_is_returned_but_never_journaled(monkeypatch, tmp_path):
+    platform_config = _platform_config(tmp_path)
+    strategy_config = {"strategy": "paper-runner-fixed-weight", "params": {"weights": {"AAA": 1.0}}}
+    from quantlab.strategies.registry import load_strategy
+
+    strategy_id = load_strategy(strategy_config).strategy_id
+    _write_report_card(platform_config.reports_dir, strategy_id, "REJECTED")
+
+    providers = _fake_providers({"AAA": 100.0, "BENCH": 50.0}, tmp_path)
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _: providers)
+
+    broker = _mock_broker({"AAA": 100.0})
+
+    with pytest.raises(PromotionGateError):
+        run_once(strategy_config, platform_config, broker, dry_run=True)
+
+    # A REAL refusal from the same setup writes exactly one record (pinned
+    # by test_promotion_gate_refuses_a_rejected_strategy above); the dry-run
+    # refusal above must leave the journal untouched.
+    assert read_journal(platform_config.reports_dir, strategy_id) == []
+
+
+def test_dry_run_never_cancels_resting_orders(monkeypatch, tmp_path):
+    platform_config = _platform_config(tmp_path)
+    strategy_config = {"strategy": "paper-runner-fixed-weight", "params": {"weights": {"AAA": 1.0}}}
+    from quantlab.strategies.registry import load_strategy
+
+    strategy_id = load_strategy(strategy_config).strategy_id
+    _write_report_card(platform_config.reports_dir, strategy_id, "ELIGIBLE_FOR_PAPER")
+
+    providers = _fake_providers({"AAA": 100.0, "BENCH": 50.0}, tmp_path)
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _: providers)
+
+    # A broker with a resting order already open (a prior partial fill).
+    broker = _mock_broker({"AAA": 100.0}, cash=0.0)
+    broker.positions["AAA"] = Position(ticker="AAA", qty=500.0, avg_cost=100.0)
+    broker._open["prior-attempt-1"] = Order(
+        client_order_id="prior-attempt-1", ticker="AAA", side="SELL", qty=10.0, order_type="MARKET"
+    )
+    open_before = broker.open_orders()
+    assert len(open_before) == 1
+
+    record = run_once(strategy_config, platform_config, broker, dry_run=True)
+
+    assert record.canceled_orders == []
+    assert broker.open_orders() == open_before
 
 
 def test_resolve_asof_clamps_to_the_price_caches_actual_last_bar(tmp_path):
@@ -1423,3 +1561,52 @@ def test_accept_broker_state_rebaseline_records_a_loud_diff_and_unblocks_the_sch
     # The NEXT ordinary run reconciles cleanly against the rebaseline.
     record_next = run_once(strategy_config, platform_config, broker)
     assert record_next.refused_reason is None
+
+
+def test_promotion_gate_refuses_an_eligible_card_built_on_an_unscanned_cache(monkeypatch, tmp_path):
+    """Quant-gate cycle 1 finding 7: a card whose provenance shows cached
+    tickers `quantlab data scan` never visited cannot promote, however
+    ELIGIBLE its verdict; the refusal names the cause."""
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    card = write_real_eligible_report_card(
+        platform_config.reports_dir, strategy_id, unscanned_cached=["AAA", "BBB"]
+    )
+    assert card["verdict"] == "ELIGIBLE_FOR_PAPER"
+    assert card["provenance"]["unscanned_cached_tickers_count"] == 2
+
+    with pytest.raises(PromotionGateError, match="unscanned_cached_tickers_count=2"):
+        run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+
+def test_promotion_gate_refuses_an_eligible_card_with_no_scan_provenance_at_all(
+    monkeypatch, tmp_path
+):
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    out = platform_config.reports_dir / "validate" / strategy_id
+    out.mkdir(parents=True)
+    (out / "report_card.json").write_text(
+        json.dumps(
+            {
+                "verdict": "ELIGIBLE_FOR_PAPER",
+                "provenance": {
+                    "strategy_id": strategy_id,
+                    "data_semantics_version": DATA_SEMANTICS_VERSION,
+                },
+            }
+        )
+    )
+
+    with pytest.raises(PromotionGateError, match="unscanned_cached_tickers_count=None"):
+        run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+
+def test_names_with_no_cached_series_do_not_block_promotion(monkeypatch, tmp_path):
+    """The default fixture lists DEAD1 as never-scanned AND no_data (it can
+    never be scanned): that must not count against the card."""
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    card = write_real_eligible_report_card(platform_config.reports_dir, strategy_id)
+    assert card["provenance"]["unscanned_cached_tickers_count"] == 0
+    assert (
+        run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0})).refused_reason
+        is None
+    )

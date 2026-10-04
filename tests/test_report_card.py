@@ -189,7 +189,12 @@ def test_report_card_research_only_when_hard_gates_pass_but_soft_gates_missing(t
         assert gate.passed, f"expected hard gate {name!r} to pass: {gate.reason}"
     soft_gates = {g.name: g for g in report_card.gates if g.kind == "soft"}
     assert soft_gates["no_cliff_score"].passed is False  # no sensitivity supplied
-    assert soft_gates["capacity_ceiling"].passed is False  # no price panel supplied
+    # capacity_ceiling is an `informational` gate (orchestrator decision,
+    # plans/QUANT-NOTES.md) - always reported, but never a `soft` gate and
+    # never affects the verdict, which RESEARCH_ONLY here already reflects
+    # (no_cliff_score alone is enough to cap it).
+    informational_gates = {g.name: g for g in report_card.gates if g.kind == "informational"}
+    assert informational_gates["capacity_ceiling"].passed is False  # no price panel supplied
     assert report_card.verdict == "RESEARCH_ONLY"
 
 
@@ -283,6 +288,84 @@ def test_capacity_gate_states_trivially_passable_note_at_small_stake(tmp_path):
         "fixture must actually clear the bar by >10x for this regression to mean anything"
     )
     assert "capacity gate is trivially passable at this stake" in cap_gate.reason
+
+
+def test_ranking_agreement_wired_when_netted_book_sharpes_supplied(tmp_path):
+    """M09 (plans/M09-end-to-end.md carried item 7): supplying
+    `netted_book_grid_sharpes` alongside a real `WalkForwardResult` computes
+    a REAL Kendall-tau ranking-agreement check and replaces the standing
+    "not checked" disclosure with it."""
+    from tests._report_fixtures import real_walk_forward_result
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    _register_background_trials(registry)
+    result = _strong_headline_result()
+    wf = real_walk_forward_result()
+
+    fixed_columns = [c for c in wf.comparison.columns if c != "Walk-Forward"]
+    blend_of_net = wf.comparison.loc["Sharpe Ratio", fixed_columns]
+    label_to_weights = {
+        f"Fixed {w[0]:.0%} momentum/{w[1]:.0%} value": w
+        for w in [(1.0, 0.0), (0.75, 0.25), (0.5, 0.5), (0.25, 0.75), (0.0, 1.0)]
+    }
+    # A netted-book Sharpe series identical to comparison's own ranking -
+    # the "both conventions agree" case, cheap to construct without a real
+    # engine run.
+    netted_book_sharpes = {label_to_weights[label]: blend_of_net[label] for label in fixed_columns}
+
+    report_card = build_report_card(
+        result,
+        None,
+        registry,
+        _config(),
+        walk_forward=wf,
+        netted_book_grid_sharpes=netted_book_sharpes,
+    )
+
+    assert report_card.ranking_agreement is not None
+    assert report_card.ranking_agreement["kendall_tau"] == pytest.approx(1.0)
+    assert report_card.ranking_agreement["top_choice_agrees"] is True
+    assert any("Kendall tau=1.0000" in c and "AGREES" in c for c in report_card.known_caveats)
+
+
+def test_ranking_agreement_absent_when_not_supplied(tmp_path):
+    from tests._report_fixtures import real_walk_forward_result
+
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    _register_background_trials(registry)
+    result = _strong_headline_result()
+    wf = real_walk_forward_result()
+
+    report_card = build_report_card(result, None, registry, _config(), walk_forward=wf)
+
+    assert report_card.ranking_agreement is None
+    assert any("NOT been checked" in c for c in report_card.known_caveats)
+
+
+def test_capacity_gate_is_informational_and_never_affects_the_verdict(tmp_path):
+    """Orchestrator decision (2026-09-12, plans/QUANT-NOTES.md, "Capacity
+    gate at retail stake"): capacity is an `informational` gate class - it
+    is always computed and reported, but a FAILING capacity gate must never
+    demote the verdict below what it would be without it (unlike a `soft`
+    gate failure, which caps at RESEARCH_ONLY)."""
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    _register_background_trials(registry)
+    result = _strong_headline_result(holdings_history=_holdings_history())
+
+    # No price_panel supplied -> capacity cannot be estimated -> its gate
+    # FAILS - but every other gate (sensitivity supplied) still passes.
+    report_card = build_report_card(
+        result, None, registry, _config(), sensitivity=_flat_sensitivity()
+    )
+
+    cap_gate = next(g for g in report_card.gates if g.name == "capacity_ceiling")
+    assert cap_gate.kind == "informational"
+    assert cap_gate.passed is False
+    other_failing = [g for g in report_card.gates if not g.passed and g.name != "capacity_ceiling"]
+    assert other_failing == [], f"unexpected failing gate(s): {other_failing}"
+    assert report_card.verdict == "ELIGIBLE_FOR_PAPER", (
+        "a failing informational gate must not demote the verdict"
+    )
 
 
 def test_capacity_gate_omits_trivially_passable_note_when_close_to_the_bar(tmp_path):
@@ -408,3 +491,75 @@ def test_rc_hard_gate_fails_named_cause_when_headline_offset_from_siblings(tmp_p
     # siblings, which this assertion would not catch on its own without
     # the reason-string check above also naming the true cause.
     assert report_card.verdict == "REJECTED"
+
+
+def test_card_provenance_records_the_validating_code_beside_the_backtest_sha(tmp_path):
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    _register_background_trials(registry)
+    result = _strong_headline_result()
+
+    card = build_report_card(
+        result,
+        None,
+        registry,
+        _config(),
+        validating_code={"sha": "abc1234validator", "dirty": False},
+    )
+
+    prov = card.to_json()["provenance"]
+    assert prov["validated_by_git_sha"] == "abc1234validator"
+    assert prov["validated_by_dirty"] is False
+    assert prov["quantlab_git_sha"] == "test-sha"  # the BACKTEST's own sha, unchanged
+
+
+def test_card_provenance_captures_the_validating_code_itself_when_not_supplied(tmp_path):
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    _register_background_trials(registry)
+
+    card = build_report_card(_strong_headline_result(), None, registry, _config())
+
+    prov = card.to_json()["provenance"]
+    assert prov["validated_by_git_sha"] != "unknown"
+    assert isinstance(prov["validated_by_dirty"], bool)
+
+
+def test_unbounded_min_track_record_length_is_worded_unbounded_never_inf(tmp_path):
+    """Carried M09 item 11. A strategy whose Sharpe is below the confidence
+    bar's null has an infinite minimum track-record length; the gate reason
+    must say "unbounded" at the source (Mutation: "unbounded" -> "inf" made
+    nothing fail)."""
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    _register_background_trials(registry)
+    result = _strong_headline_result(net_returns=_alternating(0.01, -0.0100001))
+
+    card = build_report_card(result, None, registry, _config())
+
+    gate = next(g for g in card.gates if g.name == "min_track_record_length")
+    assert not gate.passed
+    assert "needs >= unbounded observations" in gate.reason
+    assert "inf" not in gate.reason.replace("information", "")
+
+
+def test_unscanned_cached_count_excludes_no_data_names_and_pins_the_none_case():
+    """The exclusion is what lets a legitimately scanned cache promote (the
+    168 negative-cache names can never be scanned). Mutating it to `set()`
+    must fail the first assertion."""
+    from quantlab.validation.report_card import _unscanned_cached_count
+
+    assert _unscanned_cached_count({}) is None  # no scan provenance at all
+    assert (
+        _unscanned_cached_count(
+            {
+                "never_scanned_tickers": ["DEAD1", "DEAD2", "LIVE1"],
+                "no_data_suppressed_tickers": ["DEAD1", "DEAD2"],
+            }
+        )
+        == 1
+    )
+    assert (
+        _unscanned_cached_count(
+            {"never_scanned_tickers": ["DEAD1"], "no_data_suppressed_tickers": ["DEAD1"]}
+        )
+        == 0
+    )
+    assert _unscanned_cached_count({"never_scanned_tickers": ["A", "B"]}) == 2

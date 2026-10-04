@@ -11,6 +11,8 @@ relationship "on the same data", not at calibration scale.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -40,6 +42,7 @@ def _iid_noise_matrix(rng: np.random.Generator, t: int, k: int) -> pd.DataFrame:
 # --- synthetic null: p-values ~ Uniform(0, 1) ----------------------------
 
 
+@pytest.mark.slow  # M09 packet item 13: N=200 or 300-sim calibration/size check
 def test_white_rc_synthetic_null_pvalues_are_uniform():
     # LOW-POWER NOTICE (quant-gate VERDICT.2.md M06 cycle-2 finding D,
     # non-blocking): this test runs at block_len=3.0, NOT the shipped
@@ -68,6 +71,7 @@ def test_white_rc_synthetic_null_pvalues_are_uniform():
     assert ks_p > 0.01, f"p-values not consistent with Uniform(0,1): KS stat={ks_stat}, p={ks_p}"
 
 
+@pytest.mark.slow  # M09 packet item 13: N=200 or 300-sim calibration/size check
 def test_white_rc_size_at_shipped_block_length_is_bounded():
     """quant-gate VERDICT.2.md M06 cycle-2 finding D (non-blocking): a real
     SIZE bound at the gate's own max_rc_pvalue=0.10 bar, at the SHIPPED
@@ -430,3 +434,85 @@ def test_build_trial_matrix_raises_no_common_dates(tmp_path):
 
     assert excinfo.value.reason_kind == "no_common_dates"
     assert excinfo.value.excluded == []
+
+
+# --- missing/corrupt series sidecar degrades to a failed gate, never a -----
+# crash (plans/QUANT-NOTES.md "M09 operational, low severity", carried from
+# the M06 cycle-3 verdict) --------------------------------------------------
+
+
+def test_build_trial_matrix_degrades_on_a_missing_series_sidecar_with_other_survivors(tmp_path):
+    # 3 trials recorded; one's series parquet is then deleted out of band
+    # (e.g. reports_dir moved/pruned) - build_trial_matrix must run the
+    # Reality Check on the remaining 2, naming the missing one and its path,
+    # rather than letting `pd.read_parquet`'s OSError escape uncaught.
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    dates = pd.date_range("2015-01-31", periods=24, freq="ME")
+    records = []
+    for i in range(3):
+        net_returns = pd.Series(0.01 * (i + 1), index=dates)
+        result = make_backtest_result(net_returns=net_returns, strategy_id=f"momentum-{i:010d}")
+        records.append(registry.record_backtest(result, family="momentum"))
+
+    victim = records[0]
+    Path(victim.series_path).unlink()
+
+    matrix, excluded, retained = build_trial_matrix(registry, "momentum")
+
+    assert matrix.shape == (24, 2)
+    assert "|".join(victim.key) not in matrix.columns
+    assert len(excluded) == 1
+    assert "|".join(victim.key) in excluded[0]
+    assert victim.series_path in excluded[0]
+    assert "could not be read" in excluded[0]
+
+
+def test_build_trial_matrix_raises_when_the_headline_series_is_missing(tmp_path):
+    # The SAME failure, but on the headline trial itself: the Reality Check
+    # must refuse to run on its siblings alone (mirrors the overlap-floor
+    # headline protection), naming the load failure rather than a generic
+    # "too few trials" message.
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    dates = pd.date_range("2015-01-31", periods=24, freq="ME")
+    records = []
+    for i in range(3):
+        net_returns = pd.Series(0.01 * (i + 1), index=dates)
+        result = make_backtest_result(net_returns=net_returns, strategy_id=f"momentum-{i:010d}")
+        records.append(registry.record_backtest(result, family="momentum"))
+
+    headline = records[0]
+    headline_label = "|".join(headline.key)
+    Path(headline.series_path).unlink()
+
+    with pytest.raises(TrialMatrixError) as excinfo:
+        build_trial_matrix(registry, "momentum", headline_label=headline_label)
+
+    assert excinfo.value.reason_kind == "series_load_failed"
+    assert headline_label in str(excinfo.value)
+    assert len(excinfo.value.excluded) == 1
+    assert headline.series_path in excinfo.value.excluded[0]
+
+
+def test_build_trial_matrix_raises_too_few_trials_after_a_missing_series(tmp_path):
+    # Only 2 trials recorded; one's series is missing - only 1 usable trial
+    # remains, which must raise (never silently run a 1-column Reality
+    # Check), naming the missing trial and path in `excluded` regardless of
+    # which of the three reason_kind buckets it lands in (this shares the
+    # same "any exclusion at all" bucketing as an overlap-floor exclusion -
+    # see `build_trial_matrix`'s own docstring).
+    registry = TrialsRegistry(tmp_path, repo_root=tmp_path)
+    dates = pd.date_range("2015-01-31", periods=24, freq="ME")
+    records = []
+    for i in range(2):
+        net_returns = pd.Series(0.01 * (i + 1), index=dates)
+        result = make_backtest_result(net_returns=net_returns, strategy_id=f"momentum-{i:010d}")
+        records.append(registry.record_backtest(result, family="momentum"))
+
+    Path(records[0].series_path).unlink()
+
+    with pytest.raises(TrialMatrixError) as excinfo:
+        build_trial_matrix(registry, "momentum")
+
+    assert excinfo.value.reason_kind == "excluded_by_overlap_floor"
+    assert len(excinfo.value.excluded) == 1
+    assert records[0].series_path in excinfo.value.excluded[0]

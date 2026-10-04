@@ -317,12 +317,47 @@ def build_trial_matrix(
     on the ACTUAL matrix column count, not on the pre-collapse record list.
     """
     records: list[TrialRecord] = registry.trials(family, with_series_only=True)
-    series = {_column_label(r): registry.load_series(r) for r in records}
+    series: dict[str, pd.Series] = {}
+    load_failures: list[str] = []
+    headline_load_failed = False
+    for r in records:
+        label = _column_label(r)
+        try:
+            series[label] = registry.load_series(r)
+        except OSError as exc:
+            # M09 (plans/QUANT-NOTES.md, "M09 operational, low severity"):
+            # `load_series` reads the trial's series parquet sidecar from
+            # disk - a missing or corrupt file (e.g. `reports_dir` moved, or
+            # a sidecar deleted out of band) raises OSError, which is NOT a
+            # `ValueError` and previously escaped this function entirely,
+            # crashing `report_card.py`'s `except ValueError` and aborting
+            # the whole `validate --full` run. Degrade this ONE trial to
+            # "excluded, named and reasoned" instead - a Reality Check that
+            # still has >= 2 OTHER usable trials should still run.
+            load_failures.append(
+                f"{label} excluded from the Reality Check/SPA matrix: its stored return "
+                f"series ({r.series_path}) could not be read ({exc.__class__.__name__}: {exc})"
+            )
+            if label == headline_label:
+                headline_load_failed = True
+
+    if headline_load_failed:
+        raise TrialMatrixError(
+            f"the headline trial {headline_label!r} in family {family!r} could not be "
+            "validated: its own stored return series could not be read from disk - see the "
+            "excluded reason(s) for the path and underlying error. The Reality Check/SPA "
+            "refuse to run without the headline trial itself.",
+            reason_kind="series_load_failed",
+            excluded=list(load_failures),
+            retained_fractions={},
+        )
+
     headline_had_series = headline_label is not None and headline_label in series
 
     series, excluded, retained_fractions = _resolve_overlap(
         series, benchmark_returns, min_overlap_fraction, headline_label=headline_label
     )
+    excluded = load_failures + excluded
 
     if headline_had_series and headline_label not in series:
         headline_fraction = retained_fractions.get(headline_label, 0.0)

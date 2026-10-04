@@ -190,6 +190,7 @@ _FRAME_COLUMNS = [
     "targets",
     "assumed_fill_session",
     "run_timestamp",
+    "price_asof_by_ticker",
 ]
 
 
@@ -199,12 +200,16 @@ def journal_to_frame(reports_dir: str | Path, strategy_id: str) -> pd.DataFrame:
     NOT the run's wall-clock `run_timestamp`), with the full per-run detail
     still available in the underlying JSONL for anything this summary
     doesn't cover (e.g. the full `canceled_orders`/`resting_orders` order
-    lists, `price_asof_by_ticker`, the full `reconcile_report` including
-    `applied_adjustments` - this frame carries only `n_canceled_orders`/
-    `n_resting_orders` counts). Widened (quant-gate
-    VERDICT.md M08 cycle-1 carried item) to also carry `promoting_report_card`,
-    `known_caveats`, `refreshed_actions_tickers`, and `targets` - previously
-    present only in the raw JSONL. Empty (with the documented columns,
+    lists, the full `reconcile_report` including `applied_adjustments` -
+    this frame carries only `n_canceled_orders`/`n_resting_orders` counts).
+    Widened (quant-gate VERDICT.md M08 cycle-1 carried item) to also carry
+    `promoting_report_card`, `known_caveats`, `refreshed_actions_tickers`,
+    and `targets` - previously present only in the raw JSONL. Widened AGAIN
+    (M09, carried from the M08 verdict) to also carry `price_asof_by_ticker`
+    (ticker -> ISO date of the actual price bar used to size that ticker's
+    order) - the `quantlab paper drift` check needs this to tell a lagging
+    data sync (a stale bar) from a genuine signal change, and it was
+    previously in the raw JSONL only. Empty (with the documented columns,
     `asof`-indexed) if nothing has been journaled yet - a caller can always
     assume this shape, never `None`/a missing file."""
     records = read_journal(reports_dir, strategy_id)
@@ -247,6 +252,7 @@ def journal_to_frame(reports_dir: str | Path, strategy_id: str) -> pd.DataFrame:
                 "targets": r.get("targets"),
                 "assumed_fill_session": r.get("assumed_fill_session"),
                 "run_timestamp": r.get("run_timestamp"),
+                "price_asof_by_ticker": r.get("price_asof_by_ticker") or {},
             }
         )
     frame = pd.DataFrame(rows).set_index("asof").sort_index()

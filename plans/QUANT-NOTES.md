@@ -1762,3 +1762,50 @@ and need no real-data re-run.
 - **Standing rule from this gate:** before reporting a cross-run difference as
   "unexplained", check the registry and its backups for a run that already isolates the
   candidate mechanism. Both M09 reconciliations had the separating series on disk.
+
+## M09 gate cycle 2 — ACCEPT (plans/state/M09/VERDICT.2.md)
+
+M09 is **ACCEPTED**. Every closure was re-verified at the gate: I re-ran
+`plans/state/M09/recon_tables.py` (read-only; it reproduces both tables exactly) and
+mutation-tested each code change (10 mutants, all killed, all reverted). No numerics
+moved: `git diff a001d03..HEAD -- src/quantlab/{backtest,data,strategies}` is empty.
+
+### Cycle-1 items — dispositions
+
+- **Findings 1 and 2 (the two reconciliations) — CLOSED.** The README and HANDOFF now
+  carry the (12, 50) like-for-like row and the three-way value table. The value 13→25
+  Sept movement (-0.13 pp) is marked UNRESOLVED; the gate ruled that acceptable, since it
+  concerns a superseded dirty-tree run and no published number.
+- **Finding 3 (drift timing) — CLOSED.** `timing_gap_bps` / `execution_gap_bps` are keyed
+  on `assumed_fill_session`, never report 0 for a missing input, and refuse across an
+  intervening split or unreadable actions.
+- **Finding 4 (blend-N wording) — CLOSED.**
+- **Finding 5 (ranking comparability) — CLOSED.** A missing child param is now refused,
+  and vintage differences are disclosed in `ranking_agreement.vintage_mismatches`.
+- **Finding 7 (promotion vs unscanned cache) — CLOSED.**
+  `unscanned_cached_tickers_count` must be exactly 0; None is refused and no_data names are
+  excluded. Verified against the real momentum provenance keys (168 - 168 = 0).
+- **Finding 8 — CLOSED.**
+- **Findings 6 (`ttm_eps_split_factor` sign-mixed) and 9 (suite time) — LEFT, ACCEPTED**
+  as carried items. Finding 6's entry in "From M09 verdict" above stands; finding 9 stays
+  open until a quiet-AC measurement exists.
+- **The M08 "drift timing" and M04b "momentum reconciliation" items marked NOT CLOSED in
+  the cycle-1 block above are now CLOSED.**
+
+### New carried items
+
+- **→ next data-layer packet (reproducibility):** the fundamentals cache's vintage is not
+  in provenance (actions have `actions_cache_fetched_at`; EDGAR facts have nothing). That
+  is why the M09 value 13→25 Sept movement could only be inferred from file mtimes. Record
+  a fundamentals fetched-at range per run, and add it to `netted_grid._VINTAGE_KEYS`.
+- **→ before the first real promotion:** the promotion gate trusts the card's
+  validation-time `unscanned_cached_tickers_count`. A cache rebuild after validation
+  (which has wiped quarantine once already, on 2026-09-12) would go unnoticed at trade
+  time. `run_once` should also check the CURRENT cache's scan coverage for the declared
+  universe.
+- **→ docs (one line):** drift's `timing_gap_bps` compares raw prices, so an ex-dividend
+  date between the decision close and the fill-session open lands in it. Say so in
+  docs/paper-trading.md section 7.
+- **→ README (wording):** in the value section, "the only window in which the 36
+  contaminated series could matter" overclaims (BMC and COL are contaminated from 2012).
+  Use "the only window where removing them changed the series".

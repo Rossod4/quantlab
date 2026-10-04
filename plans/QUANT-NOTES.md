@@ -1695,3 +1695,70 @@ Both cycle-2 blockers fixed and independently re-verified. M08 is accepted.
   the first run after a gap, writing into the shared `data/cache`. Expected and correct for
   a live runner, but it is the first routine writer to that cache, so the first scheduled
   run will be slow and should not be interrupted.
+
+## From M09 verdict (plans/state/M09/VERDICT.md) — REJECT, cycle 1
+
+M09 was REJECTED at cycle 1, on the two reconciliations only. The cards, the verdicts, the
+gate arithmetic and all seven orchestrator decisions were ruled sound (VERDICT.md
+section C). The remedies for findings 1-4 are documentation plus one small drift change,
+and need no real-data re-run.
+
+### Closure of the M09-addressed items (gate-verified)
+
+- **Data ops (M01/M02b/M04/M04b/M08 refresh, force-clear and unquarantine items) — CLOSED.**
+  `quantlab data refresh|scan|status|prefetch` exist; the reviewer killed 6 of 7 ops
+  mutants and the 7th is now tested; `data status` reproduces the handoff counts read-only.
+- **Scan coverage manifest (M04b residual) — CLOSED.** A never-scanned cache is caveated in
+  `known_caveats`. The real runs were on a scanned cache (36 quarantined).
+- **`retry_after_days` and no_data/quarantined counts in provenance (M04b/M06) — CLOSED.**
+- **Per-component TTM EPS (M03b item 1) — CLOSED.** Gate probe: 4.0 on the straddling
+  fixture; invariant to future-filed quarters, future-filed restatements and post-asof
+  splits; exact on two splits, on a split dated on a filed date, and on restated
+  comparatives; filing lag honoured. Canary (l) is mutation-confirmed.
+- **`build_trial_matrix` OSError guard, capacity demoted to informational, min-TRL
+  "unbounded", NaN-cell de-dup, `&#39;` fallback — CLOSED** (reviewer mutations, cards).
+- **Walk-forward training Sharpes plus ranking agreement (M05/M07) — CLOSED.** Both
+  conventions are on the same footing (same OOS index, rf 0, the same `sharpe_ratio`).
+  See the residual below.
+- **`--dry-run` via `run_once` (M08 cycle 3) — CLOSED** at dc5356d. The gate read
+  `cli.py:1043-1057` and `runner.py:481-841`: the CLI calls `run_once(dry_run=True)`,
+  which journals nothing and never calls `broker.cancel()`/submit.
+- **`journal_to_frame` width plus `price_asof_by_ticker` (M08) — CLOSED.**
+- **Drift-check timing convention (M08, all cycles) — NOT CLOSED.** VERDICT.md finding 3:
+  the "model price" is the decision-bar close, so the overnight timing offset and
+  execution slippage are one number. Required at M09 cycle 2.
+- **Momentum 17.66% vs 15.7% reconciliation (M04b scope note) — NOT CLOSED.** VERDICT.md
+  finding 1: the predecessor held 50 names (`top_n=50`) and the headline holds 30; the
+  committed grid's (12, 50) point reads 16.29% / 0.991 / -20.09% against 15.7 / 0.96 /
+  -19.7. The residual is about 0.6 pp, the same order as SPY's own +0.3 pp vintage
+  difference.
+- **`object.__setattr__(ctx, "_accounting", True)` residual — CLOSED as documented**
+  (README Known limitations), per the M04/M05/M08 rulings.
+
+### New carried items
+
+- **→ M09 cycle 2 (required):** VERDICT.md findings 1-4 (momentum portfolio-size
+  mechanism; value three-way decomposition using the 25 Sept `value_composite-b67309d696`
+  series; drift timing split into `timing_gap_bps` and `execution_gap_bps`; blend
+  N-wording).
+- **→ before any blend ranking conclusion is reused on new runs:**
+  `netted_grid._check_comparable` ignores data vintage (git sha/dirty, actions
+  `fetched_at`, quarantined count), and `netted_grid.py:218` treats a child param missing
+  from provenance as a match. Harmless for the committed result (all inputs dc5356d, one
+  cache).
+- **→ before the first promotion to paper:** `find_promoting_report_card` accepts an
+  ELIGIBLE card built on a cache with never-scanned CACHED tickers. Refuse such a card
+  (excluding no_data names, which can never be scanned).
+- **→ whoever next touches `pit._restate_ttm_eps_per_component`:** the provenance-only
+  `ttm_eps_split_factor` (raw/restated) is meaningless when components differ in sign
+  (gate probe: -2.0). Document it or emit per-component factors.
+- **→ a later sensitivity packet:** momentum's grid has the headline (n_long=30) on its
+  edge, so its no-cliff score is over a truncated 6-point neighbourhood (0.9720,
+  disclosed). Centre the next grid on the headline (e.g. n_long [10,30,50]) rather than
+  reading the truncated score as comparable to value's.
+- **→ any future predecessor comparison:** `configs/strategies/value_composite.yaml`'s
+  header says "quarterly" but every value/blend backtest config rebalances `month_end`.
+  The predecessor's value result was quarterly with top 50, so it differs on two axes.
+- **Standing rule from this gate:** before reporting a cross-run difference as
+  "unexplained", check the registry and its backups for a run that already isolates the
+  candidate mechanism. Both M09 reconciliations had the separating series on disk.

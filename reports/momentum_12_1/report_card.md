@@ -48,10 +48,9 @@ this run's data_semantics_version (m09) is at or after M04b: this count is strat
 - Purged/embargoed CV needs both a purge and an embargo because a contiguous test fold can sit in the MIDDLE of the series with training data on both sides, so a training row's own label window can overlap the test fold from either direction; the walk-forward check (validation/walk_forward.py) needs neither, because its weight choice is made from a STRICTLY PRIOR training block and applied only to the STRICTLY SUBSEQUENT, not-yet-realized test block - there is no way for the test block's own returns to leak backward into that choice.
 - n_trials for this family may double-count the strategy's own headline run against a sensitivity grid's base point at the same parameters - the two use independent id schemes and the registry does not reconcile them (registry.py's module docstring). This over-counts N by one trial; unlike an earlier version of this note claimed, over-counting N is NOT generally conservative for DSR once var_sr_trials is estimated from the same trial set (quant-gate VERDICT.md M06 cycle-1 finding 1) - it is disclosed here because it is a small, one-trial effect, not because its direction is guaranteed safe.
 - subperiod_oof_sharpe (mean Sharpe over contiguous sub-periods) is a consistency check on a FIXED-PARAMETER strategy, not a purged cross-validation: no model is refit per fold, so purge/embargo cannot change its value (quant-gate VERDICT.md M06 cycle-1 finding 4) - purged_kfold_splits itself remains correct and is kept for a future fitted strategy.
-- at least one trial counted toward this family's N (or its dispersion estimate) was recorded from a dirty (uncommitted-changes) working tree - see the provenance section's dirty trial count.
 
 ## Validation badges
-N trials (distinct): **9** (raw key count: 10, 9 dirty) · PSR 0.9998 · DSR 0.9823 · min track-record length unbounded (n/a)
+N trials (distinct): **9** (raw key count: 10, 0 dirty) · PSR 0.9998 · DSR 0.9823 · min track-record length unbounded (n/a)
 
 Reality Check: K=10 realised trials over n_periods=173 common periods, B=200 bootstrap resamples, block_len=6.0. measured size ≈ 0.12 at the 0.10 bar (block length 6.0); treat the bar as approximate.
 
@@ -72,8 +71,8 @@ Capacity: spread percentiles: p10=7.4bps, p25=14.4bps, p50=20.5bps, p75=26.0bps,
 | min_track_record_length | hard | unbounded (n/a) | 173.0000 | FAIL | needs >= unbounded observations for significance; 173 are available (computed on the PER-PERIOD Sharpe 0.2824, not the annualized 0.98). |
 | probabilistic_sharpe_ratio | soft | 0.9998 | 0.9500 | PASS | PSR=0.9998 against the 0.95 bar (computed on the PER-PERIOD Sharpe 0.2824, not the annualized 0.98). min_psr 0.95 binds only below an annualised Sharpe of about 0.47 on a 12-year monthly book - neither is evidence of quality. |
 | subperiod_oof_sharpe | soft | 1.0194 | 0.0000 | PASS | mean Sharpe 1.02 over 5 contiguous sub-periods of a strategy with NO FITTED PARAMETERS - purge/embargo have no effect on this value by construction (quant-gate VERDICT.md M06 cycle-1 finding 4); NOT a purged cross-validation. |
-| no_cliff_score | soft | 0.9452 | 0.5000 | PASS | no_cliff_score=0.9452 against 0.50 (neighbourhood_size=9, neighbourhood_truncated=False, nan_points=0) - a RELATIVE-SPREAD statistic only, never evidence of quality by itself (see min_net_sharpe below). |
-| min_net_sharpe | soft | 0.9783 | 0.3000 | PASS | net Sharpe 0.98 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). Sensitivity grid: (neighbourhood_size=9, neighbourhood_truncated=False, nan_points=0). |
+| no_cliff_score | soft | 0.9720 | 0.5000 | PASS | no_cliff_score=0.9720 against 0.50 (neighbourhood_size=6, neighbourhood_truncated=True, nan_points=0) - a RELATIVE-SPREAD statistic only, never evidence of quality by itself (see min_net_sharpe below). |
+| min_net_sharpe | soft | 0.9783 | 0.3000 | PASS | net Sharpe 0.98 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). Sensitivity grid: (neighbourhood_size=6, neighbourhood_truncated=True, nan_points=0). |
 | max_drawdown_floor | soft | -0.2325 | -0.5000 | PASS | FULL-SAMPLE net max drawdown -23.25% against the -50.00% floor (never a rolling column - see max_negative_rolling_window_fraction below for that). |
 | max_negative_rolling_window_fraction | soft | 0.0000 | 0.5000 | PASS | 0% of rolling windows had negative CAGR against the 50% bar - computed from the FROZEN ported rolling_window_metrics table, whose CAGR is blind to each window's own first return (ported convention, see rolling.py's module docstring). |
 | monte_carlo_drawdown | soft | 0.5020 | 0.5000 | FAIL | P(bootstrap drawdown worse than observed)=0.50. the Monte Carlo drawdown gate sits at the centre of its own statistic's null - neither is evidence of quality. |
@@ -131,21 +130,21 @@ ported convention: each window's first return is omitted from CAGR and hidden fr
 
 ### Parameter sensitivity
 
-no_cliff_score = **0.9452** (neighbourhood_size=9, neighbourhood_truncated=False, nan_points=0) - shown ONLY beside min_net_sharpe below.
+no_cliff_score = **0.9720** (neighbourhood_size=6, neighbourhood_truncated=True, nan_points=0) - shown ONLY beside min_net_sharpe below.
 
-no_cliff_score=0.9452 against 0.50 (neighbourhood_size=9, neighbourhood_truncated=False, nan_points=0) - a RELATIVE-SPREAD statistic only, never evidence of quality by itself (see min_net_sharpe below).
+no_cliff_score=0.9720 against 0.50 (neighbourhood_size=6, neighbourhood_truncated=True, nan_points=0) - a RELATIVE-SPREAD statistic only, never evidence of quality by itself (see min_net_sharpe below).
 
-net Sharpe 0.98 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). Sensitivity grid: (neighbourhood_size=9, neighbourhood_truncated=False, nan_points=0).
+net Sharpe 0.98 against 0.30 - gated ALONGSIDE no_cliff_score per the M05 carried item (a flat-but-bad neighbourhood must not pass on no_cliff_score alone). Sensitivity grid: (neighbourhood_size=6, neighbourhood_truncated=True, nan_points=0).
 
-Base point: **lookback_months=12, n_long=50**
+Base point: **lookback_months=12, n_long=30**
 
 | Grid point | Net Sharpe |
 |---|---|
 | lookback_months=9, n_long=30 | 0.98 |
 | lookback_months=9, n_long=50 | 0.99 |
 | lookback_months=9, n_long=70 | 0.98 |
-| lookback_months=12, n_long=30 | 0.98 |
-| lookback_months=12, n_long=50 (base point) | 0.99 |
+| lookback_months=12, n_long=30 (base point) | 0.98 |
+| lookback_months=12, n_long=50 | 0.99 |
 | lookback_months=12, n_long=70 | 1.01 |
 | lookback_months=15, n_long=30 | 0.97 |
 | lookback_months=15, n_long=50 | 1.00 |
@@ -158,6 +157,7 @@ Base point: **lookback_months=12, n_long=50**
 - 1 forced exit(s) booked at last available price (delisting)
 - 173 rebalance date(s) had declared-universe tickers left unscored (unpriceable) and dropped from weights
 - benchmark Sharpe exceeds strategy Sharpe
+- sensitivity no_cliff_score's neighbourhood is truncated at a grid edge (only 6 point(s) examined) - treat the score as less reliable than an interior base point's
 
 ## Execution conventions
 
@@ -178,9 +178,9 @@ Base point: **lookback_months=12, n_long=50**
 | | |
 |---|---|
 | Strategy id | `momentum-2b2c9fd50a` |
-| Strategy params | `{'book': 'long_only', 'n_long': 30, 'n_short': 30, 'lookback_months': 12, 'skip_months': 1}` |
-| Backtest config | `{'start': '2012-01-01T00:00:00', 'end': '2026-06-30T00:00:00', 'strategy_config': 'C:\\Users\\arwga\\Developer\\ClaudeProjects\\Trading\\quantlab\\configs\\strategies\\momentum_12_1.yaml', 'rebalance_freq': 'month_end', 'initial_capital': 1000000.0, 'execution': 'close', 'cost_model': 'flat_bps', 'one_way_cost_bps': 10.0, 'corwin_schultz_lookback_days': 60, 'borrow_fee_annual_bps': 30.0, 'delisting_haircut': 0.0, 'extreme_return_bound': 3.0, 'extreme_return_policy': 'exclude_legacy', 'benchmark': 'SPY', 'max_dropped_fraction': 0.05, 'abort_on_unscoreable': True}` |
-| Providers | `{'prices': 'YFinancePriceProvider', 'constituents': 'SP500CommunityConstituentsProvider', 'fundamentals': 'EdgarFundamentalsProvider', 'corporate_actions': 'YFinanceCorporateActionsProvider'}` |
+| Strategy params | `{'book': 'long_only', 'lookback_months': 12, 'n_long': 30, 'n_short': 30, 'skip_months': 1}` |
+| Backtest config | `{'abort_on_unscoreable': True, 'benchmark': 'SPY', 'borrow_fee_annual_bps': 30.0, 'corwin_schultz_lookback_days': 60, 'cost_model': 'flat_bps', 'delisting_haircut': 0.0, 'end': '2026-06-30T00:00:00', 'execution': 'close', 'extreme_return_bound': 3.0, 'extreme_return_policy': 'exclude_legacy', 'initial_capital': 1000000.0, 'max_dropped_fraction': 0.05, 'one_way_cost_bps': 10.0, 'rebalance_freq': 'month_end', 'start': '2012-01-01T00:00:00', 'strategy_config': 'configs/strategies/momentum_12_1.yaml'}` |
+| Providers | `{'constituents': 'SP500CommunityConstituentsProvider', 'corporate_actions': 'YFinanceCorporateActionsProvider', 'fundamentals': 'EdgarFundamentalsProvider', 'prices': 'YFinancePriceProvider'}` |
 | Actions-cache fetched_at range | 2026-09-13 - 2026-09-13 |
 | Cache dir | n/a (not recorded in the provenance for this run) |
 | Run seconds | 1328.84 |

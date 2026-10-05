@@ -8,7 +8,7 @@ Series: strategy net returns. Informational: nothing here changes a gate.
 - Factors: Ken French data library (monthly US factors, percent -> decimal), fetched 2026-10-05T19:43:02+00:00; F-F_Research_Data_5_Factors_2x3_CSV.zip: This file was created using the 202608 CRSP database. (Last-Modified Fri, 25 Sep 2026 21:55:02 GMT); F-F_Momentum_Factor_CSV.zip: This file was created using the 202608 CRSP database. (Last-Modified Fri, 25 Sep 2026 21:55:02 GMT).
 - Monthly decimal returns. Regressions use returns in EXCESS of the factor library's RF. Sharpe figures labelled excess_rf use that RF; the platform's own Sharpe (rf=0) is quoted separately as sharpe_platform_rf0.
 - Sharpe (rf=0, platform convention) 0.949; Sharpe on excess over the library's RF 0.864.
-- HAC: Bartlett (Newey-West), no small-sample correction; 6 lags - fixed 6 months for monthly data (half a year); the Newey-West plug-in floor(4*(T/100)^(2/9)) would give 4 here, so 6 is the more conservative choice. Alpha's t-stat at other lags is in each regression's alpha_t_hac_by_lag. P-values: two-sided, normal distribution.
+- HAC: Bartlett (Newey-West), no small-sample correction; 6 lags - fixed 6 months for monthly data (half a year); the Newey-West plug-in floor(4*(T/100)^(2/9)) would give 4 here. Six is a defensible robustness choice against longer-memory autocorrelation (more lags is not uniformly more conservative: it can raise a t-stat); see each regression's alpha_t_hac_by_lag. P-values: two-sided, normal distribution.
 
 ## Regressions
 
@@ -50,15 +50,15 @@ Beta against SPY excess returns: 1.192. SPY's premium over RF in this sample: +1
 | component | pp / yr |
 |---|---|
 | leverage on beta = (beta - 1) x SPY premium | +2.55 |
-| alpha (regression intercept x 12) | +0.32 |
+| alpha vs SPY (regression intercept x 12) | +0.32 |
 | compounding (geometric vs arithmetic annualisation) | -0.49 |
 | **excess CAGR on the aligned months** | **+2.38** |
 
-Identity gap (excess minus the three components): 1.7e-17. The platform's date-based CAGRs are +17.19% vs +14.81% (+2.38% excess; +0.00 pp from the aligned figure). Alpha t-stat against SPY: +0.14.
+Identity gap (excess minus the three components): 1.7e-17. The platform's date-based CAGRs are +17.19% vs +14.81% (+2.38% excess; +0.00 pp from the aligned figure). Alpha t-stat vs SPY: +0.14.
 
 ### Beta-matched SPY (informational)
 
-SPY levered to beta 1.192 compounds at +17.25%; the strategy at +17.19% (-0.07 pp). Sharpe on excess over RF: strategy 0.864, SPY 0.946, levered SPY 0.946 (equal to SPY by construction). Appraisal ratio (alpha / idiosyncratic volatility 8.33%): +0.038. Information ratio vs SPY (platform definition): +0.327.
+SPY levered to beta 1.192 compounds at +17.25%; the strategy at +17.19% (-0.07 pp). Sharpe on excess over RF: strategy 0.864, SPY 0.946, levered SPY 0.946 (equal to SPY by construction). Appraisal ratio vs SPY (alpha / idiosyncratic volatility 8.33%): +0.038. Information ratio vs SPY (platform definition): +0.327.
 
 The existing net_sharpe_vs_benchmark gate compares total-risk-adjusted return. SPY levered to the strategy's beta has SPY's Sharpe exactly, so the gate gives no credit for beta leverage and charges for idiosyncratic variance (concentration). The beta-matched comparison belongs in alpha and appraisal-ratio terms (informational only; no gate is changed).
 

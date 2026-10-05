@@ -8,7 +8,9 @@ independent loop implementation).
 HAC lag rule. The default is `DEFAULT_HAC_LAGS = 6` months: a fixed half-year
 window, the packet's choice for monthly data. The Newey-West (1994) plug-in
 rule `floor(4 * (T/100) ** (2/9))` would give 4 at the T=173 these series
-have; 6 is the more conservative of the two. Alpha's t-stat is also reported
+have. Six is defensible as robustness to longer-memory autocorrelation, not
+"more conservative": more lags can raise a t-stat (value's alpha t rises with the
+lag). Alpha's t-stat is also reported
 at lags 0 (no correction), 4 (the plug-in rule), 6 and 12 so the reader can
 see whether the conclusion depends on the choice (`LAG_SENSITIVITY`).
 

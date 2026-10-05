@@ -388,15 +388,33 @@ SPY is the pipeline calibration: against the CRSP market its beta is 0.96 and al
 (t = +1.25 on CAPM), inside the 0.05 / 1 pp tolerance set in the packet; the gap is SPY being the
 S&P 500 rather than all US listings (hence the -0.11 SMB loading), not a pipeline error.
 
-Against SPY itself the three strategies carry betas of 1.13, 1.19 and 1.16, and of their 2.85,
-2.38 and 2.86 pp/yr CAGR excess over SPY, beta leverage accounts for 1.72, 2.55 and 2.14 pp (SPY
-paid 13.3%/yr over RF in this sample), alpha for 1.45, 0.32 and 0.89 pp and compounding for the
-rest. After controlling for beta and the five factors plus momentum, no alpha is distinguishable
+Against SPY itself the three strategies carry betas of 1.13, 1.19 and 1.16. Of their 2.85, 2.38
+and 2.86 pp/yr CAGR excess over SPY, holding that beta instead of 1.0 (SPY levered to the same
+beta, compounded) accounts for 1.66, 2.45 and 2.05 pp, i.e. 58%, 103% and 72%; the arithmetic split
+is leverage 1.72 / 2.55 / 2.14 pp, alpha vs SPY 1.45 / 0.32 / 0.89 pp, and compounding the rest
+(that identity holds by construction, since compounding is the plug). These pp are a property of
+this bull market: SPY paid 13.3%/yr over RF, roughly double a long-run premium, so at a ~6% premium
+the same betas would be worth about half as much (0.8 / 1.2 / 1.0 pp), and in a falling market
+they would be negative. After controlling for beta and the five factors plus momentum, no alpha is distinguishable
 from zero (FF5+Mom alpha t-stats -0.62, +1.38 and +0.38; 95% intervals of roughly -5 to +3, -1 to
 +5 and -2 to +3 %/yr), so 173 months neither demonstrate nor exclude skill of the size at stake.
 Each strategy loads where its rule says it should (momentum on Mom, 0.46 with t = 6.2; value on HML
 and RMW; the blend on HML and Mom) - informational, and no verdict or threshold has been changed on
-the strength of it.
+the strength of it. CAPM alpha (the premium harvested after market beta) and FF5+Mom alpha (anything
+beyond known factors) answer different questions; neither is significant for any strategy. SMB is
+measured against the CRSP market, whose small-cap content SPY lacks (SPY itself loads -0.11), so the
+strategies' small-cap tilt relative to SPY is about 0.1 larger than the table shows.
+
+**Survivorship.** Every regression's dependent variable carries the survivorship gap the report
+cards measure: the coverage bound is 28.4% (worst year, 2012; 14.5% in 2019, 2.2% by 2025-2026), and
+nothing in this table corrects for it. **A question for the data, found after the fact.** Split at
+the midpoint, value's FF5+Mom alpha is +4.18%/yr (HAC t 4.15, OLS t 2.78) over 2012-02..2019-03 and
++0.26%/yr (t 0.11) over 2019-04..2026-06, roughly robust to the split date (2016-2020); momentum
+and the blend show nothing comparable. That first half is where 14-28% of the index is invisible to
+the strategy. It is an in-sample split looked at after seeing the full-sample result on a
+configuration chosen on this window, with a short-sample HAC t well above the OLS t, so it is not a
+claim of alpha: either real alpha that decayed or a survivorship artefact, and survivorship-free
+data is what could tell the two apart.
 
 ## Known limitations
 

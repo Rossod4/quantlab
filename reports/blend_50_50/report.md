@@ -212,7 +212,7 @@ Where the return comes from (`attribution.json`, informational; no gate reads it
 | FF5 + Mom alpha (annualised) / t | 0.50% / 0.38 |
 | FF5 + Mom R-squared | 0.921 |
 | Information ratio vs SPY | 0.477 |
-| Appraisal ratio (alpha / idiosyncratic vol) | 0.150 |
+| Appraisal ratio vs SPY (alpha / idiosyncratic vol) | 0.150 |
 | Idiosyncratic share of variance (CAPM) | 0.105 |
 
 | Factor | Loading | t (HAC) |
@@ -229,7 +229,7 @@ Excess return over SPY (beta against SPY 1.161):
 | Component | pp / yr |
 |---|---|
 | Leverage on beta | 2.14 |
-| Alpha | 0.89 |
+| Alpha vs SPY | 0.89 |
 | Compounding | -0.16 |
 | Excess CAGR over SPY | 2.86 |
 

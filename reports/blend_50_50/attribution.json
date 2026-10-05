@@ -41,7 +41,7 @@
   "hac": {
     "kernel": "Bartlett (Newey-West), no small-sample correction",
     "lags": 6,
-    "rule": "fixed 6 months for monthly data (half a year); the Newey-West plug-in floor(4*(T/100)^(2/9)) would give 4 here, so 6 is the more conservative choice. Alpha's t-stat at other lags is in each regression's alpha_t_hac_by_lag.",
+    "rule": "fixed 6 months for monthly data (half a year); the Newey-West plug-in floor(4*(T/100)^(2/9)) would give 4 here. Six is a defensible robustness choice against longer-memory autocorrelation (more lags is not uniformly more conservative: it can raise a t-stat); see each regression's alpha_t_hac_by_lag.",
     "p_values": "two-sided, normal distribution"
   },
   "sharpe_platform_rf0": 1.03098671086281,

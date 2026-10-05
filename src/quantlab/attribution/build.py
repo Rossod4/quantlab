@@ -129,7 +129,8 @@ def build_attribution(
             "rule": (
                 "fixed 6 months for monthly data (half a year); the Newey-West plug-in "
                 f"floor(4*(T/100)^(2/9)) would give {int(4 * (info.n_used / 100) ** (2 / 9))} "
-                "here, so 6 is the more conservative choice. Alpha's t-stat at other lags is in "
+                "here. Six is a defensible robustness choice against longer-memory autocorrelation "
+                "(more lags is not uniformly more conservative: it can raise a t-stat); see "
                 "each regression's alpha_t_hac_by_lag."
             ),
             "p_values": "two-sided, normal distribution",
@@ -316,7 +317,7 @@ def render_markdown(att: dict[str, Any]) -> str:
             "| component | pp / yr |",
             "|---|---|",
             f"| leverage on beta = (beta - 1) x SPY premium | {c['leverage_on_beta'] * 100:+.2f} |",
-            f"| alpha (regression intercept x 12) | {c['alpha'] * 100:+.2f} |",
+            f"| alpha vs SPY (regression intercept x 12) | {c['alpha'] * 100:+.2f} |",
             f"| compounding (geometric vs arithmetic annualisation) | "
             f"{c['compounding'] * 100:+.2f} |",
             "| **excess CAGR on the aligned months** | "
@@ -326,7 +327,7 @@ def render_markdown(att: dict[str, Any]) -> str:
             f"The platform's date-based CAGRs are {_pct(p['strategy'])} vs "
             f"{_pct(p['benchmark'])} ({_pct(p['excess'])} excess; "
             f"{p['gap_to_aligned_excess'] * 100:+.2f} pp from the aligned figure). "
-            f"Alpha t-stat against SPY: {d['alpha_t_hac']:+.2f}.",
+            f"Alpha t-stat vs SPY: {d['alpha_t_hac']:+.2f}.",
             "",
             "### Beta-matched SPY (informational)",
             "",
@@ -336,7 +337,7 @@ def render_markdown(att: dict[str, Any]) -> str:
             f"strategy {m['sharpe_excess_rf_strategy']:.3f}, "
             f"SPY {m['sharpe_excess_rf_benchmark']:.3f}, "
             f"levered SPY {m['sharpe_excess_rf_levered']:.3f} (equal to SPY by construction). "
-            f"Appraisal ratio (alpha / idiosyncratic volatility "
+            f"Appraisal ratio vs SPY (alpha / idiosyncratic volatility "
             f"{m['idiosyncratic_volatility_annualised'] * 100:.2f}%): {m['appraisal_ratio']:+.3f}. "
             "Information ratio vs SPY (platform definition): "
             f"{att['information_ratio_vs_spy']:+.3f}.",

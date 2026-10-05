@@ -812,7 +812,7 @@ def _attribution_section(att: dict[str, Any] | None) -> dict[str, Any] | None:
         "beta_vs_spy": _num(dec["beta_vs_benchmark"], 3),
         "components": [
             {"name": "Leverage on beta", "pp": _num(comp["leverage_on_beta"] * 100, 2)},
-            {"name": "Alpha", "pp": _num(comp["alpha"] * 100, 2)},
+            {"name": "Alpha vs SPY", "pp": _num(comp["alpha"] * 100, 2)},
             {"name": "Compounding", "pp": _num(comp["compounding"] * 100, 2)},
             {"name": "Excess CAGR over SPY", "pp": _num(dec["excess_cagr_aligned"] * 100, 2)},
         ],

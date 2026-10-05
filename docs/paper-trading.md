@@ -173,6 +173,12 @@ and journaled, if any cached ticker is absent from the latest `quantlab data sca
 manifest (the refusal names the first 10 and the count). Run `quantlab data scan`
 and retry.
 
+Known limitations of that check (M10 quant gate; fix before the first real promotion): it runs
+before targets are generated, so a ticker FIRST cached during the cycle itself (including the
+benchmark fetch in the as-of resolution) is used unscanned for that cycle and refused only on the
+next; and the scan manifest records tickers, not dates, so bars appended to an already-scanned
+ticker are never re-scanned (a symbol reassigned to a new issuer after the scan would pass).
+
 ## 7. Timing convention
 
 The runner decides using the last COMPLETED session's close (never today's

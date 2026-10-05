@@ -1869,3 +1869,41 @@ the C1 provenance field + the `_VINTAGE_KEYS` line; `reports/trials/` untouched)
 - **→ any future alpha-based gate (Alex's decision):** AND with `net_sharpe_vs_benchmark`, never
   a replacement; trial-count-deflated t; factor set (incl. whether a momentum rule is regressed
   on Mom) and HAC lag fixed before the first trial it applies to.
+
+## M10 gate cycle 2 — ACCEPT (plans/state/M10/VERDICT.2.md)
+
+M10 is **ACCEPTED**. Iteration 3 was documentation plus string/label edits only:
+`git diff 02f9384..HEAD -- src tests` is strings only; each regenerated `attribution.json` differs
+from cycle 1 in the single `hac.rule` line; `report.md` x3 only gained "vs SPY" labels;
+`reports/trials/` untouched. Suite 990 passed (82 s, BATTERY 42%, 1.4 GHz).
+
+### Cycle-1 items — dispositions
+
+- **Finding 1 (Norgate answer) — CLOSED.** README "Survivorship" / "A question for the data, found
+  after the fact" and HANDOFF.3 item 3 carry value's half-sample alpha (+4.18%/yr HAC t 4.15, OLS t
+  2.78, 2012-02..2019-03; +0.26% after) against the coverage gap by year, explicitly not a claim
+  of alpha; the three unsupported claims are replaced (correction sign unknown; t moves with the
+  point estimate; pre-2012 history is momentum's only power lever).
+- **Finding 2 (alpha-gate framing) — CLOSED.** AND-only, trial-deflated (t ~3), factor set + HAC
+  lag pinned in advance, prospective only; core ruling (do not lower the Sharpe-vs-SPY bar) kept.
+- **Finding 3 (coverage bound beside alpha) — CLOSED in README; attribution.json|md half CARRIED
+  (ruled acceptable, see below).**
+- **Findings 4, 5, 6 — CLOSED** (geometric beta shares 1.66/2.45/2.05 pp with the 13.3%-premium
+  caveat; "vs SPY" labels; HAC "robustness, not more conservative" wording in code, JSON and md;
+  CAPM vs FF5+Mom answer different questions).
+- **Finding 7 (C4 residuals) — DOCUMENTED** in docs/paper-trading.md section 6; the carried item
+  in the M10 cycle-1 block above stands until fixed.
+
+### Status of the M10 cycle-1 carried items above
+
+- **Coverage bound + fixed half-sample regression in `attribution.json|md` — STANDS**, now with a
+  deadline: before any attribution number is used in a gate proposal to Alex or a promotion
+  argument, and in any event at the next attribution touch.
+- **HAC-lag wording — DISCHARGED** (done in iteration 3). The short-sample HAC-vs-OLS caution
+  stands for any future subsample output: quote both t-stats.
+- **"vs SPY" labels — DISCHARGED.** The arithmetic/geometric and identity-by-construction notes
+  are now in the README; DISCHARGED.
+- **C4 residuals (in-cycle first-cache window; ticker-granular scan manifest) — STAND**, before the
+  first real promotion.
+- **Future alpha-based gate rules — STAND** (Alex's decision; AND-only, deflated t, pinned
+  factors/lag, prospective).

@@ -22,6 +22,7 @@ agents, enforce the protocol, and carry gate findings forward.
 | M06 validation II | ✅ merged 2026-09-12 (gate ACCEPT cycle 3 after Alex approved a third cycle; PSR/DSR footing, headline pinning, honest subperiod_oof_sharpe) |
 | M07 reporting | ✅ merged 2026-09-12 (735 tests; gate REJECT→ACCEPT; four rendered verdict fixtures) |
 | **M09 end-to-end** | ✅ **ACCEPTED 2026-10-04** (gate cycle 2) and merged to main (912 tests; loop: 3 dev iterations + prelim review, review REVISE/APPROVE/APPROVE, gate REJECT→ACCEPT). All three real runs made from clean sha dc5356d on a scanned cache with a fresh trials registry: momentum 17.66%/0.98/−23.25%, value 17.19%/0.95/−34.75%, blend 50/50 17.67%/1.03/−28.36% — **all REJECTED** (net Sharpe < SPY 1.06; coverage bound 28.4% > 15%; momentum and blend also fail the Reality Check). Reconciliation vs the old repo: portfolio size (50 vs 30 names) explains most of the gap — see README and `plans/state/M09/EVIDENCE.md`. **v1 build is complete. Next = Alex's decision** (Norgate trial vs accept the result) plus the proposed attribution milestone (factor regression on the three existing series: alpha/beta, loadings, IR — no new trials). Carried items C1–C4 in QUANT-NOTES. |
+| **M10 attribution** | ✅ **ACCEPTED 2026-10-05** (gate cycle 2) and merged to main (990 tests; loop: 3 dev iterations, review REVISE/APPROVE/APPROVE, gate REJECT→ACCEPT). Ken French factor provider + cache, CAPM / FF5+Mom OLS with HAC(6), active-return decomposition, `quantlab attribute`, report section, README table; carried C1–C4 closed. **Finding:** no full-sample alpha at any conventional level (FF5+Mom t = −0.6 / +1.4 / +0.4; SEs 1.3–1.9 pp/yr); 58/103/72% of the CAGR excess over SPY is beta leverage (geometric basis; premium-dependent). **Value has +4.18%/yr alpha (t 4.15) over 2012-02..2019-03 and ~0 after — found after the fact, coincides with the 14–28% coverage gap — the first question for Norgate data.** Do not lower the Sharpe-vs-SPY bar; any alpha gate = AND-only, trial-deflated t≈3, factor set + lag pinned, prospective. Open carried items in QUANT-NOTES "M10 gate cycle 2 — ACCEPT" (coverage bound + fixed half-sample regression into attribution.json before any gate proposal; two C4 trade-time gaps before the first real promotion). |
 | M08 paper trading | ✅ merged 2026-09-12 (690 tests; gate REJECT, REJECT, ACCEPT — cycle 3 approved by Alex). Carried must-fix to M09: `paper run --dry-run` is a second decide-and-plan path (use run_once with a dry_run flag) |
 | M04b engine perf | 🔵 in parallel worktree `..\quantlab-m04b` (branch `m04b-engine-perf`): calendar bounds, negative price cache, panel store, QualityGate wired with quarantine + membership-based symbol-reuse detector (42 names), unscored self-reported; full real run 8m32s; gate REJECT→ACCEPT cycle 2 (2026-09-12); ✅ merged to main 2026-09-12 (492 tests). Worktree can be removed after M06 merges. |
 | M04–M09 | packets not yet written — write each just-in-time from the template in PROTOCOL.md, folding in QUANT-NOTES items addressed to it |
@@ -32,15 +33,30 @@ file. Task list state is also tracked in the harness task tools (M00/M01/M02 com
 ## Data
 A full data/cache (842 tickers, prices 2010-06..2026-09-11, actions with fetched_at=2026-09-11, EDGAR facts) was prefetched on 2026-09-11 via the orchestrator scratchpad script (M09 should formalise it as `quantlab data`). A real momentum backtest via `quantlab backtest` took >40 min on this machine — engine performance is a known M09 concern (per-ticker parquet reads per rebalance).
 
-## Immediate next action
-v1 (M00–M09) is on main. Nothing is in flight. Alex's decision point: Norgate trial (the 28.4%
-coverage bound is a free-data property no strategy can pass) vs accept "no evidence these beat SPY
-risk-adjusted". Orchestrator's recommendation (2026-10-02): an attribution milestone first — regress
-the three committed return series on market + Fama-French/momentum factors (alpha, beta, loadings,
-IR, sector exposure); no new backtests, so no new trials — then decide on data. Operational notes:
-after any `data prefetch`/`refresh`, run `quantlab data scan` before a real run; long runs need the
-laptop on AC with the lid open (Modern Standby freezes them); if `pytest.exe` is blocked with
-os error 4551 (Smart App Control), stop and report — it cleared by itself on 2026-10-02.
+## Immediate next action (2026-10-05)
+M00–M10 are on main; nothing is in flight. **Alex's decisions (2026-10-05): pay for Norgate; set up
+Alpaca paper (keys are now in user env vars `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` — set after the
+previous session started, so a NEW session is needed to see them); goal = paper trades, then real
+capital via Trading212; wants to research strategies next.** Sequence agreed with Alex:
+1. Alpaca paper smoke test in the new session: `uv run pytest -m network tests/test_alpaca_broker.py
+   tests/test_broker_contract.py -q` (M08's never-run network tier). Then a research paper run of the
+   blend under `quantlab paper run --force-research` to exercise broker/reconcile/journal/drift (it is
+   REJECTED and cannot be promoted; this is pipeline exercise, not a strategy claim).
+2. M11 packet: Norgate provider (Platinum US: delisted securities + historical constituents; NDU
+   Windows app + `norgatedata` package; stub exists from M01, drops in via configs/platform.yaml; new
+   DATA_SEMANTICS_VERSION; prefetch + scan; re-run momentum/value/blend UNCHANGED as the first test —
+   the value 2012–2019 alpha question is the headline deliverable).
+3. Prospective research bar BEFORE new strategies (packet text, Alex signs off): keep all gates; add
+   the alpha gate as AND-only (FF5+Mom, HAC 6, trial-deflated t≈3); pre-register families + grids.
+4. Strategy packets, one family each, pre-registered: quality → low-vol/defensive → re-constructed
+   momentum (wider book, vol-weighted, sector-neutral). Each: run → card → attribution. Never chart
+   patterns. Then promotion → ≥6 months paper with process-based go-live criteria → Trading212 adapter.
+Operational notes: after any `data prefetch`/`refresh`, run `quantlab data scan` before a real run;
+long runs need the laptop on AC with the lid open (Modern Standby freezes them; a keep-awake helper
+cannot stop a lid close); commit before launching a run and between runs that write tracked
+artefacts (dirty flags are plain `git status`); if a `.venv` binary is blocked with os error 4551
+(Smart App Control — pytest.exe on 2 Oct, pyarrow DLL on 4 Oct), stop and report; both cleared by
+themselves within hours.
 
 ## How to dispatch agents
 - If this session started inside `quantlab/` the custom agents load natively: use

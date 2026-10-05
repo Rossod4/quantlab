@@ -135,6 +135,7 @@ uv run ruff check && uv run ruff format --check
 uv run quantlab data status              # cache coverage, negative-cache/quarantine counts
 uv run quantlab data scan                # quarantine corrupted/reused-symbol tickers (offline)
 uv run quantlab data prefetch --start 2012-01-01 --end 2026-06-30   # warm the cache (network)
+uv run quantlab attribute --result reports/momentum_12_1 --out reports/momentum_12_1  # factor attribution (--factors refresh once to fetch the factor files)
 
 uv run quantlab run \
   --backtest configs/backtests/momentum_12_1_2012_2026.yaml \
@@ -357,13 +358,45 @@ registry backups (`plans/state/M09/EVIDENCE.md`, `plans/state/M09/recon_tables.p
   WAT, WDC, WEC, WELL, WFC, WHR, WM, WMB, WMT, WU, WY, WYNN, XEL, XOM, XRAY, XRX, XYL, YUM, ZBH,
   ZION. Neither is established.
 - **25 September -> final (-0.30 pp CAGR, -0.021 Sharpe) is the only part consistent with
-  quarantine**: only 39 periods differ, the first on 2021-09-30, and that is the only window in
-  which the 36 contaminated series could matter. Even here it is "consistent with", not proven: the
+  quarantine**: only 39 periods differ, the first on 2021-09-30, and that is the only window
+  where removing them changed the series. Even here it is "consistent with", not proven: the
   code also moved between those two dirty trees.
 - **What cannot be established.** The September holdings were overwritten, so there is no
   ticker-level attribution, and no re-run was done. The unresolved 13 -> 25 September movement is
   a finding for the gate, not an explained difference. Neither number changes the verdict: all of
   them are REJECTED on the same three hard gates.
+
+## Attribution: where the returns come from
+
+`quantlab attribute --result reports/<name> --out reports/<name>` regresses each run's monthly
+net excess returns (over the library's RF) on the Mkt-RF factor (CAPM) and on Fama-French five
+factors plus momentum, with Newey-West standard errors (6 lags), and splits the CAGR excess over
+SPY into beta leverage, alpha and compounding. It reads only the series the run already wrote and
+changes no gate. The factors are the Ken French library's monthly files (CRSP database 202608,
+fetched 2026-10-05; vintage recorded in each `attribution.json`); all 173 months, 2012-02 to
+2026-06, are covered. Cells are loading (t-stat); every number is in `reports/<name>/attribution.json`
+(`reports/spy_calibration/` for the SPY row).
+
+| | CAPM beta (Mkt-RF) | FF5+Mom alpha, %/yr (t) | Mkt-RF | SMB | HML | RMW | CMA | Mom | R-sq | IR vs SPY |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Momentum 12-1 | 1.10 | -1.19 (-0.62) | +1.20 (+33.5) | +0.07 (+0.9) | +0.11 (+1.2) | -0.27 (-2.6) | -0.01 (-0.1) | +0.46 (+6.2) | 0.85 | 0.33 |
+| Value composite | 1.16 | +2.19 (+1.38) | +1.09 (+24.5) | +0.16 (+2.4) | +0.32 (+4.1) | +0.28 (+3.6) | -0.08 (-1.0) | -0.16 (-2.2) | 0.90 | 0.33 |
+| Blend 50/50 | 1.13 | +0.50 (+0.38) | +1.15 (+48.8) | +0.11 (+2.3) | +0.21 (+3.2) | +0.00 (+0.0) | -0.05 (-0.5) | +0.15 (+2.7) | 0.92 | 0.48 |
+| SPY (calibration) | 0.96 | -0.11 (-0.53) | +0.99 (+126.4) | -0.11 (-11.9) | +0.02 (+1.7) | +0.06 (+3.1) | +0.02 (+1.4) | +0.00 (+0.4) | 1.00 | n/a |
+
+SPY is the pipeline calibration: against the CRSP market its beta is 0.96 and alpha +0.50%/yr
+(t = +1.25 on CAPM), inside the 0.05 / 1 pp tolerance set in the packet; the gap is SPY being the
+S&P 500 rather than all US listings (hence the -0.11 SMB loading), not a pipeline error.
+
+Against SPY itself the three strategies carry betas of 1.13, 1.19 and 1.16, and of their 2.85,
+2.38 and 2.86 pp/yr CAGR excess over SPY, beta leverage accounts for 1.72, 2.55 and 2.14 pp (SPY
+paid 13.3%/yr over RF in this sample), alpha for 1.45, 0.32 and 0.89 pp and compounding for the
+rest. After controlling for beta and the five factors plus momentum, no alpha is distinguishable
+from zero (FF5+Mom alpha t-stats -0.62, +1.38 and +0.38; 95% intervals of roughly -5 to +3, -1 to
++5 and -2 to +3 %/yr), so 173 months neither demonstrate nor exclude skill of the size at stake.
+Each strategy loads where its rule says it should (momentum on Mom, 0.46 with t = 6.2; value on HML
+and RMW; the blend on both) - informational, and no verdict or threshold has been changed on
+the strength of it.
 
 ## Known limitations
 
@@ -424,8 +457,10 @@ src/quantlab/
   backtest/        the generic EOD engine, accounting ledger, costs, panel store
   validation/      metrics, walk-forward, sensitivity, PSR/DSR, purged CV, Reality Check/SPA,
                    Monte Carlo, capacity, the trials registry, the report card
+  attribution/     Ken French factor provider, CAPM/FF5+Mom regressions (Newey-West), excess-return
+                   decomposition, concentration
   reporting/       Jinja2 HTML + markdown twin, plots
-  cli.py           `quantlab data|run|backtest|validate|report|paper`
+  cli.py           `quantlab data|run|backtest|validate|report|attribute|paper`
 tests/             offline, deterministic (tests/canaries/ for bias guards, tests/parity/ against
                    the predecessor repo's frozen numerics)
 plans/             work packets, milestone loop artifacts (HANDOFF/REVIEW/VERDICT), QUANT-NOTES.md

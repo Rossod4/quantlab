@@ -852,6 +852,55 @@ def report(
         typer.echo(f"wrote {kind}: {path}")
 
 
+@app.command()
+def attribute(
+    result: Path = typer.Option(
+        ..., "--result", exists=True, file_okay=False, help="Directory of a saved BacktestResult."
+    ),
+    out: Path = typer.Option(..., "--out", help="Directory to write attribution.json/.md to."),
+    factors: str = typer.Option(
+        "cached",
+        "--factors",
+        help="cached: read data/cache/factors only (never touches the network); refresh: "
+        "re-download the Ken French monthly factor files first.",
+    ),
+    series: str = typer.Option(
+        "strategy",
+        "--series",
+        help="strategy: the run's net returns. benchmark: the run's embedded SPY series, as a "
+        "calibration of the pipeline (expect beta ~1, alpha ~0 against Mkt-RF).",
+    ),
+    platform: Path = typer.Option(
+        Path("configs/platform.yaml"), "--platform", help="Path to platform.yaml."
+    ),
+) -> None:
+    """Explain a finished run's monthly returns: CAPM and FF5+Mom regressions
+    (Newey-West errors), the excess-over-SPY split into beta leverage / alpha /
+    compounding, and concentration. Reads the run's saved series only (never
+    re-runs anything); informational - exit code 0 on success whatever the
+    numbers say. A run directory that cannot be attributed (no provenance.json,
+    not monthly, factors not cached) is refused with exit code 1."""
+    from quantlab.attribution.build import AttributionError, build_attribution, write_attribution
+    from quantlab.attribution.factors import FactorDataUnavailable, KenFrenchProvider
+    from quantlab.core.config import load_platform_config
+
+    if factors not in ("cached", "refresh"):
+        raise typer.BadParameter("--factors must be one of: cached, refresh")
+    if series not in ("strategy", "benchmark"):
+        raise typer.BadParameter("--series must be one of: strategy, benchmark")
+
+    platform_config = load_platform_config(platform)
+    try:
+        data = KenFrenchProvider(platform_config.cache_dir, mode=factors).load()
+        att = build_attribution(result, data, series=series)
+    except (AttributionError, FactorDataUnavailable) as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    json_path, md_path = write_attribution(att, out)
+    typer.echo(f"wrote json: {json_path}")
+    typer.echo(f"wrote md: {md_path}")
+
+
 _VERDICT_EXIT_CODES = {"ELIGIBLE_FOR_PAPER": 0, "RESEARCH_ONLY": 2, "REJECTED": 3}
 
 

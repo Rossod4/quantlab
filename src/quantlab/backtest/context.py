@@ -43,7 +43,12 @@ from quantlab.data.requirements import DataRequirements
 if TYPE_CHECKING:
     from quantlab.backtest.panel_store import PricePanelStore
 
-__all__ = ["DecisionProviders", "actions_fetched_at", "build_decision_context"]
+__all__ = [
+    "DecisionProviders",
+    "actions_fetched_at",
+    "build_decision_context",
+    "fundamentals_fetched_at",
+]
 
 # "Everything up to asof" stand-in, mirroring data/pit.py's own `_EPOCH`.
 _EPOCH = pd.Timestamp("1900-01-01")
@@ -67,6 +72,29 @@ def actions_fetched_at(cache_dir: object, tickers: set[str]) -> dict[str, str | 
     for ticker in tickers:
         meta = read_json_meta(Path(cache_dir) / "actions" / f"{ticker}.meta.json")
         result[ticker] = meta.get("fetched_at") if meta else None
+    return result
+
+
+def fundamentals_fetched_at(cache_dir: object, tickers: set[str]) -> dict[str, str | None]:
+    """Fetch date (UTC `YYYY-MM-DD`) of each ticker's cached EDGAR facts file.
+
+    The fundamentals cache has no `fetched_at` sidecar (unlike the actions
+    cache), so the file's modification time is the only vintage evidence
+    there is; a file rewritten in place reads as its rewrite date. A missing
+    file is None. Read-only duplication of the path convention in
+    `data/providers/edgar_fundamentals.py` (`<cache_dir>/fundamentals/
+    <ticker>.parquet`), for the same reason `actions_fetched_at` duplicates
+    the actions one."""
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    result: dict[str, str | None] = {}
+    for ticker in tickers:
+        path = Path(cache_dir) / "fundamentals" / f"{ticker}.parquet"
+        if path.exists():
+            result[ticker] = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).date().isoformat()
+        else:
+            result[ticker] = None
     return result
 
 

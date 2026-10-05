@@ -13,9 +13,11 @@
 !/reports/momentum_12_1/
 !/reports/value_composite/
 !/reports/blend_50_50/
+!/reports/spy_calibration/
 /reports/momentum_12_1/*
 /reports/value_composite/*
 /reports/blend_50_50/*
+/reports/spy_calibration/*
 !/reports/momentum_12_1/report_card.json
 !/reports/momentum_12_1/validation_basic.json
 !/reports/momentum_12_1/report_card.md
@@ -31,6 +33,15 @@
 !/reports/blend_50_50/report_card.md
 !/reports/blend_50_50/report.md
 !/reports/blend_50_50/*.png
+# M10: attribution.json/.md per real run, and the SPY calibration run
+!/reports/momentum_12_1/attribution.json
+!/reports/momentum_12_1/attribution.md
+!/reports/value_composite/attribution.json
+!/reports/value_composite/attribution.md
+!/reports/blend_50_50/attribution.json
+!/reports/blend_50_50/attribution.md
+!/reports/spy_calibration/attribution.json
+!/reports/spy_calibration/attribution.md
 .pytest_cache/
 .ruff_cache/
 __pycache__/

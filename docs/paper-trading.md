@@ -195,6 +195,11 @@ and the fill-session open would read as a huge spurious timing gap. The check de
 a split (or unreadable corporate actions) and reports the ticker in `gaps_not_computed`
 instead; it does not re-express the prices in a common share basis.
 
+Likewise an ex-DIVIDEND date between the decision close and the fill-session open is not
+detected: the open is a raw price that has dropped by the dividend, so that cash amount
+lands in `timing_gap_bps` (a negative offset roughly equal to the dividend yield, not a
+timing or execution effect).
+
 ## 8. Data degradation and coverage
 
 The runner builds its decision context through the SAME per-ticker

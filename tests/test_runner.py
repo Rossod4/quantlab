@@ -1610,3 +1610,61 @@ def test_names_with_no_cached_series_do_not_block_promotion(monkeypatch, tmp_pat
         run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0})).refused_reason
         is None
     )
+
+
+def _plant_cached_price(cache_dir, ticker: str) -> None:
+    prices = cache_dir / "prices"
+    prices.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"Close": [1.0]}, index=pd.DatetimeIndex(["2024-01-12"])).to_parquet(
+        prices / f"{ticker}.parquet"
+    )
+
+
+def test_promotion_gate_rechecks_the_current_cache_for_unscanned_tickers(monkeypatch, tmp_path):
+    """M10 carried item C4: the card says 0 unscanned (true at validation
+    time), but a ticker was cached AFTER the last scan - run_once refuses
+    before any order, journals the refusal and names the ticker."""
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    card = write_real_eligible_report_card(platform_config.reports_dir, strategy_id)
+    assert card["provenance"]["unscanned_cached_tickers_count"] == 0
+
+    cache_dir = platform_config.cache_dir
+    _plant_cached_price(cache_dir, "AAA")
+    _plant_cached_price(cache_dir, "NEWCO")
+    (cache_dir / "prices" / "_scan_manifest.json").write_text(
+        json.dumps({"scanned_tickers": ["AAA"]})
+    )
+    broker = _mock_broker({"AAA": 100.0})
+
+    with pytest.raises(PromotionGateError, match="NEWCO"):
+        run_once(strategy_config, platform_config, broker)
+
+    records = read_journal(platform_config.reports_dir, strategy_id)
+    assert len(records) == 1
+    assert "CURRENT price cache" in records[0]["refused_reason"]
+    assert records[0]["planned_orders"] == []
+
+
+def test_promotion_gate_current_cache_check_passes_when_every_cached_ticker_is_scanned(
+    monkeypatch, tmp_path
+):
+    platform_config, strategy_config, strategy_id = _gate_setup(monkeypatch, tmp_path)
+    write_real_eligible_report_card(platform_config.reports_dir, strategy_id)
+    cache_dir = platform_config.cache_dir
+    _plant_cached_price(cache_dir, "AAA")
+    (cache_dir / "prices" / "_scan_manifest.json").write_text(
+        json.dumps({"scanned_tickers": ["AAA"]})
+    )
+
+    record = run_once(strategy_config, platform_config, _mock_broker({"AAA": 100.0}))
+
+    assert record.refused_reason is None
+
+
+def test_current_unscanned_cached_tickers_without_a_manifest_flags_every_cached_ticker(tmp_path):
+    from quantlab.paper.runner import current_unscanned_cached_tickers
+
+    assert current_unscanned_cached_tickers(tmp_path / "nothing") == []
+    _plant_cached_price(tmp_path, "AAA")
+    _plant_cached_price(tmp_path, "BBB")
+    assert current_unscanned_cached_tickers(tmp_path) == ["AAA", "BBB"]

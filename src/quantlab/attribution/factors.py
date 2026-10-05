@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import re
 import zipfile
 from abc import ABC, abstractmethod
@@ -147,19 +148,29 @@ class KenFrenchProvider(FactorProvider):
         return self._dir / f"{name}.meta.json"
 
     def _refresh(self) -> None:
-        self._dir.mkdir(parents=True, exist_ok=True)
-        for name in _FILES:
+        """Download BOTH files, validate them, and only then replace the cache
+        (each file via a temp name + `os.replace`), so a failure on the second
+        file or an unparseable payload leaves the previous vintage intact."""
+        fetched: dict[str, tuple[bytes, str | None, str]] = {}
+        for name, columns in _FILES.items():
             url = BASE_URL + name
             try:
                 raw, last_modified = self._fetch(url)
-            except Exception as exc:  # noqa: BLE001 - any transport failure is "unavailable"
+                parse_french_csv(_zip_text(raw), columns)
+            except Exception as exc:  # noqa: BLE001 - transport or payload failure
                 raise FactorDataUnavailable(f"download of {url} failed: {exc}") from exc
-            (self._dir / name).write_bytes(raw)
+            stamp = pd.Timestamp.now("UTC").isoformat(timespec="seconds")
+            fetched[name] = (raw, last_modified, stamp)
+        self._dir.mkdir(parents=True, exist_ok=True)
+        for name, (raw, last_modified, stamp) in fetched.items():
+            tmp = self._dir / f"{name}.tmp"
+            tmp.write_bytes(raw)
+            os.replace(tmp, self._dir / name)
             write_json_meta(
                 self._meta_path(name),
                 {
-                    "url": url,
-                    "fetched_at": pd.Timestamp.now("UTC").isoformat(timespec="seconds"),
+                    "url": BASE_URL + name,
+                    "fetched_at": stamp,
                     "last_modified": last_modified,
                     "sha256": hashlib.sha256(raw).hexdigest(),
                     "bytes": len(raw),

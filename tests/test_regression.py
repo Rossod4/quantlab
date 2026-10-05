@@ -46,6 +46,10 @@ def _loop_hac_se(x: np.ndarray, resid: np.ndarray, lags: int) -> np.ndarray:
     return np.sqrt(np.diag(xtx_inv @ s @ xtx_inv))
 
 
+def test_default_hac_lag_is_six_months():
+    assert DEFAULT_HAC_LAGS == 6
+
+
 # --- planted loadings ---------------------------------------------------------
 
 

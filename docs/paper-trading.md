@@ -167,6 +167,12 @@ strategy you intend to actually trust with money, paper or otherwise** - it
 exists purely to let a developer exercise the runner's non-signal machinery
 independently of validation status.
 
+`--force-research` waives eligibility only, not data quality: every run (with or
+without a promoting card) first re-checks the CURRENT price cache and is refused,
+and journaled, if any cached ticker is absent from the latest `quantlab data scan`
+manifest (the refusal names the first 10 and the count). Run `quantlab data scan`
+and retry.
+
 ## 7. Timing convention
 
 The runner decides using the last COMPLETED session's close (never today's

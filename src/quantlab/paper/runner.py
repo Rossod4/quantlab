@@ -671,21 +671,6 @@ def run_once(
             promoting_report_card_path, report_card_data = match
             promoting_path = str(promoting_report_card_path)
             known_caveats = list(report_card_data.get("known_caveats", []))
-            # M10 carried item C4: the card's scan count was true when it was
-            # validated; a cache rebuilt since (which has wiped quarantine
-            # once already) would go unnoticed at trade time, so re-check the
-            # CURRENT cache before any order is placed.
-            now_unscanned = current_unscanned_cached_tickers(platform_config.cache_dir)
-            if now_unscanned:
-                reason = (
-                    f"promotion gate (stage={stage!r}): the CURRENT price cache has "
-                    f"{len(now_unscanned)} cached ticker(s) `quantlab data scan` has never "
-                    f"visited (e.g. {now_unscanned[:5]}) - the promoting card's scan "
-                    "coverage no longer describes this cache. Run `quantlab data scan` "
-                    "(and re-validate if anything is quarantined) before trading."
-                )
-                _refuse(reason, known_caveats)
-                raise PromotionGateError(reason)
         elif not force_research:
             reason = (
                 f"promotion gate (stage={stage!r}): no report_card.json under "
@@ -706,6 +691,25 @@ def run_once(
                 "FORCE-RESEARCH: promotion gate bypassed for this run (no ELIGIBLE_FOR_PAPER "
                 "report card was found) - testing plumbing only, never for real money."
             ]
+
+        # M10 carried item C4: the promoting card's scan count was true when it
+        # was validated; a cache rebuilt since (which has wiped quarantine
+        # once already) would go unnoticed at trade time. Re-check the CURRENT
+        # cache before any order is planned - with or without a card, and
+        # under --force-research too: that flag overrides eligibility, not
+        # data quality (drift statistics from unscanned series are meaningless).
+        now_unscanned = current_unscanned_cached_tickers(platform_config.cache_dir)
+        if now_unscanned:
+            reason = (
+                f"data-quality gate (stage={stage!r}): the CURRENT price cache has "
+                f"{len(now_unscanned)} cached ticker(s) `quantlab data scan` has never "
+                f"visited (first 10: {now_unscanned[:10]}) - scan coverage no longer "
+                "describes this cache, and --force-research does not waive it. Run "
+                "`quantlab data scan` (and re-validate if anything is quarantined) "
+                "before trading."
+            )
+            _refuse(reason, known_caveats)
+            raise PromotionGateError(reason)
 
         # -- context: PROACTIVE actions-cache refresh (finding 1), then
         # -- wire the shared factory (finding 5: blend children) ----------

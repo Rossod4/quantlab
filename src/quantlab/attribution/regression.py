@@ -35,7 +35,7 @@ from scipy import stats
 
 from quantlab.validation.metrics import MONTHS_PER_YEAR
 
-DEFAULT_HAC_LAGS = 6
+DEFAULT_HAC_LAGS = 6  # pinned by tests/test_regression.py; rule in the module docstring
 LAG_SENSITIVITY = (0, 4, 6, 12)
 ROLLING_WINDOW = 36
 CAPM_FACTORS = ("Mkt-RF",)

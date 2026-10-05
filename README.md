@@ -395,7 +395,7 @@ rest. After controlling for beta and the five factors plus momentum, no alpha is
 from zero (FF5+Mom alpha t-stats -0.62, +1.38 and +0.38; 95% intervals of roughly -5 to +3, -1 to
 +5 and -2 to +3 %/yr), so 173 months neither demonstrate nor exclude skill of the size at stake.
 Each strategy loads where its rule says it should (momentum on Mom, 0.46 with t = 6.2; value on HML
-and RMW; the blend on both) - informational, and no verdict or threshold has been changed on
+and RMW; the blend on HML and Mom) - informational, and no verdict or threshold has been changed on
 the strength of it.
 
 ## Known limitations

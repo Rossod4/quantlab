@@ -180,6 +180,8 @@ def test_attribute_end_to_end_recovers_the_planted_beta_and_closes_the_identity(
     att = json.loads((out / "attribution.json").read_text())
     assert (out / "attribution.md").exists()
     assert att["strategy_id"] == "fixture-strategy-0000"
+    assert att["hac"]["lags"] == 6
+    assert att["capm"]["hac_lags"] == att["ff5_mom"]["hac_lags"] == 6
     assert att["sample"]["n_used"] == N_MONTHS and att["sample"]["n_dropped_by_alignment"] == 0
     assert att["capm"]["loadings"]["Mkt-RF"]["coef"] == pytest.approx(PLANTED_BETA, abs=0.05)
     assert att["ff5_mom"]["loadings"]["Mkt-RF"]["coef"] == pytest.approx(PLANTED_BETA, abs=0.05)
@@ -393,3 +395,39 @@ def test_report_renders_the_attribution_section_only_when_the_file_exists(world,
         + with_md.split("## Provenance appendix")[1]
     )
     assert stripped == plain
+
+
+def test_a_failing_second_download_leaves_the_previous_vintage_intact(tmp_path):
+    cache_dir = tmp_path / "cache"
+    _populate_factor_cache(cache_dir)
+    before = KenFrenchProvider(cache_dir, mode="cached").load()
+    files_before = {p.name: p.read_bytes() for p in (cache_dir / "factors").iterdir()}
+
+    def second_fails(url):
+        if url.endswith(MOM_ZIP):
+            raise ConnectionError("down")
+        return _zip("x.csv", _factor_texts()[1]), "newer"
+
+    from quantlab.attribution.factors import FactorDataUnavailable
+
+    with pytest.raises(FactorDataUnavailable):
+        KenFrenchProvider(cache_dir, mode="refresh", fetch=second_fails).load()
+
+    assert {p.name: p.read_bytes() for p in (cache_dir / "factors").iterdir()} == files_before
+    after = KenFrenchProvider(cache_dir, mode="cached").load()
+    assert after.vintage == before.vintage
+
+
+def test_an_unparseable_download_does_not_replace_the_cache(tmp_path):
+    cache_dir = tmp_path / "cache"
+    _populate_factor_cache(cache_dir)
+    files_before = {p.name: p.read_bytes() for p in (cache_dir / "factors").iterdir()}
+
+    from quantlab.attribution.factors import FactorDataUnavailable
+
+    with pytest.raises(FactorDataUnavailable):
+        KenFrenchProvider(
+            cache_dir, mode="refresh", fetch=lambda url: (_zip("x.csv", "garbage"), None)
+        ).load()
+
+    assert {p.name: p.read_bytes() for p in (cache_dir / "factors").iterdir()} == files_before

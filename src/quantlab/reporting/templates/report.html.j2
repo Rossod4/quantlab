@@ -260,6 +260,44 @@
     </table>
   </div>
 
+  {% if attribution %}
+  <h2>Attribution</h2>
+  <div class="card">
+    <p class="muted">Where the return comes from (<code>attribution.json</code>, informational; no gate reads it). {{ attribution.sample }}. Newey-West standard errors, {{ attribution.hac_lags }} lags.</p>
+    <table>
+      <tbody>
+        <tr><td>CAPM beta (Mkt-RF)</td><td>{{ attribution.capm_beta }}</td></tr>
+        <tr><td>CAPM alpha (annualised) / t</td><td>{{ attribution.capm_alpha }} / {{ attribution.capm_alpha_t }}</td></tr>
+        <tr><td>CAPM R-squared</td><td>{{ attribution.capm_r2 }}</td></tr>
+        <tr><td>FF5 + Mom alpha (annualised) / t</td><td>{{ attribution.ff_alpha }} / {{ attribution.ff_alpha_t }}</td></tr>
+        <tr><td>FF5 + Mom R-squared</td><td>{{ attribution.ff_r2 }}</td></tr>
+        <tr><td>Information ratio vs SPY</td><td>{{ attribution.information_ratio }}</td></tr>
+        <tr><td>Appraisal ratio vs SPY (alpha / idiosyncratic vol)</td><td>{{ attribution.appraisal_ratio }}</td></tr>
+        <tr><td>Idiosyncratic share of variance (CAPM)</td><td>{{ attribution.idiosyncratic_share }}</td></tr>
+      </tbody>
+    </table>
+    <table>
+      <thead><tr><th>Factor</th><th>Loading</th><th>t (HAC)</th></tr></thead>
+      <tbody>
+        {% for row in attribution.loadings %}
+        <tr><td>{{ row.name }}</td><td>{{ row.coef }}</td><td>{{ row.t }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p>Excess return over SPY (beta against SPY {{ attribution.beta_vs_spy }}):</p>
+    <table>
+      <thead><tr><th>Component</th><th>pp / yr</th></tr></thead>
+      <tbody>
+        {% for row in attribution.components %}
+        <tr><td>{{ row.name }}</td><td>{{ row.pp }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted">{{ attribution.gate_note }}</p>
+    <p class="muted">Sector exposure {{ attribution.sector }}</p>
+  </div>
+
+  {% endif %}
   <h2>Provenance appendix</h2>
   <div class="card">
     <table>

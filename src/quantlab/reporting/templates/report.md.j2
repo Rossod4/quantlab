@@ -204,6 +204,41 @@ _No report card was supplied - run `quantlab validate --full` for robustness det
 | Max dropped fraction (abort threshold) | {{ execution.max_dropped_fraction }} |
 | Abort on unscoreable date | {{ execution.abort_on_unscoreable }} |
 
+{% if attribution %}
+## Attribution
+
+Where the return comes from (`attribution.json`, informational; no gate reads it). {{ attribution.sample }}. Newey-West standard errors, {{ attribution.hac_lags }} lags.
+
+| | |
+|---|---|
+| CAPM beta (Mkt-RF) | {{ attribution.capm_beta }} |
+| CAPM alpha (annualised) / t | {{ attribution.capm_alpha }} / {{ attribution.capm_alpha_t }} |
+| CAPM R-squared | {{ attribution.capm_r2 }} |
+| FF5 + Mom alpha (annualised) / t | {{ attribution.ff_alpha }} / {{ attribution.ff_alpha_t }} |
+| FF5 + Mom R-squared | {{ attribution.ff_r2 }} |
+| Information ratio vs SPY | {{ attribution.information_ratio }} |
+| Appraisal ratio vs SPY (alpha / idiosyncratic vol) | {{ attribution.appraisal_ratio }} |
+| Idiosyncratic share of variance (CAPM) | {{ attribution.idiosyncratic_share }} |
+
+| Factor | Loading | t (HAC) |
+|---|---|---|
+{% for row in attribution.loadings %}
+| {{ row.name }} | {{ row.coef }} | {{ row.t }} |
+{% endfor %}
+
+Excess return over SPY (beta against SPY {{ attribution.beta_vs_spy }}):
+
+| Component | pp / yr |
+|---|---|
+{% for row in attribution.components %}
+| {{ row.name }} | {{ row.pp }} |
+{% endfor %}
+
+{{ attribution.gate_note }}
+
+Sector exposure {{ attribution.sector }}
+
+{% endif %}
 ## Provenance appendix
 
 | | |

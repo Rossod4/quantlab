@@ -133,9 +133,9 @@ def test_paper_run_dry_run_never_calls_submit(monkeypatch, tmp_path):
         corporate_actions=_EmptyActionsProvider(),
         cache_dir=tmp_path / "cache",
     )
-    monkeypatch.setattr(
-        "quantlab.backtest.engine.build_backtest_providers", lambda _config: providers
-    )
+    # bound at import in the runner: patch where it is looked up, or the fake
+    # only takes effect when this is the first test to import the runner
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _config: providers)
 
     platform_path = _write_platform_yaml(tmp_path)
     strategy_path = _write_strategy_yaml(tmp_path)
@@ -252,9 +252,9 @@ def test_paper_drift_end_to_end_on_a_traded_journal(monkeypatch, tmp_path):
         corporate_actions=_EmptyActionsProvider(),
         cache_dir=tmp_path / "cache",
     )
-    monkeypatch.setattr(
-        "quantlab.backtest.engine.build_backtest_providers", lambda _config: providers
-    )
+    # bound at import in the runner: patch where it is looked up, or the fake
+    # only takes effect when this is the first test to import the runner
+    monkeypatch.setattr("quantlab.paper.runner.build_backtest_providers", lambda _config: providers)
 
     platform_path = _write_platform_yaml(tmp_path)
     strategy_path = _write_strategy_yaml(tmp_path)

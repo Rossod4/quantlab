@@ -781,17 +781,64 @@ def _provenance_section(result: BacktestResult) -> dict[str, Any]:
     }
 
 
+def _attribution_section(att: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The report's Attribution section, pre-formatted from an
+    `attribution.json` (M10) - None when the run has none, in which case the
+    templates emit nothing at all. Read-only: the numbers are the file's."""
+    if att is None or "decomposition" not in att:
+        return None
+    capm, ff = att["capm"], att["ff5_mom"]
+    dec = att["decomposition"]
+    comp = dec["components"]
+    sample = att["sample"]
+    return {
+        "sample": (
+            f"{sample['first_month']} to {sample['last_month']}, {sample['n_used']} of "
+            f"{sample['n_returns']} monthly returns ({sample['n_dropped_by_alignment']} dropped "
+            f"by alignment); factors fetched {att['factor_vintage']['fetched_at']}"
+        ),
+        "hac_lags": att["hac"]["lags"],
+        "capm_beta": _num(capm["loadings"]["Mkt-RF"]["coef"], 3),
+        "capm_alpha": _pct(capm["alpha_annualised_arithmetic"]),
+        "capm_alpha_t": _num(capm["alpha_t_hac"], 2),
+        "capm_r2": _num(capm["r2"], 3),
+        "ff_alpha": _pct(ff["alpha_annualised_arithmetic"]),
+        "ff_alpha_t": _num(ff["alpha_t_hac"], 2),
+        "ff_r2": _num(ff["r2"], 3),
+        "loadings": [
+            {"name": name, "coef": _num(row["coef"], 3), "t": _num(row["t_hac"], 2)}
+            for name, row in ff["loadings"].items()
+        ],
+        "beta_vs_spy": _num(dec["beta_vs_benchmark"], 3),
+        "components": [
+            {"name": "Leverage on beta", "pp": _num(comp["leverage_on_beta"] * 100, 2)},
+            {"name": "Alpha vs SPY", "pp": _num(comp["alpha"] * 100, 2)},
+            {"name": "Compounding", "pp": _num(comp["compounding"] * 100, 2)},
+            {"name": "Excess CAGR over SPY", "pp": _num(dec["excess_cagr_aligned"] * 100, 2)},
+        ],
+        "information_ratio": _num(att["information_ratio_vs_spy"], 3),
+        "appraisal_ratio": _num(dec["beta_matched_benchmark"]["appraisal_ratio"], 3),
+        "idiosyncratic_share": _num(
+            att["concentration"]["idiosyncratic_variance"]["full_sample_share"], 3
+        ),
+        "gate_note": att["gate_note"],
+        "sector": att["sector_exposure"],
+    }
+
+
 def build_report_context(
     result: BacktestResult,
     report_card: dict[str, Any] | None,
     config: dict[str, Any] | None = None,
+    attribution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the complete, pre-formatted report context. `report_card` is
     `ReportCard.to_json()`'s exact dict shape (or `None` for a basic-only
     validation with no verdict); `config` is currently unused by number
     formatting (every threshold already lives inside each gate's own
     `value`/`threshold`) and accepted for the packet's own signature and for
-    future sections that need a config value no gate carries."""
+    future sections that need a config value no gate carries. `attribution` is an
+    `attribution.json` dict (M10) or None."""
     del config  # not currently needed - see docstring.
     gates = report_card["gates"] if report_card is not None else []
     return {
@@ -802,5 +849,6 @@ def build_report_context(
         "robustness": _robustness_section(result, report_card),
         "execution": _execution_section(result),
         "provenance": _provenance_section(result),
+        "attribution": _attribution_section(attribution),
         "_gates_raw": gates,
     }

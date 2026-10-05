@@ -242,7 +242,12 @@ import pandas as pd
 from quantlab.backtest import costs as costs_mod
 from quantlab.backtest.accounting import Ledger
 from quantlab.backtest.config import BacktestConfig, ExtremeReturnPolicy
-from quantlab.backtest.context import DecisionProviders, actions_fetched_at, build_decision_context
+from quantlab.backtest.context import (
+    DecisionProviders,
+    actions_fetched_at,
+    build_decision_context,
+    fundamentals_fetched_at,
+)
 from quantlab.backtest.panel_store import PricePanelStore
 from quantlab.backtest.result import BacktestResult, QualityFlags
 from quantlab.core.calendar import (
@@ -1434,6 +1439,18 @@ def run_backtest(
     }
     total_provider_calls = sum(provider_call_counts.values())
 
+    # M10 carried item C1: the fundamentals cache's vintage (file mtimes, there
+    # is no sidecar) over the tickers this run touched - only for a run that
+    # actually called the fundamentals provider, so a price-only strategy does
+    # not inherit whatever another run left in the cache.
+    fundamentals_known: list[str] = []
+    if provider_call_counts["fundamentals"] > 0:
+        fundamentals_known = sorted(
+            v
+            for v in fundamentals_fetched_at(providers.cache_dir, coverage_tickers).values()
+            if v is not None
+        )
+
     provenance = {
         "strategy_id": strategy.strategy_id,
         "strategy_params": strategy.params,
@@ -1447,6 +1464,11 @@ def run_backtest(
         "actions_cache_fetched_at": {
             "min": known_fetched_at[0] if known_fetched_at else None,
             "max": known_fetched_at[-1] if known_fetched_at else None,
+        },
+        "fundamentals_cache_fetched_at": {
+            "min": fundamentals_known[0] if fundamentals_known else None,
+            "max": fundamentals_known[-1] if fundamentals_known else None,
+            "basis": "file mtime of <cache_dir>/fundamentals/<ticker>.parquet",
         },
         "quantlab_git_sha": _git_sha(),
         # M04b work packet item 7 (orchestrator-added, folded in mid-loop):

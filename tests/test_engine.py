@@ -1283,3 +1283,73 @@ def test_next_open_return_excludes_the_fill_day_intraday_move_from_the_outgoing_
     # right up through this session's OPEN, which is where this period's
     # exit is priced.
     assert result.gross_returns.loc[fill_date] == pytest.approx(0.0, abs=1e-6)
+
+
+class _FundamentalsTouchingStrategy(_EqualWeightStrategy):
+    """Equal-weight, but reads fundamentals for every universe name so the
+    run really calls the fundamentals provider."""
+
+    def requires(self) -> DataRequirements:
+        return DataRequirements(
+            price_lookback_days=1,
+            needs_universe=True,
+            fundamental_fields=frozenset({"revenue"}),
+        )
+
+    def generate_targets(self, ctx: Any, date: pd.Timestamp) -> TargetWeights:
+        for ticker in ctx.universe():
+            ctx.fundamentals(ticker)
+        return super().generate_targets(ctx, date)
+
+
+def _plant_facts_file(cache_dir: Path, ticker: str, when: str) -> None:
+    import os
+
+    path = cache_dir / "fundamentals" / f"{ticker}.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"x": [1]}).to_parquet(path)
+    stamp = pd.Timestamp(when, tz="UTC").timestamp()
+    os.utime(path, (stamp, stamp))
+
+
+def _fundamentals_vintage_run(tmp_path, strategy):
+    sessions = trading_days("2019-06-01", "2020-03-31")
+    panel = _flat_panel(sessions, {"AAA": 10.0, "BBB": 20.0, "BENCH": 100.0})
+    providers = BacktestProviders(
+        price=_FakePriceProvider(panel),
+        constituents=_FakeConstituentsProvider(["AAA", "BBB"]),
+        fundamentals=_NoOpFundamentalsProvider(),
+        corporate_actions=_EmptyActionsProvider(),
+        cache_dir=tmp_path,
+    )
+    return run_backtest(strategy, _config(start="2020-01-01", end="2020-03-31"), providers)
+
+
+def test_provenance_records_the_fundamentals_cache_vintage_range(tmp_path):
+    """M10 carried item C1: min/max fetch date over the touched tickers' facts
+    files (a ticker with no file is ignored; an untouched ticker's file too)."""
+    _plant_facts_file(tmp_path, "AAA", "2023-09-23")
+    _plant_facts_file(tmp_path, "BBB", "2024-02-01")
+    _plant_facts_file(tmp_path, "ZZZ", "2030-01-01")  # not in this run's universe
+
+    result = _fundamentals_vintage_run(tmp_path, _FundamentalsTouchingStrategy())
+
+    vintage = result.provenance["fundamentals_cache_fetched_at"]
+    assert vintage["min"] == "2023-09-23"
+    assert vintage["max"] == "2024-02-01"
+    assert "mtime" in vintage["basis"]
+
+
+def test_provenance_fundamentals_vintage_is_none_when_the_run_never_uses_fundamentals(tmp_path):
+    _plant_facts_file(tmp_path, "AAA", "2023-09-23")
+
+    result = _fundamentals_vintage_run(tmp_path, _EqualWeightStrategy())
+
+    vintage = result.provenance["fundamentals_cache_fetched_at"]
+    assert vintage["min"] is None and vintage["max"] is None
+
+
+def test_fundamentals_cache_vintage_is_compared_by_the_netted_grid():
+    from quantlab.validation.netted_grid import _VINTAGE_KEYS
+
+    assert "fundamentals_cache_fetched_at" in _VINTAGE_KEYS

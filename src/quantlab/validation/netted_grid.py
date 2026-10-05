@@ -78,6 +78,7 @@ _VINTAGE_KEYS = (
     "quantlab_git_sha",
     "dirty",
     "actions_cache_fetched_at",
+    "fundamentals_cache_fetched_at",
     "quarantined_count",
 )
 

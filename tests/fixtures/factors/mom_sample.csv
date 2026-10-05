@@ -1,0 +1,26 @@
+This file was created using the 202608 CRSP database.  It
+contains a momentum factor, constructed from six value-weight portfolios formed
+
+Missing data are indicated by -99.99 or -999.
+
+,Mom
+201912,   1.00
+202001,  -4.34
+202002,  -1.05
+202003,  -9.57
+202004,  -9.92
+202005,   1.78
+202006,  12.46
+202007,  -2.52
+202008,  -3.58
+202009,   0.42
+202010,   0.69
+202011, -12.20
+202012,   2.12
+
+Annual Factors:
+January-December
+,Mom
+  2020, -12.34
+
+Copyright 2026 Eugene F. Fama and Kenneth R. French

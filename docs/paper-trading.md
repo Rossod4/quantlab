@@ -167,6 +167,18 @@ strategy you intend to actually trust with money, paper or otherwise** - it
 exists purely to let a developer exercise the runner's non-signal machinery
 independently of validation status.
 
+`--force-research` waives eligibility only, not data quality: every run (with or
+without a promoting card) first re-checks the CURRENT price cache and is refused,
+and journaled, if any cached ticker is absent from the latest `quantlab data scan`
+manifest (the refusal names the first 10 and the count). Run `quantlab data scan`
+and retry.
+
+Known limitations of that check (M10 quant gate; fix before the first real promotion): it runs
+before targets are generated, so a ticker FIRST cached during the cycle itself (including the
+benchmark fetch in the as-of resolution) is used unscanned for that cycle and refused only on the
+next; and the scan manifest records tickers, not dates, so bars appended to an already-scanned
+ticker are never re-scanned (a symbol reassigned to a new issuer after the scan would pass).
+
 ## 7. Timing convention
 
 The runner decides using the last COMPLETED session's close (never today's
@@ -194,6 +206,11 @@ Limitation: both gaps compare RAW prices, so a split ex-dated between the decisi
 and the fill-session open would read as a huge spurious timing gap. The check detects such
 a split (or unreadable corporate actions) and reports the ticker in `gaps_not_computed`
 instead; it does not re-express the prices in a common share basis.
+
+Likewise an ex-DIVIDEND date between the decision close and the fill-session open is not
+detected: the open is a raw price that has dropped by the dividend, so that cash amount
+lands in `timing_gap_bps` (a negative offset roughly equal to the dividend yield, not a
+timing or execution effect).
 
 ## 8. Data degradation and coverage
 

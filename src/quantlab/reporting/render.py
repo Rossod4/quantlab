@@ -284,7 +284,13 @@ def render_report(
     resolved_card_dir = Path(card_dir) if card_dir is not None else Path(result_dir)
     report_card = _load_report_card(result, resolved_card_dir)
 
-    context = context_module.build_report_context(result, report_card, config)
+    attribution_path = Path(result_dir) / "attribution.json"
+    attribution = (
+        json.loads(attribution_path.read_text(encoding="utf-8"))
+        if attribution_path.exists()
+        else None
+    )
+    context = context_module.build_report_context(result, report_card, config, attribution)
     plot_bytes, plot_errors = _build_plots(result, report_card, config)
 
     out = Path(out_dir)

@@ -1809,3 +1809,101 @@ moved: `git diff a001d03..HEAD -- src/quantlab/{backtest,data,strategies}` is em
 - **→ README (wording):** in the value section, "the only window in which the 36
   contaminated series could matter" overclaims (BMC and COL are contaminated from 2012).
   Use "the only window where removing them changed the series".
+
+## From M10 verdict (plans/state/M10/VERDICT.md) — REJECT, cycle 1
+
+M10 was REJECTED at cycle 1, on the interpretation deliverable only (packet criterion 6). The
+regressions, HAC SEs, alignment (173/173, a one-month shift collapses R² to ~0.03), annualisation,
+SPY calibration and decomposition arithmetic were all reproduced independently at the gate
+(own Ken French parser + statsmodels) and match exactly. No gate, threshold, numeric or trial
+changed (`git diff main..HEAD -- configs src/quantlab/{validation,backtest,data,strategies}` =
+the C1 provenance field + the `_VINTAGE_KEYS` line; `reports/trials/` untouched).
+
+### Closure of the items M10 was carrying (from "M09 gate cycle 2 — ACCEPT")
+
+- **C1 (fundamentals cache vintage in provenance + `_VINTAGE_KEYS`) — CLOSED.** Basis is file
+  mtime (no sidecar exists), honestly labelled; a touched/re-written file reads as its rewrite
+  date. A real EDGAR `fetched_at` sidecar is a future data-layer item, not a defect.
+- **C2 (ex-dividend lands in `timing_gap_bps`, docs) — CLOSED.**
+- **C3 (README "only window where removing them changed the series") — CLOSED.**
+- **C4 (run_once re-checks the CURRENT cache's scan coverage) — CLOSED as specified**, on every
+  path incl. `--force-research` and `--dry-run` (gate probe with a planted `GATEPLANT`: refused,
+  dry-run journal empty; wiped manifest: refused). Residuals carried below.
+
+### Required at M10 cycle 2 (documentation only)
+
+- VERDICT.md finding 1 (Norgate answer): value's FF5+Mom alpha is +4.18%/yr (HAC t 4.15, OLS t
+  2.78) over 2012-02..2019-03 and +0.26% (t 0.11) after, robust to the split date, coinciding
+  with a 14-28% coverage gap (vs 2-12% after). Survivorship-correction sign is unknown (visible
+  quarantined names skew to M&A targets); t moves with the point estimate; pre-2012
+  survivorship-free history is the only power lever for momentum. Gate-found after the fact:
+  must be framed as a question for the data, never as alpha.
+- VERDICT.md finding 2 (gate recommendation): an alpha gate is non-nested with the Sharpe gate
+  (SR_s >= min(AR, SR_m)), so "stricter" holds only as an AND condition; threshold must be
+  deflated for registered trials (t ~3, not 2); factor set and HAC lag pinned in advance;
+  prospective only. The core ruling — do not lower the Sharpe-vs-SPY bar — stands.
+- README: coverage-bound sentence beside the attribution table (finding 3); the in-sample
+  13.3%/yr SPY premium makes the beta-leverage pp regime-specific (finding 4).
+
+### New carried items
+
+- **→ next attribution touch:** `build.py` should copy `coverage_report.overall_bound` +
+  `by_year` into `attribution.json|md` (CLAUDE.md invariant #2), and add a fixed first-half /
+  second-half regression so a time-varying alpha is visible without a gate probe.
+- **→ next attribution touch:** `regression.py` docstring and `hac.rule` say 6 lags is "the more
+  conservative" choice. It is not in general (value's alpha t rises with lag: 1.18/1.32/1.38/1.50
+  at 0/4/6/12). Reword as "robust to longer memory"; regenerate the four JSONs via `quantlab
+  attribute`. Also: short-sample HAC (86 obs) runs well above OLS t; quote both on subsamples.
+- **→ next attribution touch (labels):** the decomposition's "Alpha" and "Appraisal ratio" are
+  from the regression on SPY, printed next to a CAPM alpha on Mkt-RF; label them "vs SPY".
+  "Leverage on beta" is arithmetic, so beta's own variance drag lands in "compounding"
+  (geometric-consistent beta pp: 1.66/2.45/2.05 vs reported 1.72/2.55/2.14). The identity holds
+  by construction (compounding is the plug).
+- **→ before the first real promotion (C4 residuals):** (a) a ticker first cached DURING a cycle
+  (after the check, at the targets stage) is used unscanned for that cycle — gate-reproduced
+  with a provider that caches `MIDRUN` mid-run: first run completes, next run refuses. Re-run
+  the check after `generate_targets`, before `plan_orders`. (b) The scan manifest is
+  ticker-granular: bars appended to an already-scanned ticker (every paper day) are never
+  re-scanned, so a symbol reassigned after the scan passes. Record a scanned-through date per
+  ticker. Pre-existing, not introduced by M10.
+- **→ any future alpha-based gate (Alex's decision):** AND with `net_sharpe_vs_benchmark`, never
+  a replacement; trial-count-deflated t; factor set (incl. whether a momentum rule is regressed
+  on Mom) and HAC lag fixed before the first trial it applies to.
+
+## M10 gate cycle 2 — ACCEPT (plans/state/M10/VERDICT.2.md)
+
+M10 is **ACCEPTED**. Iteration 3 was documentation plus string/label edits only:
+`git diff 02f9384..HEAD -- src tests` is strings only; each regenerated `attribution.json` differs
+from cycle 1 in the single `hac.rule` line; `report.md` x3 only gained "vs SPY" labels;
+`reports/trials/` untouched. Suite 990 passed (82 s, BATTERY 42%, 1.4 GHz).
+
+### Cycle-1 items — dispositions
+
+- **Finding 1 (Norgate answer) — CLOSED.** README "Survivorship" / "A question for the data, found
+  after the fact" and HANDOFF.3 item 3 carry value's half-sample alpha (+4.18%/yr HAC t 4.15, OLS t
+  2.78, 2012-02..2019-03; +0.26% after) against the coverage gap by year, explicitly not a claim
+  of alpha; the three unsupported claims are replaced (correction sign unknown; t moves with the
+  point estimate; pre-2012 history is momentum's only power lever).
+- **Finding 2 (alpha-gate framing) — CLOSED.** AND-only, trial-deflated (t ~3), factor set + HAC
+  lag pinned in advance, prospective only; core ruling (do not lower the Sharpe-vs-SPY bar) kept.
+- **Finding 3 (coverage bound beside alpha) — CLOSED in README; attribution.json|md half CARRIED
+  (ruled acceptable, see below).**
+- **Findings 4, 5, 6 — CLOSED** (geometric beta shares 1.66/2.45/2.05 pp with the 13.3%-premium
+  caveat; "vs SPY" labels; HAC "robustness, not more conservative" wording in code, JSON and md;
+  CAPM vs FF5+Mom answer different questions).
+- **Finding 7 (C4 residuals) — DOCUMENTED** in docs/paper-trading.md section 6; the carried item
+  in the M10 cycle-1 block above stands until fixed.
+
+### Status of the M10 cycle-1 carried items above
+
+- **Coverage bound + fixed half-sample regression in `attribution.json|md` — STANDS**, now with a
+  deadline: before any attribution number is used in a gate proposal to Alex or a promotion
+  argument, and in any event at the next attribution touch.
+- **HAC-lag wording — DISCHARGED** (done in iteration 3). The short-sample HAC-vs-OLS caution
+  stands for any future subsample output: quote both t-stats.
+- **"vs SPY" labels — DISCHARGED.** The arithmetic/geometric and identity-by-construction notes
+  are now in the README; DISCHARGED.
+- **C4 residuals (in-cycle first-cache window; ticker-granular scan manifest) — STAND**, before the
+  first real promotion.
+- **Future alpha-based gate rules — STAND** (Alex's decision; AND-only, deflated t, pinned
+  factors/lag, prospective).

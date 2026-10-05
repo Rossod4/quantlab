@@ -184,6 +184,43 @@ Base point: **lookback_months=12, n_long=30**
 | Max dropped fraction (abort threshold) | 5.00% |
 | Abort on unscoreable date | True |
 
+## Attribution
+
+Where the return comes from (`attribution.json`, informational; no gate reads it). 2012-02 to 2026-06, 173 of 173 monthly returns (0 dropped by alignment); factors fetched 2026-10-05T19:43:02+00:00. Newey-West standard errors, 6 lags.
+
+| | |
+|---|---|
+| CAPM beta (Mkt-RF) | 1.097 |
+| CAPM alpha (annualised) / t | 1.84% / 0.67 |
+| CAPM R-squared | 0.752 |
+| FF5 + Mom alpha (annualised) / t | -1.19% / -0.62 |
+| FF5 + Mom R-squared | 0.852 |
+| Information ratio vs SPY | 0.333 |
+| Appraisal ratio vs SPY (alpha / idiosyncratic vol) | 0.155 |
+| Idiosyncratic share of variance (CAPM) | 0.248 |
+
+| Factor | Loading | t (HAC) |
+|---|---|---|
+| Mkt-RF | 1.204 | 33.49 |
+| SMB | 0.068 | 0.95 |
+| HML | 0.109 | 1.20 |
+| RMW | -0.269 | -2.61 |
+| CMA | -0.008 | -0.06 |
+| Mom | 0.464 | 6.18 |
+
+Excess return over SPY (beta against SPY 1.130):
+
+| Component | pp / yr |
+|---|---|
+| Leverage on beta | 1.72 |
+| Alpha vs SPY | 1.45 |
+| Compounding | -0.33 |
+| Excess CAGR over SPY | 2.85 |
+
+The existing net_sharpe_vs_benchmark gate compares total-risk-adjusted return. SPY levered to the strategy's beta has SPY's Sharpe exactly, so the gate gives no credit for beta leverage and charges for idiosyncratic variance (concentration). The beta-matched comparison belongs in alpha and appraisal-ratio terms (informational only; no gate is changed).
+
+Sector exposure not available: the constituents provider carries no point-in-time-safe sector mapping, and none was added for this milestone.
+
 ## Provenance appendix
 
 | | |
